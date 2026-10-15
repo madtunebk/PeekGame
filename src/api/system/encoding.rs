@@ -3,6 +3,12 @@ use std::ffi::{c_char, CStr};
 fn page(cp: u32) -> bool {
     matches!(cp, 0 | 1 | 3 | 65001)
 }
+/// CP_ACP, CP_OEMCP and CP_THREAD_ACP are UTF-8 here, but programs pass them the
+/// flags (and default-character arguments) of a legacy code page, which Windows
+/// accepts for those: they are ignored. Explicit CP_UTF8 keeps the UTF-8 rules.
+fn legacy(cp: u32) -> bool {
+    cp != 65001
+}
 pub extern "win64" fn codepage() -> u32 {
     65001
 }
@@ -21,11 +27,17 @@ pub unsafe extern "win64" fn wide_to_multi(
         || len == 0
         || len < -1
         || capacity < 0
-        || (!default.is_null() || !used.is_null())
+        || (!legacy(cp) && (!default.is_null() || !used.is_null()))
     {
         error::set(87);
         return 0;
     }
+    if !used.is_null() {
+        unsafe { *used = 0 };
+    }
+    // WC_COMPOSITECHECK 0x200, WC_DISCARDNS 0x10, WC_SEPCHARS 0x20, WC_DEFAULTCHAR
+    // 0x40 and WC_NO_BEST_FIT_CHARS 0x400 only concern legacy code pages.
+    let flags = if legacy(cp) { flags & !0x670 } else { flags };
     if flags & !0x80 != 0 {
         error::set(1004);
         return 0;
@@ -84,6 +96,8 @@ pub unsafe extern "win64" fn multi_to_wide(
         error::set(87);
         return 0;
     }
+    // MB_PRECOMPOSED 1, MB_COMPOSITE 2 and MB_USEGLYPHCHARS 4 concern legacy pages.
+    let flags = if legacy(cp) { flags & !7 } else { flags };
     if flags & !8 != 0 {
         error::set(1004);
         return 0;

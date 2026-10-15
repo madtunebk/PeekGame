@@ -42,6 +42,9 @@ pub unsafe extern "win64" fn mode(handle: usize, out: *mut u32) -> i32 {
     1
 }
 pub extern "win64" fn file_type(handle: usize) -> u32 {
+    if let Some(kind) = crate::api::filesystem::files::file_type(handle) {
+        return kind;
+    }
     if !(0x100..=0x102).contains(&handle) {
         error::set(6);
         return 0;

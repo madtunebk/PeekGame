@@ -14,12 +14,74 @@ struct Thread {
     id: u32,
     exit: Mutex<Option<u32>>,
     changed: Condvar,
+    /// CREATE_SUSPENDED: the start routine waits until ResumeThread clears this.
+    suspended: Mutex<bool>,
 }
+const CREATE_SUSPENDED: u32 = 0x4;
+const STACK_SIZE_PARAM_IS_A_RESERVATION: u32 = 0x10000;
 thread_local! {static CURRENT:RefCell<Option<Arc<Thread>>>=const{RefCell::new(None)};}
 static THREADS: OnceLock<Mutex<HashMap<usize, Arc<Thread>>>> = OnceLock::new();
 static NEXT: AtomicUsize = AtomicUsize::new(0x66000000);
 fn threads() -> &'static Mutex<HashMap<usize, Arc<Thread>>> {
     THREADS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+/// Has the thread exited? None: not a thread handle.
+pub(crate) fn exited(handle: usize) -> Option<bool> {
+    let thread = threads().lock().unwrap().get(&handle).cloned()?;
+    let done = thread.exit.lock().unwrap().is_some();
+    Some(done)
+}
+/// The calling thread's record (made on first use for threads PeekGame did not
+/// create, such as the main thread).
+fn current_thread() -> Arc<Thread> {
+    CURRENT.with(|current| {
+        current
+            .borrow_mut()
+            .get_or_insert_with(|| record(startup::thread_id()))
+            .clone()
+    })
+}
+fn record(id: u32) -> Arc<Thread> {
+    Arc::new(Thread {
+        id,
+        exit: Mutex::new(None),
+        changed: Condvar::new(),
+        suspended: Mutex::new(false),
+    })
+}
+/// The thread ID behind a thread handle (GetCurrentThread's pseudo handle included).
+pub(crate) fn id_of(handle: usize) -> Option<u32> {
+    if handle == usize::MAX - 1 {
+        return Some(startup::thread_id());
+    }
+    threads().lock().unwrap().get(&handle).map(|t| t.id)
+}
+/// OpenThread: a new handle to a thread of this process, by ID.
+pub extern "win64" fn open(_access: u32, _inherit: i32, id: u32) -> usize {
+    let known = threads()
+        .lock()
+        .unwrap()
+        .values()
+        .find(|t| t.id == id)
+        .cloned();
+    let thread = match known {
+        Some(thread) => thread,
+        None if id == startup::thread_id() => current_thread(),
+        // A thread PeekGame did not create (its exit is not observed).
+        None if std::path::Path::new(&format!("/proc/self/task/{id}")).exists() => record(id),
+        None => {
+            error::set(87);
+            return 0;
+        }
+    };
+    insert(thread)
+}
+/// GetThreadId.
+pub extern "win64" fn thread_id_of(handle: usize) -> u32 {
+    id_of(handle).unwrap_or_else(|| {
+        error::set(6);
+        0
+    })
 }
 fn insert(thread: Arc<Thread>) -> usize {
     let handle = NEXT.fetch_add(16, Ordering::Relaxed);
@@ -34,10 +96,13 @@ pub unsafe extern "win64" fn create(
     flags: u32,
     id: *mut u32,
 ) -> usize {
-    if !security.is_null() || flags != 0 {
+    // Security attributes only matter for inheritance by child processes.
+    let _ = security;
+    if flags & !(CREATE_SUSPENDED | STACK_SIZE_PARAM_IS_A_RESERVATION) != 0 {
         error::set(50);
         return 0;
     }
+    let suspended = flags & CREATE_SUSPENDED != 0;
     let Some(start) = start else {
         error::set(87);
         return 0;
@@ -52,6 +117,7 @@ pub unsafe extern "win64" fn create(
             id: startup::thread_id(),
             exit: Mutex::new(None),
             changed: Condvar::new(),
+            suspended: Mutex::new(suspended),
         });
         if let Err(e) = crate::host::thread_template::attach() {
             eprintln!("Windows thread initialization failed: {e}");
@@ -62,10 +128,17 @@ pub unsafe extern "win64" fn create(
             return;
         }
         CURRENT.with(|current| *current.borrow_mut() = Some(thread.clone()));
+        {
+            let mut held = thread.suspended.lock().unwrap();
+            while *held {
+                held = thread.changed.wait(held).unwrap();
+            }
+        }
         let result = start(parameter);
         crate::host::thread_template::detach();
         *thread.exit.lock().unwrap() = Some(result);
         thread.changed.notify_all();
+        super::objects::changed();
     });
     if spawned.is_err() {
         error::set(8);
@@ -98,35 +171,26 @@ pub unsafe extern "win64" fn duplicate(
     unsafe {
         *out = 0;
     }
+    // Only this process exists. Inheritance concerns child processes, so the flag is
+    // accepted; access must be "the same" (DUPLICATE_SAME_ACCESS or no extra rights).
+    let _ = inherit;
     if source_process != usize::MAX
         || target_process != usize::MAX
-        || inherit != 0
         || options & !3 != 0
-        || options & 2 == 0
-        || access != 0
+        || (options & 2 == 0 && access != 0)
     {
         error::set(50);
         return 0;
     }
     let existing = threads().lock().unwrap().get(&source).cloned();
     let target = if source == usize::MAX - 1 {
-        Some(CURRENT.with(|current| {
-            let mut current = current.borrow_mut();
-            let thread = current
-                .get_or_insert_with(|| {
-                    Arc::new(Thread {
-                        id: startup::thread_id(),
-                        exit: Mutex::new(None),
-                        changed: Condvar::new(),
-                    })
-                })
-                .clone();
-            insert(thread)
-        }))
+        Some(insert(current_thread()))
     } else if let Some(thread) = existing {
         Some(insert(thread))
     } else {
         super::events::duplicate(source)
+            .or_else(|| super::objects::duplicate(source))
+            .or_else(|| crate::api::filesystem::files::duplicate(source))
     };
     let Some(target) = target else {
         error::set(6);
@@ -208,4 +272,29 @@ pub unsafe extern "win64" fn begin_thread(
     id: *mut u32,
 ) -> usize {
     unsafe { create(security, stack as usize, start, parameter, flags, id) }
+}
+
+/// ResumeThread: starts a thread created suspended. Suspending running threads
+/// (SuspendThread) is not implemented yet, so their count is always 0.
+/// Is this a thread created with CREATE_SUSPENDED that has not started yet?
+pub(crate) fn created_suspended(handle: usize) -> bool {
+    threads()
+        .lock()
+        .unwrap()
+        .get(&handle)
+        .is_some_and(|t| *t.suspended.lock().unwrap())
+}
+pub extern "win64" fn resume(handle: usize) -> u32 {
+    let Some(thread) = threads().lock().unwrap().get(&handle).cloned() else {
+        error::set(6);
+        return u32::MAX;
+    };
+    let mut suspended = thread.suspended.lock().unwrap();
+    if *suspended {
+        *suspended = false;
+        thread.changed.notify_all();
+        1
+    } else {
+        0
+    }
 }

@@ -8,4 +8,6 @@ pub(crate) mod threading;
 pub(crate) mod com;
 pub(crate) mod crt;
 pub(crate) mod memory;
+pub(crate) mod network;
 pub(crate) mod shell;
+pub(crate) mod text;

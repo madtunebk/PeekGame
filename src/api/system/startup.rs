@@ -1,12 +1,9 @@
 use std::{
     ffi::c_void,
-    sync::atomic::{AtomicUsize, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
-static FILTER: AtomicUsize = AtomicUsize::new(0);
 pub extern "win64" fn set_filter(filter: usize) -> usize {
-    eprintln!("SetUnhandledExceptionFilter({filter:#x}): recorded; exception dispatch pending");
-    FILTER.swap(filter, Ordering::SeqCst)
+    crate::seh::set_unhandled_filter(filter)
 }
 unsafe extern "C" {
     fn getpid() -> i32;

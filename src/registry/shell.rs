@@ -1,6 +1,23 @@
 use super::*;
+use crate::api::shell::folders;
 use crate::api::{memory::local, shell::arguments};
 exports! {
+    export!(
+        "shell32.dll",
+        "SHGetKnownFolderPath",
+        "shell",
+        "partial",
+        "AppData and user folders under APPDATA (default ~/.local/share/peekgame)",
+        folders::known_folder_path
+    ),
+    export!(
+        "shell32.dll",
+        "SHGetFolderPathW",
+        "shell",
+        "partial",
+        "AppData and user folders under APPDATA (default ~/.local/share/peekgame)",
+        folders::folder_path_w
+    ),
     export!(
         "shell32.dll",
         "CommandLineToArgvW",
