@@ -5,6 +5,7 @@ mod loader;
 mod model;
 mod package;
 mod pe;
+mod relink;
 mod report;
 fn main() {
     if let Err(error) = (|| {

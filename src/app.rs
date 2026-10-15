@@ -7,6 +7,9 @@ pub fn run() -> Result<()> {
     if options.package {
         return crate::package::build(&options.exe, &options.output);
     }
+    if options.relink {
+        return crate::relink::build(&options.exe, &options.output);
+    }
     if options.run {
         return crate::loader::run(&options.exe, &options.args, &options.output);
     }

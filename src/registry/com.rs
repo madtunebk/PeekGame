@@ -1,7 +1,10 @@
 use super::Export;
 use crate::api::com::apartment;
 macro_rules! com {
-    ($name:literal,$function:path) => {
+    (@link $name:literal,$function:path $(,)?) => {
+        link_symbol!("ole32.dll", $name, $function);
+    };
+    ($name:literal,$function:path $(,)?) => {
         Export {
             dll: "ole32.dll",
             name: $name,
@@ -12,7 +15,7 @@ macro_rules! com {
         }
     };
 }
-pub(super) static EXPORTS: &[Export] = &[
+exports! {
     com!("CoInitializeEx", apartment::initialize),
     com!("CoUninitialize", apartment::uninitialize),
     com!("OleInitialize", apartment::ole_initialize),
@@ -21,4 +24,4 @@ pub(super) static EXPORTS: &[Export] = &[
     com!("CoTaskMemAlloc", apartment::allocate),
     com!("CoTaskMemRealloc", apartment::reallocate),
     com!("CoTaskMemFree", apartment::release),
-];
+}

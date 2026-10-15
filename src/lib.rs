@@ -6,7 +6,9 @@ mod abi;
 mod api;
 mod host;
 pub mod registry;
+mod relinked;
 mod runtime;
+pub use relinked::quote as quote_windows_argument;
 pub use runtime::{peekgame_abi_version, peekgame_configure_process, peekgame_resolve};
 
 pub use api::system::dynamic::start as start_import_trace;

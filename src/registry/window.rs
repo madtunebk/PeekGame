@@ -1,5 +1,5 @@
 use super::*;
-pub(super) static EXPORTS: &[Export] = &[
+exports! {
     window!(
         "RegisterClassExW",
         "process-wide application classes; no extra bytes, icons, menus or brushes",
@@ -60,4 +60,4 @@ pub(super) static EXPORTS: &[Export] = &[
         "ASCII from native letter/digit/space keys; extended text/IME pending",
         messages::translate_message
     ),
-];
+}

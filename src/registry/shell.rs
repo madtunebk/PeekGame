@@ -1,14 +1,14 @@
 use super::*;
 use crate::api::{memory::local, shell::arguments};
-pub(super) static EXPORTS: &[Export] = &[
-    Export {
-        dll: "shell32.dll",
-        name: "CommandLineToArgvW",
-        category: "shell",
-        status: "partial",
-        scope: "UTF-16 argument parsing; LocalFree owns returned block",
-        address: Some(|| arguments::command_line_to_argv as *const std::ffi::c_void),
-    },
+exports! {
+    export!(
+        "shell32.dll",
+        "CommandLineToArgvW",
+        "shell",
+        "partial",
+        "UTF-16 argument parsing; LocalFree owns returned block",
+        arguments::command_line_to_argv
+    ),
     implemented!(
         "LocalAlloc",
         "memory",
@@ -30,4 +30,4 @@ pub(super) static EXPORTS: &[Export] = &[
         "registered LocalAlloc sizes",
         local::size
     ),
-];
+}

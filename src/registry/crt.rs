@@ -3,7 +3,10 @@ use crate::api::crt::locale;
 use crate::api::crt::stdio;
 use crate::api::crt::{simple, startup};
 macro_rules! crt {
-    ($name:literal,$scope:literal,$function:path) => {
+    (@link $name:literal,$scope:literal,$function:path $(,)?) => {
+        link_symbol!("msvcrt.dll", $name, $function);
+    };
+    ($name:literal,$scope:literal,$function:path $(,)?) => {
         Export {
             dll: "msvcrt.dll",
             name: $name,
@@ -14,7 +17,7 @@ macro_rules! crt {
         }
     };
 }
-pub(super) static EXPORTS: &[Export] = &[
+exports! {
     crt!(
         "fopen",
         "registered Windows FILE wrappers over binary host streams",
@@ -302,28 +305,28 @@ pub(super) static EXPORTS: &[Export] = &[
         "narrow command line and environment; wildcard expansion unsupported",
         startup::mainargs
     ),
-    Export {
-        dll: "msvcrt.dll",
-        name: "_fmode",
-        category: "crt",
-        status: "partial",
-        scope: "CRT default file mode variable",
-        address: Some(|| &startup::FMODE as *const _ as *const std::ffi::c_void),
-    },
-    Export {
-        dll: "msvcrt.dll",
-        name: "_commode",
-        category: "crt",
-        status: "partial",
-        scope: "CRT commit mode variable",
-        address: Some(|| &startup::COMMODE as *const _ as *const std::ffi::c_void),
-    },
-    Export {
-        dll: "msvcrt.dll",
-        name: "__initenv",
-        category: "crt",
-        status: "partial",
-        scope: "environment pointer initialized by __getmainargs",
-        address: Some(startup::initenv),
-    },
-];
+    data!(
+        "msvcrt.dll",
+        "_fmode",
+        "crt",
+        "partial",
+        "CRT default file mode variable",
+        startup::FMODE
+    ),
+    data!(
+        "msvcrt.dll",
+        "_commode",
+        "crt",
+        "partial",
+        "CRT commit mode variable",
+        startup::COMMODE
+    ),
+    data!(
+        "msvcrt.dll",
+        "__initenv",
+        "crt",
+        "partial",
+        "environment pointer initialized by __getmainargs",
+        startup::CRT_INITENV
+    ),
+}

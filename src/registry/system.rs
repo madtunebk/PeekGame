@@ -4,7 +4,7 @@ use crate::api::system::cpu;
 use crate::api::system::dynamic;
 use crate::api::system::encoding;
 use crate::api::system::startup;
-pub(super) static EXPORTS: &[Export] = &[
+exports! {
     implemented!(
         "SetConsoleCP",
         "system",
@@ -271,4 +271,4 @@ pub(super) static EXPORTS: &[Export] = &[
         "synchronous inherited standard streams only; overlapped I/O unsupported",
         write::write_file
     ),
-];
+}

@@ -28,7 +28,7 @@ pub fn run_with(
     }
     let line = std::iter::once(path.to_string_lossy().into_owned())
         .chain(args.iter().cloned())
-        .map(|a| quote(&a))
+        .map(|a| game_imports::quote_windows_argument(&a))
         .collect::<Vec<_>>()
         .join(" ");
     let line = CString::new(line).map_err(|e| e.to_string())?;
@@ -88,27 +88,4 @@ pub fn run_with(
         mapped.enter(image.entry_rva)?;
     }
     Ok(())
-}
-fn quote(s: &str) -> String {
-    if !s.is_empty() && !s.chars().any(|c| c.is_whitespace() || c == '"') {
-        return s.to_owned();
-    }
-    let mut out = String::from("\"");
-    let mut slashes = 0;
-    for ch in s.chars() {
-        if ch == '\\' {
-            slashes += 1;
-            continue;
-        }
-        if ch == '"' {
-            out.push_str(&"\\".repeat(slashes * 2 + 1));
-        } else {
-            out.push_str(&"\\".repeat(slashes));
-        }
-        slashes = 0;
-        out.push(ch);
-    }
-    out.push_str(&"\\".repeat(slashes * 2));
-    out.push('"');
-    out
 }

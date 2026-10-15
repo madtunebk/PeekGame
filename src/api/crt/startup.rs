@@ -12,7 +12,9 @@ unsafe extern "C" {
 type Callback = extern "win64" fn();
 static CALLBACKS: Mutex<Vec<Callback>> = Mutex::new(Vec::new());
 static REGISTERED: OnceLock<bool> = OnceLock::new();
+#[export_name = "peekgame.msvcrt.dll._fmode"]
 pub static FMODE: AtomicI32 = AtomicI32::new(0);
+#[export_name = "peekgame.msvcrt.dll._commode"]
 pub static COMMODE: AtomicI32 = AtomicI32::new(0);
 static APP_TYPE: AtomicI32 = AtomicI32::new(0);
 static MATHERR: Mutex<usize> = Mutex::new(0);
@@ -84,11 +86,9 @@ struct Args {
     envp: Vec<usize>,
 }
 static ARGS: OnceLock<Args> = OnceLock::new();
-#[no_mangle]
-static CRT_INITENV: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-pub fn initenv() -> *const c_void {
-    &CRT_INITENV as *const _ as *const c_void
-}
+#[export_name = "peekgame.msvcrt.dll.__initenv"]
+pub(crate) static CRT_INITENV: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
 fn args() -> &'static Args {
     ARGS.get_or_init(|| {
         let line = crate::host::process::PROCESS
