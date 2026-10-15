@@ -1,3 +1,4 @@
+use crate::pe;
 use std::ffi::c_void;
 unsafe extern "C" {
     fn mmap(
@@ -11,154 +12,123 @@ unsafe extern "C" {
     fn mprotect(address: *mut c_void, size: usize, prot: i32) -> i32;
     fn munmap(address: *mut c_void, size: usize) -> i32;
 }
-struct Section {
-    start: usize,
-    size: usize,
-    protection: i32,
-}
+const MAP_PRIVATE_ANONYMOUS: i32 = 0x22;
+const MAP_FIXED_NOREPLACE: i32 = 0x100000;
+/// Windows never maps images in the first 64 KiB (its allocation granularity), and
+/// address 0 is NULL; a preferred base there is treated as unavailable.
+const LOWEST_IMAGE: usize = 0x10000;
+/// IMAGE_FILE_RELOCS_STRIPPED: the image can only run at its preferred base.
+const RELOCS_STRIPPED: u16 = 0x0001;
 pub struct Mapping {
     address: *mut u8,
     size: usize,
-    headers: usize,
-    sections: Vec<Section>,
-}
-fn u32_at(b: &[u8], at: usize) -> Result<u32, String> {
-    Ok(u32::from_le_bytes(
-        b.get(at..at + 4)
-            .ok_or("truncated PE header")?
-            .try_into()
-            .unwrap(),
-    ))
 }
 impl Mapping {
-    pub fn new(bytes: &[u8]) -> Result<Self, String> {
-        let pe = u32_at(bytes, 60)? as usize;
-        let opt = pe + 24;
-        let count = u16::from_le_bytes(bytes[pe + 6..pe + 8].try_into().unwrap()) as usize;
-        let opt_size = u16::from_le_bytes(bytes[pe + 20..pe + 22].try_into().unwrap()) as usize;
-        let preferred = u64::from_le_bytes(bytes[opt + 24..opt + 32].try_into().unwrap()) as usize;
-        let size = u32_at(bytes, opt + 56)? as usize;
-        let headers = u32_at(bytes, opt + 60)? as usize;
-        if size == 0
-            || size > 1024 * 1024 * 1024
-            || !preferred.is_multiple_of(4096)
-            || headers > size
-        {
-            return Err("invalid image extent/base".into());
-        }
+    /// Maps `image` (parsed from `bytes`) at its preferred base, or anywhere and
+    /// relocated when that range is taken and the image carries base relocations.
+    pub fn new(bytes: &[u8], image: &pe::Image) -> Result<Self, String> {
+        image.check_layout(Some(bytes.len()))?;
+        let size = (image.image_size as usize).div_ceil(4096) * 4096;
+        let preferred = image.image_base as usize;
         // MAP_FIXED_NOREPLACE never overwrites existing Linux mappings.
-        let raw = unsafe { mmap(preferred as *mut c_void, size, 3, 0x100022, -1, 0) };
-        if raw as isize == -1 {
-            return Err(format!(
-                "cannot reserve preferred PE base: {}",
-                std::io::Error::last_os_error()
-            ));
-        }
-        if raw as usize != preferred {
+        let mut raw = if preferred < LOWEST_IMAGE {
+            -1isize as *mut c_void
+        } else {
             unsafe {
-                munmap(raw, size);
+                mmap(
+                    preferred as *mut c_void,
+                    size,
+                    3,
+                    MAP_PRIVATE_ANONYMOUS | MAP_FIXED_NOREPLACE,
+                    -1,
+                    0,
+                )
             }
-            return Err("kernel did not honor preferred PE base".into());
+        };
+        if raw as isize == -1 || raw as usize != preferred {
+            if raw as isize != -1 {
+                unsafe { munmap(raw, size) };
+            }
+            if image.characteristics & RELOCS_STRIPPED != 0 {
+                return Err(format!(
+                    "preferred PE base {preferred:#x} is unavailable and the image has no relocations"
+                ));
+            }
+            raw = unsafe { mmap(std::ptr::null_mut(), size, 3, MAP_PRIVATE_ANONYMOUS, -1, 0) };
+            if raw as isize == -1 {
+                return Err(format!(
+                    "cannot map PE image: {}",
+                    std::io::Error::last_os_error()
+                ));
+            }
         }
         let mut result = Self {
             address: raw.cast(),
             size,
-            headers,
-            sections: Vec::new(),
         };
-        unsafe {
-            std::ptr::copy_nonoverlapping(bytes.as_ptr(), result.address, headers);
-        }
-        for index in 0..count {
-            let at = opt + opt_size + index * 40;
-            let start = u32_at(bytes, at + 12)? as usize;
-            let raw_size = u32_at(bytes, at + 16)? as usize;
-            let file = u32_at(bytes, at + 20)? as usize;
-            let extent = (u32_at(bytes, at + 8)? as usize).max(raw_size);
-            if !start.is_multiple_of(4096) || start.checked_add(extent).is_none_or(|end| end > size)
-            {
-                return Err("invalid section extent/alignment".into());
-            }
-            let data = bytes
-                .get(file..file.checked_add(raw_size).ok_or("section overflow")?)
-                .ok_or("truncated section")?;
+        let headers = image.headers_section();
+        for section in std::iter::once(&headers).chain(&image.sections) {
+            let data = &bytes[section.raw_offset as usize..][..section.raw_size as usize];
+            let n = data.len().min(section.extent() as usize);
             unsafe {
-                std::ptr::copy_nonoverlapping(data.as_ptr(), result.address.add(start), raw_size);
+                std::ptr::copy_nonoverlapping(
+                    data.as_ptr(),
+                    result.address.add(section.rva as usize),
+                    n,
+                );
             }
-            let flags = u32_at(bytes, at + 36)?;
-            let protection = ((flags & 0x40000000 != 0) as i32)
-                | (((flags & 0x80000000 != 0) as i32) << 1)
-                | (((flags & 0x20000000 != 0) as i32) << 2);
-            if protection & 6 == 6 {
-                return Err("writable executable PE sections are unsupported".into());
-            }
-            result.sections.push(Section {
-                start,
-                size: extent,
-                protection,
-            });
         }
+        result.relocate(image)?;
         Ok(result)
     }
-    pub fn read(&self, address: usize, n: usize) -> Result<&[u8], String> {
-        let offset = address.checked_sub(self.base()).ok_or("VA below image")?;
-        if offset.checked_add(n).is_none_or(|end| end > self.size) {
-            return Err("VA outside image".into());
+    /// Adds the load delta to every DIR64 field the image lists.
+    fn relocate(&mut self, image: &pe::Image) -> Result<(), String> {
+        let delta = (self.base() as u64).wrapping_sub(image.image_base);
+        if delta == 0 {
+            return Ok(());
         }
-        Ok(unsafe { std::slice::from_raw_parts(self.address.add(offset), n) })
-    }
-    pub fn write_u32(&self, address: usize, value: u32) -> Result<(), String> {
-        self.read(address, 4)?;
-        unsafe {
-            (address as *mut u32).write_unaligned(value);
+        for &rva in &image.relocations {
+            let field = self.slot(rva, 8)?.cast::<u64>();
+            unsafe { field.write_unaligned(field.read_unaligned().wrapping_add(delta)) };
         }
-        Ok(())
+        let base = self.base() as u64;
+        pe::set_mapped_image_base(self.memory_mut(), base)
     }
-    pub fn executable(&self, address: usize) -> bool {
-        address.checked_sub(self.base()).is_some_and(|offset| {
-            self.sections
-                .iter()
-                .any(|s| s.protection & 4 != 0 && offset >= s.start && offset < s.start + s.size)
-        })
+    fn memory_mut(&mut self) -> &mut [u8] {
+        unsafe { std::slice::from_raw_parts_mut(self.address, self.size) }
+    }
+    fn slot(&self, rva: u32, n: usize) -> Result<*mut u8, String> {
+        if (rva as usize)
+            .checked_add(n)
+            .is_none_or(|end| end > self.size)
+        {
+            return Err(format!("RVA {rva:#x} outside image"));
+        }
+        Ok(unsafe { self.address.add(rva as usize) })
     }
     pub fn base(&self) -> usize {
         self.address as usize
     }
     pub fn bind(&self, rva: u32, value: usize) -> Result<(), String> {
-        let at = rva as usize;
-        if at.checked_add(8).is_none_or(|end| end > self.size) {
-            return Err("IAT slot outside image".into());
-        }
-        unsafe {
-            self.address.add(at).cast::<usize>().write_unaligned(value);
-        }
+        unsafe { self.slot(rva, 8)?.cast::<usize>().write_unaligned(value) };
         Ok(())
     }
-    pub fn protect(&self) -> Result<(), String> {
-        let apply = |start, size, prot| {
-            if size > 0
-                && unsafe { mprotect(self.address.wrapping_add(start).cast(), size, prot) } != 0
-            {
-                Err(std::io::Error::last_os_error().to_string())
-            } else {
-                Ok(())
-            }
-        };
-        apply(0, self.size, 0)?;
-        apply(0, self.headers, 1)?;
-        for section in &self.sections {
-            apply(section.start, section.size, section.protection)?;
+    /// Gaps become inaccessible; headers and sections get their PE protection.
+    pub fn protect(&self, image: &pe::Image) -> Result<(), String> {
+        if unsafe { mprotect(self.address.cast(), self.size, 0) } != 0 {
+            return Err(std::io::Error::last_os_error().to_string());
         }
-        Ok(())
+        unsafe { game_imports::mapped::protect(image, self.base()) }
     }
-    pub unsafe fn enter(&self, rva: u32) -> Result<(), String> {
-        if !self.sections.iter().any(|s| {
-            s.protection & 4 != 0 && rva as usize >= s.start && (rva as usize) < s.start + s.size
-        }) {
+    pub unsafe fn enter(&self, image: &pe::Image) -> Result<(), String> {
+        if !image
+            .section_at(image.entry_rva)
+            .is_some_and(|s| s.executable())
+        {
             return Err("entry is not in an executable section".into());
         }
         let entry: unsafe extern "win64" fn() =
-            unsafe { std::mem::transmute(self.address.add(rva as usize)) };
+            unsafe { std::mem::transmute(self.address.add(image.entry_rva as usize)) };
         unsafe {
             entry();
         }
