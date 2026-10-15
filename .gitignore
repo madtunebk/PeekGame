@@ -5,6 +5,8 @@
 /logs/*
 !/logs/.gitkeep
 /packages/
+/relinked/
 /tests/godot_image/.godot/
 /sources/
 
+__pycache__/

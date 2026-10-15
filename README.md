@@ -58,6 +58,7 @@ cargo clippy --offline --all-targets -- -D warnings
 cargo build --release --offline
 python3 tests/test_imports_abi.py
 python3 tests/test_window_abi.py
+python3 tests/test_relink.py
 ```
 
 Parser tests cover named and ordinal imports, delay imports, truncated files,
@@ -215,6 +216,44 @@ code, but the executed game's imports resolve through the adjacent shared librar
 `python3 tests/test_package.py` verifies a relocated package (including spaces in
 its path), real Vulkan frames/readback, local logs, missing `.so` failure, and
 refusal to overwrite an existing package. Artifacts stay under project `cache/`.
+
+## Relink a PE into a native ELF
+
+```sh
+cargo build --release --offline
+./target/release/peekgame tests/testgame/testgame.exe --relink
+./relinked/testgame/testgame --frames 300
+```
+
+`--relink` writes one non-PIE Linux executable (default `relinked/<exe-stem>/`,
+or `--output NEW_DIRECTORY`; existing directories are refused). There is no PE
+loader in it, and no `game.exe` or `game_imports.so` beside it:
+
+- The PE headers and every section become ELF sections linked at their original
+  virtual addresses (`.peimage.NN`), so the kernel maps the image as ordinary
+  `PT_LOAD` segments at the preferred base. Startup restores each PE section's
+  own protection, because `ld` merges neighbouring sections into one segment.
+- Every IAT slot is a relocation against `peekgame.<dll>.<name>`, and the static
+  linker writes the address. Each registry entry defines that symbol (a direct
+  jump; data imports use the variable's export name). The runtime is linked in
+  statically from `target/release/libgame_imports.a`.
+- Unimplemented static imports link to stubs that stop with
+  `STOP: missing Windows API <dll>!<name>` (exit 78) only if they are called.
+- `main` calls `peekgame_relinked_main`, which sets up the process, TEB and TLS
+  just like `--run` and then jumps to the PE entry point.
+
+The machine code is still the original Windows x64 code. It uses the Windows
+calling convention and calls PeekGame's Win64 API implementations, so API
+coverage limits it exactly as it limits `--run`. Relinking removes the loader;
+it does not translate or recompile anything. Requirements: `cc` with GNU ld
+(override with `CC`), the X11 development library, and for D3D11 the DXVK X11
+build, which is copied into `runtime/` next to the executable.
+`PEEKGAME_IMPORT_TRACE=FILE` records dynamic imports, as `--run` does.
+Delay and ordinal imports are refused. The image always sits at its preferred
+base, so base relocations are never applied.
+
+`python3 tests/test_relink.py` checks the ELF layout, link-time IAT binding,
+dynamic lookup, the missing-import stop and the relinked testgame on private Xvfb.
 
 ## First engine fixture
 

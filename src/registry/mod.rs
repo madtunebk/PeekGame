@@ -19,27 +19,87 @@ impl Export {
         self.address.is_some()
     }
 }
+/// Emits the global link-time entry `peekgame.<dll>.<name>`: a direct jump to the
+/// implementation, so a relinked image binds its IAT through the static linker.
+macro_rules! link_symbol {
+    ($dll:literal, $name:literal, $target:path) => {
+        std::arch::global_asm!(
+            concat!(
+                ".pushsection .text.peekgame.", $dll, ".", $name, ",\"ax\",@progbits\n",
+                ".globl \"peekgame.", $dll, ".", $name, "\"\n",
+                ".type \"peekgame.", $dll, ".", $name, "\",@function\n",
+                "\"peekgame.", $dll, ".", $name, "\":\n",
+                "jmp {0}\n",
+                ".popsection"
+            ),
+            sym $target
+        );
+    };
+}
+/// Declares a subsystem's `EXPORTS` table and the link-time alias of every entry.
+macro_rules! exports {
+    ($($kind:ident!($($args:tt)*)),* $(,)?) => {
+        pub(super) static EXPORTS: &[Export] = &[$($kind!($($args)*)),*];
+        $($kind!(@link $($args)*);)*
+    };
+}
+macro_rules! export {
+    (@link $dll:literal,$name:literal,$category:literal,$status:literal,$scope:literal,$function:path $(,)?) => {
+        link_symbol!($dll, $name, $function);
+    };
+    ($dll:literal,$name:literal,$category:literal,$status:literal,$scope:literal,$function:path $(,)?) => {
+        Export {
+            dll: $dll,
+            name: $name,
+            category: $category,
+            status: $status,
+            scope: $scope,
+            address: Some(|| $function as *const std::ffi::c_void),
+        }
+    };
+}
+/// A data export: the import slot receives the address of `$variable`. Its link
+/// symbol is the variable's own `export_name`, since a jump cannot stand in for data.
+macro_rules! data {
+    (@link $($args:tt)*) => {};
+    ($dll:literal,$name:literal,$category:literal,$status:literal,$scope:literal,$variable:path $(,)?) => {
+        Export {
+            dll: $dll,
+            name: $name,
+            category: $category,
+            status: $status,
+            scope: $scope,
+            address: Some(|| &$variable as *const _ as *const std::ffi::c_void),
+        }
+    };
+}
 macro_rules! implemented {
-    ($name:literal,$category:literal,$status:literal,$scope:literal,$function:path) => {
+    (@link $name:literal,$category:literal,$status:literal,$scope:literal,$function:path $(,)?) => {
+        link_symbol!("kernel32.dll", $name, $function);
+    };
+    ($name:literal,$category:literal,$status:literal,$scope:literal,$function:path $(,)?) => {
         Export {
             dll: "kernel32.dll",
             name: $name,
             category: $category,
             status: $status,
             scope: $scope,
-            address: Some(|| $function as *const c_void),
+            address: Some(|| $function as *const std::ffi::c_void),
         }
     };
 }
 macro_rules! window {
-    ($name:literal,$scope:literal,$function:path) => {
+    (@link $name:literal,$scope:literal,$function:path $(,)?) => {
+        link_symbol!("user32.dll", $name, $function);
+    };
+    ($name:literal,$scope:literal,$function:path $(,)?) => {
         Export {
             dll: "user32.dll",
             name: $name,
             category: "window",
             status: "partial",
             scope: $scope,
-            address: Some(|| $function as *const c_void),
+            address: Some(|| $function as *const std::ffi::c_void),
         }
     };
 }

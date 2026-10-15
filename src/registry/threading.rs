@@ -2,7 +2,7 @@ use super::*;
 use crate::api::threading::events;
 use crate::api::threading::threads;
 use crate::api::threading::{critical, tls};
-pub(super) static EXPORTS: &[Export] = &[
+exports! {
     implemented!(
         "GetThreadPriority",
         "threading",
@@ -150,4 +150,4 @@ pub(super) static EXPORTS: &[Export] = &[
         "retires initialized critical section",
         critical::delete
     ),
-];
+}

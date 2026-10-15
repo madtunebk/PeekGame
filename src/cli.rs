@@ -7,6 +7,7 @@ pub struct Options {
     pub exe: PathBuf,
     pub run: bool,
     pub package: bool,
+    pub relink: bool,
     pub args: Vec<String>,
     pub output: PathBuf,
     pub dll_dirs: Vec<PathBuf>,
@@ -14,11 +15,12 @@ pub struct Options {
 pub fn parse() -> Result<Option<Options>> {
     let args: Vec<_> = env::args_os().skip(1).collect();
     if args.is_empty() || args[0] == "--help" || args[0] == "-h" {
-        println!("Usage: peekgame --analyze GAME.exe [--output DIRECTORY] [--dll-dir DIRECTORY]...\nAlso accepts: peekgame GAME.exe --analyze\nPackage: peekgame GAME.exe --package --output NEW_DIRECTORY\nRun prototype: peekgame GAME.exe [--output DIRECTORY] --run [GAME ARGS]\nDefault: reports/GAME/imports.json and imports.txt. Analysis does not execute the PE. --run executes supported PE images.");
+        println!("Usage: peekgame --analyze GAME.exe [--output DIRECTORY] [--dll-dir DIRECTORY]...\nAlso accepts: peekgame GAME.exe --analyze\nPackage: peekgame GAME.exe --package --output NEW_DIRECTORY\nNative ELF: peekgame GAME.exe --relink [--output NEW_DIRECTORY]\nRun prototype: peekgame GAME.exe [--output DIRECTORY] --run [GAME ARGS]\nDefault: reports/GAME/imports.json and imports.txt. Analysis does not execute the PE. --run executes supported PE images.");
         return Ok(None);
     }
     let mut run = false;
     let mut package = false;
+    let mut relink = false;
     let mut program_args = Vec::new();
     let (mut exe, mut output, mut dirs, mut flag, mut i) = (None, None, Vec::new(), false, 0);
     while i < args.len() {
@@ -31,6 +33,8 @@ pub fn parse() -> Result<Option<Options>> {
             break;
         } else if args[i] == "--package" {
             package = true;
+        } else if args[i] == "--relink" {
+            relink = true;
         } else if args[i] == "--analyze" {
             flag = true;
         } else if args[i] == "--output" || args[i] == "--dll-dir" {
@@ -49,8 +53,8 @@ pub fn parse() -> Result<Option<Options>> {
         }
         i += 1;
     }
-    if [flag, run, package].iter().filter(|v| **v).count() != 1 {
-        return Err("choose exactly one of --analyze, --run, --package".into());
+    if [flag, run, package, relink].iter().filter(|v| **v).count() != 1 {
+        return Err("choose exactly one of --analyze, --run, --package, --relink".into());
     }
     let exe = fs::canonicalize(exe.ok_or("provide an EXE")?).map_err(|e| e.to_string())?;
     let dirs = dirs
@@ -60,6 +64,8 @@ pub fn parse() -> Result<Option<Options>> {
     let output = output.unwrap_or_else(|| {
         Path::new(if package {
             "packages"
+        } else if relink {
+            "relinked"
         } else if run {
             "logs"
         } else {
@@ -71,6 +77,7 @@ pub fn parse() -> Result<Option<Options>> {
         exe,
         run,
         package,
+        relink,
         args: program_args,
         output,
         dll_dirs: dirs,

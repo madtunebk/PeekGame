@@ -1,6 +1,6 @@
 use super::*;
 use crate::api::filesystem::paths;
-pub(super) static EXPORTS: &[Export] = &[
+exports! {
     implemented!(
         "GetLongPathNameW",
         "filesystem",
@@ -50,4 +50,4 @@ pub(super) static EXPORTS: &[Export] = &[
         "host file/directory/read-only attributes; UTF-8",
         paths::attributes_a
     ),
-];
+}
