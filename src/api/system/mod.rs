@@ -13,5 +13,6 @@ pub(crate) mod environment;
 pub(crate) mod info;
 pub(crate) mod locale;
 pub(crate) mod pointers;
+pub(crate) mod random;
 pub(crate) mod startup;
 pub(crate) mod time;

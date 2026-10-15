@@ -59,12 +59,23 @@ pub extern "win64" fn set(handle: usize) -> i32 {
         return 0;
     };
     *event.state.lock().unwrap() = true;
+    super::objects::changed();
     if event.manual {
         event.changed.notify_all();
     } else {
         event.changed.notify_one();
     }
     1
+}
+/// Is the event signalled? With `take`, an auto-reset event resets. None: not an event.
+pub(crate) fn check(handle: usize, take: bool) -> Option<bool> {
+    let event = events().lock().unwrap().get(&handle).cloned()?;
+    let mut state = event.state.lock().unwrap();
+    let signalled = *state;
+    if signalled && take && !event.manual {
+        *state = false;
+    }
+    Some(signalled)
 }
 pub extern "win64" fn reset(handle: usize) -> i32 {
     let Some(event) = get(handle) else {
@@ -80,7 +91,11 @@ pub fn duplicate(handle: usize) -> Option<usize> {
     Some(target)
 }
 pub extern "win64" fn close(handle: usize) -> i32 {
-    if events().lock().unwrap().remove(&handle).is_some() || super::threads::close(handle) {
+    if events().lock().unwrap().remove(&handle).is_some()
+        || super::threads::close(handle)
+        || crate::api::filesystem::files::close(handle)
+        || super::objects::close(handle)
+    {
         1
     } else {
         error::set(6);
@@ -89,6 +104,9 @@ pub extern "win64" fn close(handle: usize) -> i32 {
 }
 pub extern "win64" fn wait(handle: usize, milliseconds: u32) -> u32 {
     if let Some(result) = super::threads::wait(handle, milliseconds) {
+        return result;
+    }
+    if let Some(result) = super::objects::wait_single(handle, milliseconds) {
         return result;
     }
     let Some(event) = get(handle) else {

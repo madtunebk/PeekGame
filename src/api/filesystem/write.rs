@@ -17,6 +17,11 @@ pub(crate) unsafe extern "win64" fn write_file(
             written.write(0);
         }
     }
+    if let Some(result) =
+        unsafe { super::files::write(handle, data.cast(), count, written, overlapped.cast()) }
+    {
+        return result;
+    }
     if !overlapped.is_null() {
         error::set(ERROR_NOT_SUPPORTED);
         return 0;

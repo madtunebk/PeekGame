@@ -4,10 +4,27 @@ use crate::api::system::console;
 use crate::api::system::cpu;
 use crate::api::system::dynamic;
 use crate::api::system::encoding;
+use crate::api::system::random;
 use crate::api::system::startup;
 use crate::api::system::{environment, locale, pointers, time};
 use crate::api::{memory::global, system::info};
 exports! {
+    export!(
+        "bcrypt.dll",
+        "BCryptGenRandom",
+        "crypto",
+        "implemented",
+        "host CSPRNG (getrandom)",
+        random::bcrypt_gen_random
+    ),
+    export!(
+        "bcryptprimitives.dll",
+        "ProcessPrng",
+        "crypto",
+        "implemented",
+        "host CSPRNG (getrandom)",
+        random::process_prng
+    ),
     implemented!(
         "SetErrorMode",
         "system",

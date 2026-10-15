@@ -14,12 +14,22 @@ struct Thread {
     id: u32,
     exit: Mutex<Option<u32>>,
     changed: Condvar,
+    /// CREATE_SUSPENDED: the start routine waits until ResumeThread clears this.
+    suspended: Mutex<bool>,
 }
+const CREATE_SUSPENDED: u32 = 0x4;
+const STACK_SIZE_PARAM_IS_A_RESERVATION: u32 = 0x10000;
 thread_local! {static CURRENT:RefCell<Option<Arc<Thread>>>=const{RefCell::new(None)};}
 static THREADS: OnceLock<Mutex<HashMap<usize, Arc<Thread>>>> = OnceLock::new();
 static NEXT: AtomicUsize = AtomicUsize::new(0x66000000);
 fn threads() -> &'static Mutex<HashMap<usize, Arc<Thread>>> {
     THREADS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+/// Has the thread exited? None: not a thread handle.
+pub(crate) fn exited(handle: usize) -> Option<bool> {
+    let thread = threads().lock().unwrap().get(&handle).cloned()?;
+    let done = thread.exit.lock().unwrap().is_some();
+    Some(done)
 }
 fn insert(thread: Arc<Thread>) -> usize {
     let handle = NEXT.fetch_add(16, Ordering::Relaxed);
@@ -34,10 +44,13 @@ pub unsafe extern "win64" fn create(
     flags: u32,
     id: *mut u32,
 ) -> usize {
-    if !security.is_null() || flags != 0 {
+    // Security attributes only matter for inheritance by child processes.
+    let _ = security;
+    if flags & !(CREATE_SUSPENDED | STACK_SIZE_PARAM_IS_A_RESERVATION) != 0 {
         error::set(50);
         return 0;
     }
+    let suspended = flags & CREATE_SUSPENDED != 0;
     let Some(start) = start else {
         error::set(87);
         return 0;
@@ -52,6 +65,7 @@ pub unsafe extern "win64" fn create(
             id: startup::thread_id(),
             exit: Mutex::new(None),
             changed: Condvar::new(),
+            suspended: Mutex::new(suspended),
         });
         if let Err(e) = crate::host::thread_template::attach() {
             eprintln!("Windows thread initialization failed: {e}");
@@ -62,10 +76,17 @@ pub unsafe extern "win64" fn create(
             return;
         }
         CURRENT.with(|current| *current.borrow_mut() = Some(thread.clone()));
+        {
+            let mut held = thread.suspended.lock().unwrap();
+            while *held {
+                held = thread.changed.wait(held).unwrap();
+            }
+        }
         let result = start(parameter);
         crate::host::thread_template::detach();
         *thread.exit.lock().unwrap() = Some(result);
         thread.changed.notify_all();
+        super::objects::changed();
     });
     if spawned.is_err() {
         error::set(8);
@@ -118,6 +139,7 @@ pub unsafe extern "win64" fn duplicate(
                         id: startup::thread_id(),
                         exit: Mutex::new(None),
                         changed: Condvar::new(),
+                        suspended: Mutex::new(false),
                     })
                 })
                 .clone();
@@ -208,4 +230,21 @@ pub unsafe extern "win64" fn begin_thread(
     id: *mut u32,
 ) -> usize {
     unsafe { create(security, stack as usize, start, parameter, flags, id) }
+}
+
+/// ResumeThread: starts a thread created suspended. Suspending running threads
+/// (SuspendThread) is not implemented yet, so their count is always 0.
+pub extern "win64" fn resume(handle: usize) -> u32 {
+    let Some(thread) = threads().lock().unwrap().get(&handle).cloned() else {
+        error::set(6);
+        return u32::MAX;
+    };
+    let mut suspended = thread.suspended.lock().unwrap();
+    if *suspended {
+        *suspended = false;
+        thread.changed.notify_all();
+        1
+    } else {
+        0
+    }
 }

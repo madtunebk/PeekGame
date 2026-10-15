@@ -1,9 +1,80 @@
 use super::*;
 use crate::api::threading::events;
+use crate::api::threading::objects;
 use crate::api::threading::threads;
 use crate::api::threading::{address, fls, once, slist, srw};
 use crate::api::threading::{critical, tls};
 exports! {
+    implemented!(
+        "ResumeThread",
+        "threading",
+        "partial",
+        "starts CREATE_SUSPENDED threads; SuspendThread pending",
+        threads::resume
+    ),
+    implemented!(
+        "CreateSemaphoreExW",
+        "threading",
+        "partial",
+        "process-local names; security ignored",
+        objects::create_semaphore_ex_w
+    ),
+    implemented!(
+        "CreateSemaphoreW",
+        "threading",
+        "partial",
+        "process-local names; security ignored",
+        objects::create_semaphore_w
+    ),
+    implemented!(
+        "ReleaseSemaphore",
+        "threading",
+        "implemented",
+        "count with maximum check",
+        objects::release_semaphore
+    ),
+    implemented!(
+        "CreateMutexW",
+        "threading",
+        "partial",
+        "recursive ownership; process-local names",
+        objects::create_mutex_w
+    ),
+    implemented!(
+        "CreateMutexA",
+        "threading",
+        "partial",
+        "recursive ownership; process-local names",
+        objects::create_mutex_a
+    ),
+    implemented!(
+        "ReleaseMutex",
+        "threading",
+        "implemented",
+        "owner thread only",
+        objects::release_mutex
+    ),
+    implemented!(
+        "CreateEventExW",
+        "threading",
+        "partial",
+        "manual/initial flags; unnamed only",
+        objects::create_event_ex_w
+    ),
+    implemented!(
+        "WaitForMultipleObjects",
+        "threading",
+        "partial",
+        "events, threads, semaphores, mutexes; any or all",
+        objects::wait_multiple
+    ),
+    implemented!(
+        "WaitForMultipleObjectsEx",
+        "threading",
+        "partial",
+        "as WaitForMultipleObjects; no APCs",
+        objects::wait_multiple_ex
+    ),
     implemented!(
         "InitializeSListHead",
         "threading",
