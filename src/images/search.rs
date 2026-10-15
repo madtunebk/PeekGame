@@ -82,7 +82,27 @@ fn find_in(dir: &Path, file: &str) -> Option<PathBuf> {
     })
 }
 
+/// The replacement directory: PEEKGAME_WINDOWS_DLLS, else `windows-dlls` beside
+/// the PeekGame executable. Windows DLLs there take the place of PeekGame's own.
+fn replacement_dir() -> Option<PathBuf> {
+    static DIR: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| {
+        let dir = match std::env::var_os("PEEKGAME_WINDOWS_DLLS") {
+            Some(d) => PathBuf::from(d),
+            None => std::env::current_exe().ok()?.parent()?.join("windows-dlls"),
+        };
+        dir.is_dir().then_some(dir)
+    })
+    .clone()
+}
+pub fn replacement(name: &str) -> Option<PathBuf> {
+    let file = normalize(name)?;
+    find_in(&replacement_dir()?, &file)
+}
 pub fn find(name: &str, first_dir: Option<&Path>) -> Option<PathBuf> {
+    if let Some(found) = replacement(name) {
+        return Some(found);
+    }
     let file = normalize(name)?;
     let path = host_path(name)?;
     if name.contains(['/', '\\']) {

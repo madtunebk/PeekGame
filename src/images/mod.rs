@@ -62,8 +62,14 @@ pub const ERROR_BAD_EXE_FORMAT: u32 = 193;
 pub const ERROR_DLL_INIT_FAILED: u32 = 1114;
 
 /// Is `dll` one PeekGame implements (never loaded from disk)?
+/// Is `dll` in the replacement directory?
+pub fn is_replacement(dll: &str) -> bool {
+    search::replacement(dll).is_some()
+}
+/// A DLL found in the replacement directory (Windows builds of libraries such as
+/// DXVK's d3d11.dll and dxgi.dll) is loaded from there instead.
 pub fn builtin(dll: &str) -> bool {
-    registry::provides(dll)
+    registry::provides(dll) && search::replacement(dll).is_none()
 }
 
 /// The file name LoadLibrary means by `name` (default `.dll` extension).

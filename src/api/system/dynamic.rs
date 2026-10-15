@@ -89,12 +89,15 @@ fn load(name: &str, flags: u32) -> usize {
         error::set(50);
         return 0;
     }
-    if registry::provides(name) {
+    if images::builtin(name) {
         record("<LoadLibrary>", "runtime_module");
         return builtin_handle(name);
     }
-    // System32 holds only the DLLs PeekGame implements.
-    if flags & SEARCH_SYSTEM32 != 0 && flags & !(SEARCH_SYSTEM32 | WITH_ALTERED_SEARCH_PATH) == 0 {
+    // System32 holds only the DLLs PeekGame implements and their replacements.
+    if flags & SEARCH_SYSTEM32 != 0
+        && flags & !(SEARCH_SYSTEM32 | WITH_ALTERED_SEARCH_PATH) == 0
+        && !images::is_replacement(name)
+    {
         record("<LoadLibrary>", "module_not_found");
         error::set(images::ERROR_MOD_NOT_FOUND);
         return 0;

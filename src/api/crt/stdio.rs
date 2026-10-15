@@ -36,7 +36,7 @@ static STREAMS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<u
 fn streams() -> &'static std::sync::Mutex<std::collections::HashMap<usize, Stream>> {
     STREAMS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
 }
-fn host(file: *mut c_void) -> *mut c_void {
+pub(super) fn host(file: *mut c_void) -> *mut c_void {
     let base = iob() as usize;
     let value = file as usize;
     let index = value
@@ -109,6 +109,27 @@ fn failure(code: i32) -> *mut c_void {
     }
     std::ptr::null_mut()
 }
+/// Registers a host stream as a Windows FILE.
+pub(super) fn register(file: *mut c_void) -> *mut c_void {
+    let mut layout = Box::new([0u64; 6]);
+    unsafe {
+        layout
+            .as_mut_ptr()
+            .cast::<u8>()
+            .add(24)
+            .cast::<i32>()
+            .write(fileno(file))
+    };
+    let pointer = layout.as_mut_ptr() as usize;
+    streams().lock().unwrap().insert(
+        pointer,
+        Stream {
+            _layout: layout,
+            host: file as usize,
+        },
+    );
+    pointer as *mut c_void
+}
 pub unsafe extern "win64" fn open(
     path: *const std::ffi::c_char,
     mode: *const std::ffi::c_char,
@@ -123,8 +144,15 @@ pub unsafe extern "win64" fn open(
         Ok(s) => s,
         Err(_) => return failure(22),
     };
-    if !mode.bytes().all(|b| b"rwa+bx".contains(&b)) || !mode.contains('b') {
-        eprintln!("CRT fopen: only binary stream modes are supported ({mode})");
+    // Text mode ('t' or no 'b') has no newline translation here: files are written
+    // as the program writes them.
+    let mode: String = mode
+        .chars()
+        .filter(|&c| c != 't' && c != ',')
+        .take_while(|&c| c != 'c')
+        .collect();
+    if !mode.bytes().all(|b| b"rwa+bx".contains(&b)) {
+        eprintln!("CRT fopen: stream mode {mode} is not supported");
         return failure(22);
     }
     use std::os::unix::ffi::OsStrExt;

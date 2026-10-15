@@ -1,6 +1,7 @@
 use super::*;
 use crate::api::memory::mapping;
 use crate::api::memory::{heap, virtual_memory};
+use crate::api::system::compat;
 use crate::api::system::console;
 use crate::api::system::cpu;
 use crate::api::system::dynamic;
@@ -19,6 +20,109 @@ use crate::api::system::{environment, locale, pointers, time};
 use crate::api::{memory::global, system::info};
 use crate::seh;
 exports! {
+    implemented!(
+        "CreateSemaphoreA",
+        "threading",
+        "partial",
+        "as CreateSemaphoreW",
+        compat::create_semaphore_a
+    ),
+    implemented!(
+        "GetTempPathA",
+        "filesystem",
+        "partial",
+        "as GetTempPathW",
+        compat::temp_path_a
+    ),
+    implemented!(
+        "GetTempFileNameA",
+        "filesystem",
+        "partial",
+        "as GetTempFileNameW",
+        compat::temp_file_name_a
+    ),
+    implemented!(
+        "GetProcessAffinityMask",
+        "system",
+        "partial",
+        "every host CPU",
+        compat::process_affinity_mask
+    ),
+    implemented!(
+        "SetProcessAffinityMask",
+        "system",
+        "partial",
+        "accepted",
+        compat::set_process_affinity_mask
+    ),
+    implemented!(
+        "GetHandleInformation",
+        "system",
+        "partial",
+        "no flags",
+        compat::handle_information
+    ),
+    implemented!(
+        "SetHandleInformation",
+        "system",
+        "partial",
+        "accepted",
+        compat::set_handle_information
+    ),
+    implemented!(
+        "OpenProcess",
+        "system",
+        "partial",
+        "this process only",
+        compat::open_process
+    ),
+    implemented!(
+        "DeviceIoControl",
+        "system",
+        "partial",
+        "no device drivers",
+        compat::device_io_control
+    ),
+    export!(
+        "advapi32.dll",
+        "RegNotifyChangeKeyValue",
+        "system",
+        "partial",
+        "accepted; no notifications",
+        compat::reg_notify_change_key_value
+    ),
+    export!(
+        "gdi32.dll",
+        "CreateCompatibleDC",
+        "window",
+        "partial",
+        "token DC",
+        compat::create_compatible_dc
+    ),
+    export!(
+        "gdi32.dll",
+        "DeleteDC",
+        "window",
+        "partial",
+        "token DC",
+        compat::delete_dc
+    ),
+    export!(
+        "user32.dll",
+        "ChangeDisplaySettingsExW",
+        "window",
+        "partial",
+        "current mode only",
+        compat::change_display_settings_ex
+    ),
+    export!(
+        "user32.dll",
+        "ChangeDisplaySettingsExA",
+        "window",
+        "partial",
+        "current mode only",
+        compat::change_display_settings_ex
+    ),
     export!(
         "advapi32.dll",
         "RegOpenKeyExW",

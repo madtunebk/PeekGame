@@ -140,6 +140,11 @@ fn canonical(dll: &str) -> String {
     {
         return "ole32".into();
     }
+    // The UCRT API sets (api-ms-win-crt-*) and ucrtbase are the C runtime PeekGame
+    // serves as msvcrt.
+    if lower.starts_with("api-ms-win-crt-") || lower == "ucrtbase.dll" {
+        return "msvcrt".into();
+    }
     // WSOCK32 is the Winsock 1.1 front of WS2_32.
     if lower == "wsock32.dll" || lower == "wsock32" {
         return "ws2_32".into();

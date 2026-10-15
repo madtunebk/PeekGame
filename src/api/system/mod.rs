@@ -1,4 +1,5 @@
 pub(crate) mod command_line;
+pub(crate) mod compat;
 pub(crate) mod debug;
 pub(crate) mod error;
 pub(crate) mod formats;

@@ -43,7 +43,7 @@ pub fn build(exe: &Path, output: &Path) -> Result<()> {
                     .unwrap_or_else(|| format!("#{}", import.ordinal.unwrap_or(0)))
             )
         };
-        let symbol = if !game_imports::registry::provides(&import.dll) {
+        let symbol = if !game_imports::images::builtin(&import.dll) {
             // A program DLL (UnityPlayer.dll, ...): bound at startup by the PE loader.
             runtime.push(import.clone());
             "0".to_owned()

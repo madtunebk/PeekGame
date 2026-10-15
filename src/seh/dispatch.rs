@@ -335,6 +335,35 @@ fn dispatch(record: &mut ExceptionRecord, context: &mut Context) -> ! {
     }
     let filter = FILTER.load(Ordering::Acquire);
     if filter != 0 {
+        // A delay-load failure (VcppException 0xC06D007E/7F) names the DLL and import.
+        if (record.code == 0xC06D_007E || record.code == 0xC06D_007F)
+            && record.count >= 1
+            && record.information[0] != 0
+        {
+            let info = record.information[0] as *const u8;
+            unsafe {
+                let dll = info
+                    .add(24)
+                    .cast::<*const std::ffi::c_char>()
+                    .read_unaligned();
+                let by_name = info.add(32).cast::<u32>().read_unaligned() != 0;
+                let name = info.add(40).cast::<usize>().read_unaligned();
+                if !dll.is_null() {
+                    let what = if by_name && name != 0 {
+                        std::ffi::CStr::from_ptr(name as *const std::ffi::c_char)
+                            .to_string_lossy()
+                            .into_owned()
+                    } else {
+                        format!("#{name}")
+                    };
+                    eprintln!(
+                        "PeekGame: delay-loaded {}!{} is missing",
+                        std::ffi::CStr::from_ptr(dll).to_string_lossy(),
+                        what
+                    );
+                }
+            }
+        }
         // The program's crash handler takes over from here: say what it caught.
         eprintln!(
             "PeekGame: unhandled exception {:#010x} at {} ({}), passed to the program's filter",
