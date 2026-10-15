@@ -4,9 +4,9 @@ mod cli;
 mod loader;
 mod model;
 mod package;
-mod pe;
 mod relink;
 mod report;
+use game_imports::pe;
 fn main() {
     if let Err(error) = (|| {
         if package::launch_if_packaged()? {

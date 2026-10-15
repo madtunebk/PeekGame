@@ -1,6 +1,5 @@
 pub(crate) mod backend;
 mod mapping;
-mod tls;
 mod traps;
 use crate::pe;
 use std::{ffi::CString, fs, path::Path};
@@ -18,7 +17,7 @@ pub fn run_with(
     if image.imports.iter().any(|i| i.delayed) {
         return Err("delay imports are not supported by this runner yet".into());
     }
-    let mapped = mapping::Mapping::new(&bytes)?;
+    let mapped = mapping::Mapping::new(&bytes, &image)?;
     let trace = output.join("dynamic-imports.tsv");
     fs::create_dir_all(output).map_err(|e| e.to_string())?;
     if let Some(backend) = backend {
@@ -40,7 +39,7 @@ pub fn run_with(
     if code != 0 {
         return Err(format!("process configuration failed: {code}"));
     }
-    let tls = tls::Tls::prepare(&mapped, &bytes)?;
+    let tls = unsafe { game_imports::mapped::tls(&image, mapped.base()) }?;
     if backend.is_some() && !tls.data.is_empty() {
         return Err("packaged TLS setup is not supported yet".into());
     }
@@ -76,16 +75,19 @@ pub fn run_with(
         )?;
         game_imports::initialize_windows_thread(mapped.base(), tls.data.clone())?;
     }
-    mapped.protect()?;
+    mapped.protect(&image)?;
     eprintln!(
         "PeekGame: entering {} at {:#x}; dynamic requests -> {}",
         path.display(),
         mapped.base() + image.entry_rva as usize,
         trace.display()
     );
-    tls.attach(mapped.base());
+    for &address in &tls.callbacks {
+        eprintln!("TLS callback {address:#x}: DLL_PROCESS_ATTACH");
+    }
+    game_imports::mapped::notify(mapped.base(), &tls.callbacks, 1);
     unsafe {
-        mapped.enter(image.entry_rva)?;
+        mapped.enter(&image)?;
     }
     Ok(())
 }

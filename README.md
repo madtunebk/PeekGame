@@ -39,8 +39,11 @@ executes the owned CRT-free testgame through a small PE runner. The runner curre
 links the same Rust runtime directly; the packaging command loads a package-local `.so` through its ELF launcher.
 Per-game runtime code pruning is still pending. No PE machine code is translated.
 
-Execution requires the preferred image base to be available. TLS, delayed binding,
-ordinal binding, external PE DLL loading, TEB/SEH support, and arbitrary games are
+The image is mapped at its preferred base, or elsewhere with its base relocations
+applied when that range is taken (images without relocations still need it). All
+layout, TLS and relocation data comes from the image through `src/pe/`, the one PE
+reader shared by the analyzer, the runner and the relinker. Delayed binding,
+ordinal binding, external PE DLL loading, SEH support, and arbitrary games are
 not supported by this runner yet. Unsupported static imports stop before entry.
 Dynamic lookup covers registered runtime modules; unavailable DLLs/exports return
 Windows errors 126/127 and are recorded. A trace contains only observed requests,

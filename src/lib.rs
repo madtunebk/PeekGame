@@ -5,6 +5,8 @@ compile_error!("PeekGame currently requires Linux x86-64");
 mod abi;
 mod api;
 mod host;
+pub mod mapped;
+pub mod pe;
 pub mod registry;
 mod relinked;
 mod runtime;
