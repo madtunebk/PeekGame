@@ -55,5 +55,14 @@ void entry(void){
  WORD types[3];if(!GetStringTypeW(CT_CTYPE1,L"A1 ",3,types)||!(types[0]&C1_UPPER)||!(types[1]&C1_DIGIT)||!(types[2]&C1_SPACE))ExitProcess(21);
  CPINFO cp;if(!GetCPInfo(CP_UTF8,&cp)||cp.MaxCharSize!=4||!IsValidCodePage(65001))ExitProcess(22);
  WCHAR name[LOCALE_NAME_MAX_LENGTH];if(GetUserDefaultLocaleName(name,LOCALE_NAME_MAX_LENGTH)<3)ExitProcess(23);
+ /* TLS values live in the TEB (TlsSlots, TlsExpansionSlots), read through gs. */
+ DWORD low=TlsAlloc();if(low>=64||!TlsSetValue(low,(void*)0x1234))ExitProcess(24);
+ DWORD64 seen;__asm__("mov %%gs:0x1480(,%1,8),%0":"=r"(seen):"r"((DWORD64)low));
+ if(seen!=0x1234)ExitProcess(25);
+ DWORD high=TLS_OUT_OF_INDEXES;for(int i=0;i<80;i++){DWORD k=TlsAlloc();if(k>=64){high=k;break;}}
+ if(high==TLS_OUT_OF_INDEXES||!TlsSetValue(high,(void*)0x5678))ExitProcess(26);
+ DWORD64 expansion;__asm__("mov %%gs:0x1780,%0":"=r"(expansion));
+ if(((DWORD64*)expansion)[high-64]!=0x5678||TlsGetValue(high)!=(void*)0x5678)ExitProcess(27);
+ if(!TlsFree(low)||TlsAlloc()!=low||TlsGetValue(low))ExitProcess(28);
  ExitProcess(0);
 }

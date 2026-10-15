@@ -29,7 +29,11 @@ pub unsafe extern "C" fn peekgame_configure_process(
         standard_handles: stdio::inherited_handles(),
     };
     match PROCESS.set(process) {
-        Ok(()) => 0,
+        Ok(()) => {
+            // Faults in program code become Windows exceptions from here on.
+            crate::seh::install_fault_handlers();
+            0
+        }
         Err(_) => ERROR_ALREADY_EXISTS,
     }
 }

@@ -10,7 +10,48 @@ unsafe extern "C" {
 struct ThreadEnvironment {
     teb: Box<[u64; 1024]>,
     _peb: Box<[u64; 128]>,
+    /// TlsExpansionSlots (TEB+0x1780): TLS indices 64 and up.
+    expansion: Box<[usize; EXPANSION]>,
     previous: u64,
+}
+/// TlsSlots (TEB+0x1480) hold indices 0..63, TlsExpansionSlots 1024 more, as on
+/// Windows: programs and JIT compilers read them straight from gs.
+pub const TLS_SLOTS: usize = 64;
+const EXPANSION: usize = 1024;
+pub const TLS_INDICES: usize = TLS_SLOTS + EXPANSION;
+/// Every live TEB, so TlsAlloc/TlsFree can clear an index in all threads.
+static TEBS: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());
+unsafe fn slot_in(teb: usize, index: usize) -> *mut usize {
+    unsafe {
+        if index < TLS_SLOTS {
+            (teb as *mut usize).add(0x1480 / 8 + index)
+        } else {
+            (*(teb as *const *mut usize).add(0x1780 / 8)).add(index - TLS_SLOTS)
+        }
+    }
+}
+/// The calling thread's value cell for TLS `index`, if it has a TEB.
+pub fn tls_slot(index: usize) -> Option<*mut usize> {
+    if index >= TLS_INDICES {
+        return None;
+    }
+    ENVIRONMENT
+        .try_with(|env| {
+            env.borrow()
+                .as_ref()
+                .map(|env| unsafe { slot_in(env.teb.as_ptr() as usize, index) })
+        })
+        .ok()
+        .flatten()
+}
+/// Zeroes TLS `index` in every thread (TlsAlloc and TlsFree do this on Windows).
+pub fn clear_tls_slot(index: usize) {
+    if index >= TLS_INDICES {
+        return;
+    }
+    for &teb in TEBS.lock().unwrap().iter() {
+        unsafe { slot_in(teb, index).write(0) };
+    }
 }
 thread_local! {static ENVIRONMENT:RefCell<Option<ThreadEnvironment>>=const{RefCell::new(None)};}
 /// Gives the calling thread a TEB/PEB in gs. `data` is the EXE's TLS template
@@ -23,6 +64,7 @@ pub fn initialize(image: usize, data: Vec<u8>) -> Result<(), String> {
         let mut environment = ThreadEnvironment {
             teb: Box::new([0; 1024]),
             _peb: Box::new([0; 128]),
+            expansion: Box::new([0; EXPANSION]),
             previous: 0,
         };
         let mut attr = [0u64; 8];
@@ -44,6 +86,7 @@ pub fn initialize(image: usize, data: Vec<u8>) -> Result<(), String> {
             environment.teb[9] = syscall(186) as u64;
             environment._peb[2] = image as u64;
             environment.teb[12] = environment._peb.as_ptr() as u64;
+            environment.teb[0x1780 / 8] = environment.expansion.as_ptr() as u64;
             crate::images::tls::set_exe_template(data);
             crate::images::tls::thread_start(&mut environment.teb[11]);
             if syscall(158, 0x1004i32, &mut environment.previous) != 0 {
@@ -53,6 +96,7 @@ pub fn initialize(image: usize, data: Vec<u8>) -> Result<(), String> {
                 return Err("ARCH_SET_GS failed".into());
             }
         }
+        TEBS.lock().unwrap().push(environment.teb.as_ptr() as usize);
         *cell.borrow_mut() = Some(environment);
         Ok(())
     })
@@ -83,6 +127,8 @@ pub fn error() -> Option<u32> {
 }
 impl Drop for ThreadEnvironment {
     fn drop(&mut self) {
+        let teb = self.teb.as_ptr() as usize;
+        TEBS.lock().unwrap().retain(|&t| t != teb);
         crate::images::tls::thread_end(&mut self.teb[11]);
         unsafe {
             syscall(158, 0x1001i32, self.previous);

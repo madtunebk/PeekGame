@@ -86,6 +86,15 @@ pub fn by_address(address: usize) -> Option<Arc<Module>> {
         .find(|m| m.contains(address))
         .cloned()
 }
+/// by_address without waiting: None if the module list is busy (signal handlers).
+pub fn try_by_address(address: usize) -> Option<Arc<Module>> {
+    MODULES
+        .try_lock()
+        .ok()?
+        .iter()
+        .find(|m| m.contains(address))
+        .cloned()
+}
 pub fn by_name(name: &str) -> Option<Arc<Module>> {
     let wanted = search::normalize(name)?;
     MODULES
