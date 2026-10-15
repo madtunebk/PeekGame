@@ -1,8 +1,226 @@
 use super::*;
 use crate::api::threading::events;
 use crate::api::threading::threads;
+use crate::api::threading::{address, fls, once, slist, srw};
 use crate::api::threading::{critical, tls};
 exports! {
+    implemented!(
+        "InitializeSListHead",
+        "threading",
+        "implemented",
+        "16-byte aligned header",
+        slist::initialize
+    ),
+    implemented!(
+        "InterlockedPushEntrySList",
+        "threading",
+        "implemented",
+        "lock-free cmpxchg16b with ABA sequence",
+        slist::push
+    ),
+    implemented!(
+        "InterlockedPopEntrySList",
+        "threading",
+        "implemented",
+        "lock-free cmpxchg16b with ABA sequence",
+        slist::pop
+    ),
+    implemented!(
+        "InterlockedFlushSList",
+        "threading",
+        "implemented",
+        "lock-free cmpxchg16b with ABA sequence",
+        slist::flush
+    ),
+    implemented!(
+        "InterlockedPushListSListEx",
+        "threading",
+        "implemented",
+        "pre-linked chain",
+        slist::push_list
+    ),
+    implemented!(
+        "QueryDepthSList",
+        "threading",
+        "implemented",
+        "depth field",
+        slist::depth
+    ),
+    implemented!(
+        "FlsAlloc",
+        "threading",
+        "partial",
+        "per-thread slots; callbacks at thread exit and FlsFree (caller thread)",
+        fls::alloc
+    ),
+    implemented!(
+        "FlsSetValue",
+        "threading",
+        "implemented",
+        "per-thread value",
+        fls::set
+    ),
+    implemented!(
+        "FlsGetValue",
+        "threading",
+        "implemented",
+        "per-thread value",
+        fls::get
+    ),
+    implemented!(
+        "FlsGetValue2",
+        "threading",
+        "implemented",
+        "per-thread value, last error untouched",
+        fls::get2
+    ),
+    implemented!(
+        "FlsFree",
+        "threading",
+        "partial",
+        "runs the callback for the caller thread only",
+        fls::free
+    ),
+    implemented!(
+        "InitializeSRWLock",
+        "threading",
+        "implemented",
+        "state lives in the lock word",
+        srw::initialize
+    ),
+    implemented!(
+        "AcquireSRWLockExclusive",
+        "threading",
+        "implemented",
+        "futex on the lock word",
+        srw::acquire_exclusive
+    ),
+    implemented!(
+        "AcquireSRWLockShared",
+        "threading",
+        "implemented",
+        "futex on the lock word",
+        srw::acquire_shared
+    ),
+    implemented!(
+        "ReleaseSRWLockExclusive",
+        "threading",
+        "implemented",
+        "futex on the lock word",
+        srw::release_exclusive
+    ),
+    implemented!(
+        "ReleaseSRWLockShared",
+        "threading",
+        "implemented",
+        "futex on the lock word",
+        srw::release_shared
+    ),
+    implemented!(
+        "TryAcquireSRWLockExclusive",
+        "threading",
+        "implemented",
+        "lock word",
+        srw::try_acquire_exclusive
+    ),
+    implemented!(
+        "TryAcquireSRWLockShared",
+        "threading",
+        "implemented",
+        "lock word",
+        srw::try_acquire_shared
+    ),
+    implemented!(
+        "InitializeConditionVariable",
+        "threading",
+        "implemented",
+        "wake sequence word",
+        srw::initialize_condition
+    ),
+    implemented!(
+        "WakeConditionVariable",
+        "threading",
+        "implemented",
+        "futex wake",
+        srw::wake_condition
+    ),
+    implemented!(
+        "WakeAllConditionVariable",
+        "threading",
+        "implemented",
+        "futex wake",
+        srw::wake_all_condition
+    ),
+    implemented!(
+        "SleepConditionVariableSRW",
+        "threading",
+        "implemented",
+        "exclusive or shared SRW, timeout",
+        srw::sleep_condition_srw
+    ),
+    implemented!(
+        "SleepConditionVariableCS",
+        "threading",
+        "implemented",
+        "critical sections, timeout",
+        srw::sleep_condition_cs
+    ),
+    implemented!(
+        "InitializeCriticalSectionEx",
+        "threading",
+        "partial",
+        "as InitializeCriticalSectionAndSpinCount; flags ignored",
+        srw::initialize_critical_ex
+    ),
+    implemented!(
+        "InitOnceInitialize",
+        "threading",
+        "implemented",
+        "resets the once field",
+        once::initialize
+    ),
+    implemented!(
+        "InitOnceBeginInitialize",
+        "threading",
+        "implemented",
+        "synchronous, asynchronous and check-only",
+        once::begin
+    ),
+    implemented!(
+        "InitOnceComplete",
+        "threading",
+        "implemented",
+        "complete or failed",
+        once::complete
+    ),
+    implemented!(
+        "InitOnceExecuteOnce",
+        "threading",
+        "implemented",
+        "callback once per field",
+        once::execute
+    ),
+    implemented!(
+        "WaitOnAddress",
+        "threading",
+        "implemented",
+        "1/2/4/8-byte comparison, timeout",
+        address::wait
+    ),
+    implemented!(
+        "WakeByAddressSingle",
+        "threading",
+        "implemented",
+        "one waiter on the exact address",
+        address::wake_single
+    ),
+    implemented!(
+        "WakeByAddressAll",
+        "threading",
+        "implemented",
+        "all waiters on the exact address",
+        address::wake_all
+    ),
     implemented!(
         "GetThreadPriority",
         "threading",

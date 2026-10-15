@@ -9,4 +9,8 @@ pub(crate) mod console;
 pub(crate) mod cpu;
 pub(crate) mod dynamic;
 pub(crate) mod encoding;
+pub(crate) mod environment;
+pub(crate) mod locale;
+pub(crate) mod pointers;
 pub(crate) mod startup;
+pub(crate) mod time;

@@ -1,0 +1,374 @@
+//! The user's locale, code pages and string classification (ported from peek where
+//! peek has them). The locale comes from LC_ALL, LC_MESSAGES, then LANG; C/POSIX is
+//! en-US. Only the user's own locale exists. Unmapped GetLocaleInfo types stop with
+//! their number.
+use crate::api::{system::error, text};
+const ERROR_INSUFFICIENT_BUFFER: u32 = 122;
+const ERROR_INVALID_FLAGS: u32 = 1004;
+const LOCALE_USER_DEFAULT: u32 = 0x400;
+const LOCALE_SYSTEM_DEFAULT: u32 = 0x800;
+
+fn user_locale() -> Option<String> {
+    ["LC_ALL", "LC_MESSAGES", "LANG"]
+        .iter()
+        .filter_map(|n| std::env::var(n).ok())
+        .find(|v| !v.is_empty())
+        .filter(|v| v != "C" && !v.starts_with("C.") && v != "POSIX")
+}
+/// ("ro", "RO") from "ro_RO.UTF-8"; ("en", "US") for C/POSIX.
+fn parts() -> (String, String) {
+    let Some(l) = user_locale() else {
+        return ("en".into(), "US".into());
+    };
+    let base = l.split(['.', '@']).next().unwrap_or("");
+    match base.split_once('_') {
+        Some((lang, country)) => (lang.into(), country.into()),
+        None => (base.into(), String::new()),
+    }
+}
+fn locale_name() -> String {
+    match parts() {
+        (lang, country) if country.is_empty() => lang,
+        (lang, country) => format!("{lang}-{country}"),
+    }
+}
+/// LANGID of the user's language (peek's table); unknown languages are en-US.
+pub(crate) fn langid() -> u16 {
+    const TABLE: &[(&str, u16)] = &[
+        ("en_US", 0x0409),
+        ("en_GB", 0x0809),
+        ("en_AU", 0x0c09),
+        ("en_CA", 0x1009),
+        ("en", 0x0409),
+        ("pt_BR", 0x0416),
+        ("pt_PT", 0x0816),
+        ("pt", 0x0816),
+        ("es_MX", 0x080a),
+        ("es", 0x0c0a),
+        ("zh_TW", 0x0404),
+        ("zh_HK", 0x0c04),
+        ("zh", 0x0804),
+        ("fr_CA", 0x0c0c),
+        ("fr", 0x040c),
+        ("de", 0x0407),
+        ("it", 0x0410),
+        ("ro", 0x0418),
+        ("ru", 0x0419),
+        ("uk", 0x0422),
+        ("pl", 0x0415),
+        ("cs", 0x0405),
+        ("sk", 0x041b),
+        ("hu", 0x040e),
+        ("bg", 0x0402),
+        ("el", 0x0408),
+        ("tr", 0x041f),
+        ("nl", 0x0413),
+        ("sv", 0x041d),
+        ("da", 0x0406),
+        ("nb", 0x0414),
+        ("no", 0x0414),
+        ("fi", 0x040b),
+        ("ja", 0x0411),
+        ("ko", 0x0412),
+        ("ar", 0x0401),
+        ("he", 0x040d),
+        ("hr", 0x041a),
+        ("sr", 0x081a),
+        ("sl", 0x0424),
+        ("lt", 0x0427),
+        ("lv", 0x0426),
+        ("et", 0x0425),
+        ("vi", 0x042a),
+        ("th", 0x041e),
+        ("id", 0x0421),
+        ("ca", 0x0403),
+        ("hi", 0x0439),
+    ];
+    let Some(l) = user_locale() else {
+        return 0x0409;
+    };
+    TABLE
+        .iter()
+        .find(|(tag, _)| {
+            l.strip_prefix(tag)
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with(['_', '.', '@']))
+        })
+        .map_or(0x0409, |(_, id)| *id)
+}
+fn info_text(kind: u32) -> String {
+    let (lang, country) = parts();
+    match kind & 0x0fff_ffff {
+        0x5c => locale_name(),
+        0x59 => lang,
+        0x5a => country,
+        // Number separators: the decimal point and thousands separator of the C locale
+        // unless the user's numeric locale says otherwise; '.' and ',' cover most.
+        0x0e => ".".into(),
+        0x0f => ",".into(),
+        0x0d => ((["US", "LR", "MM"].contains(&country.as_str())) as u8).to_string(),
+        other => {
+            eprintln!("STOP: GetLocaleInfo: information type {other:#x} is not mapped");
+            std::process::exit(78)
+        }
+    }
+}
+unsafe fn info_out(kind: u32, out: *mut u16, capacity: i32) -> i32 {
+    let value = text::wide(&info_text(kind));
+    let needed = value.len() as i32 + 1;
+    if capacity == 0 {
+        return needed;
+    }
+    if out.is_null() || capacity < needed {
+        error::set(ERROR_INSUFFICIENT_BUFFER);
+        return 0;
+    }
+    unsafe { text::copy_out(&value, out, capacity as u32) };
+    needed
+}
+fn own_lcid(lcid: u32) -> bool {
+    lcid == LOCALE_USER_DEFAULT || lcid == LOCALE_SYSTEM_DEFAULT || lcid == langid() as u32
+}
+/// LOCALE_NAME_USER_DEFAULT (NULL), "" or the user's own name.
+unsafe fn own_name(name: *const u16) -> bool {
+    let name = unsafe { text::units(name) };
+    name.is_empty() || String::from_utf16_lossy(name).eq_ignore_ascii_case(&locale_name())
+}
+pub unsafe extern "win64" fn info_w(lcid: u32, kind: u32, out: *mut u16, capacity: i32) -> i32 {
+    if !own_lcid(lcid) {
+        eprintln!("GetLocaleInfoW({lcid:#x}): only the user's locale is available");
+        error::set(87);
+        return 0;
+    }
+    unsafe { info_out(kind, out, capacity) }
+}
+pub unsafe extern "win64" fn info_ex(
+    name: *const u16,
+    kind: u32,
+    out: *mut u16,
+    capacity: i32,
+) -> i32 {
+    if !unsafe { own_name(name) } {
+        eprintln!("GetLocaleInfoEx: only the user's locale is available");
+        error::set(87);
+        return 0;
+    }
+    unsafe { info_out(kind, out, capacity) }
+}
+pub extern "win64" fn user_default_lcid() -> u32 {
+    langid() as u32
+}
+/// GetUserDefaultLocaleName / GetSystemDefaultLocaleName: length with the NUL.
+pub unsafe extern "win64" fn user_default_locale_name(out: *mut u16, capacity: i32) -> i32 {
+    let name = text::wide(&locale_name());
+    if out.is_null() || capacity < name.len() as i32 + 1 {
+        error::set(ERROR_INSUFFICIENT_BUFFER);
+        return 0;
+    }
+    unsafe { text::copy_out(&name, out, capacity as u32) };
+    name.len() as i32 + 1
+}
+pub extern "win64" fn is_valid_locale(lcid: u32, _flags: u32) -> i32 {
+    (own_lcid(lcid) || lcid == 0x0409) as i32
+}
+type EnumLocales = extern "win64" fn(*const u16) -> i32;
+/// EnumSystemLocalesW: the user's locale, as an 8-digit hex LCID string.
+pub unsafe extern "win64" fn enum_system_locales_w(
+    callback: Option<EnumLocales>,
+    _flags: u32,
+) -> i32 {
+    let Some(callback) = callback else {
+        error::set(87);
+        return 0;
+    };
+    let mut id = text::wide(&format!("{:08x}", langid()));
+    id.push(0);
+    callback(id.as_ptr());
+    1
+}
+pub extern "win64" fn is_valid_code_page(cp: u32) -> i32 {
+    (cp == 65001 || cp == 1252) as i32
+}
+/// CPINFO: MaxCharSize, DefaultChar[2], LeadByte[12].
+pub unsafe extern "win64" fn cp_info(cp: u32, out: *mut u8) -> i32 {
+    let cp = if cp == 0 { 65001 } else { cp };
+    if is_valid_code_page(cp) == 0 || out.is_null() {
+        error::set(87);
+        return 0;
+    }
+    unsafe {
+        out.write_bytes(0, 20);
+        out.cast::<u32>()
+            .write_unaligned(if cp == 65001 { 4 } else { 1 });
+        *out.add(4) = b'?';
+    }
+    1
+}
+pub extern "win64" fn console_output_cp() -> u32 {
+    65001
+}
+
+/// GetStringTypeW, CT_CTYPE1 only, one WORD per UTF-16 unit (-1: through the NUL).
+/// Surrogate halves are not classified.
+pub unsafe extern "win64" fn string_type_w(
+    kind: u32,
+    source: *const u16,
+    count: i32,
+    out: *mut u16,
+) -> i32 {
+    if kind != 1 {
+        eprintln!("GetStringTypeW(type {kind}): only CT_CTYPE1 is supported");
+        error::set(ERROR_INVALID_FLAGS);
+        return 0;
+    }
+    let Some(units) =
+        (unsafe { text::counted(source, count, true) }).filter(|_| count != 0 && !out.is_null())
+    else {
+        error::set(87);
+        return 0;
+    };
+    for (i, &u) in units.iter().enumerate() {
+        let bits = char::from_u32(u as u32).map_or(0, |c| {
+            let mut b = 0u16;
+            b |= c.is_uppercase() as u16;
+            b |= (c.is_lowercase() as u16) << 1;
+            b |= (c.is_ascii_digit() as u16) << 2;
+            b |= (c.is_whitespace() as u16) << 3;
+            b |= ((c.is_ascii_punctuation()
+                || (!c.is_alphanumeric()
+                    && !c.is_whitespace()
+                    && !c.is_control()
+                    && c as u32 > 0x7f)) as u16)
+                << 4;
+            b |= (c.is_control() as u16) << 5;
+            b |= ((c == ' ' || c == '\t') as u16) << 6;
+            b |= (c.is_ascii_hexdigit() as u16) << 7;
+            b |= (c.is_alphabetic() as u16) << 8;
+            if b & !0x20 != 0 || !c.is_control() {
+                b |= 0x200; // C1_DEFINED; bare controls are C1_CNTRL only
+            }
+            b
+        });
+        unsafe { *out.add(i) = bits };
+    }
+    1
+}
+
+fn map_case(units: &[u16], upper: bool) -> Vec<u16> {
+    units
+        .iter()
+        .map(|&u| {
+            char::from_u32(u as u32)
+                .and_then(|c| {
+                    let mut mapped = if upper {
+                        c.to_uppercase().collect::<Vec<_>>()
+                    } else {
+                        c.to_lowercase().collect()
+                    };
+                    // Only one-to-one mappings within the BMP keep the length.
+                    (mapped.len() == 1 && (mapped[0] as u32) < 0x10000)
+                        .then(|| mapped.pop().unwrap() as u16)
+                })
+                .unwrap_or(u)
+        })
+        .collect()
+}
+const LCMAP_LOWERCASE: u32 = 0x100;
+const LCMAP_UPPERCASE: u32 = 0x200;
+/// LCMapStringW: LCMAP_LOWERCASE / LCMAP_UPPERCASE (with or without
+/// LCMAP_LINGUISTIC_CASING); sort keys and other mappings fail with
+/// ERROR_INVALID_FLAGS.
+unsafe fn lcmap(flags: u32, source: *const u16, count: i32, out: *mut u16, capacity: i32) -> i32 {
+    let case = flags & !0x0100_0000;
+    if case != LCMAP_LOWERCASE && case != LCMAP_UPPERCASE {
+        eprintln!("LCMapString(flags {flags:#x}): only case mapping is supported");
+        error::set(ERROR_INVALID_FLAGS);
+        return 0;
+    }
+    let Some(units) = (unsafe { text::counted(source, count, true) }).filter(|_| count != 0) else {
+        error::set(87);
+        return 0;
+    };
+    let mapped = map_case(units, case == LCMAP_UPPERCASE);
+    if capacity == 0 {
+        return mapped.len() as i32;
+    }
+    if out.is_null() || capacity < mapped.len() as i32 {
+        error::set(ERROR_INSUFFICIENT_BUFFER);
+        return 0;
+    }
+    unsafe { std::ptr::copy_nonoverlapping(mapped.as_ptr(), out, mapped.len()) };
+    mapped.len() as i32
+}
+pub unsafe extern "win64" fn lcmap_w(
+    lcid: u32,
+    flags: u32,
+    source: *const u16,
+    count: i32,
+    out: *mut u16,
+    capacity: i32,
+) -> i32 {
+    if !own_lcid(lcid) && lcid != 0x0409 && lcid != 0x7f {
+        error::set(87);
+        return 0;
+    }
+    unsafe { lcmap(flags, source, count, out, capacity) }
+}
+pub unsafe extern "win64" fn lcmap_ex(
+    _name: *const u16,
+    flags: u32,
+    source: *const u16,
+    count: i32,
+    out: *mut u16,
+    capacity: i32,
+    _version: usize,
+    _reserved: usize,
+    _handle: usize,
+) -> i32 {
+    unsafe { lcmap(flags, source, count, out, capacity) }
+}
+const NORM_IGNORECASE: u32 = 0x1;
+/// CompareString: ordinal UTF-16 order, case-insensitive with NORM_IGNORECASE
+/// (or LINGUISTIC_IGNORECASE); returns CSTR_LESS_THAN (1), CSTR_EQUAL (2) or
+/// CSTR_GREATER_THAN (3).
+unsafe fn compare(flags: u32, a: *const u16, a_count: i32, b: *const u16, b_count: i32) -> i32 {
+    let (Some(a), Some(b)) = (unsafe { text::counted(a, a_count, false) }, unsafe {
+        text::counted(b, b_count, false)
+    }) else {
+        error::set(87);
+        return 0;
+    };
+    let ignore_case = flags & (NORM_IGNORECASE | 0x10) != 0;
+    let (a, b) = if ignore_case {
+        (map_case(a, false), map_case(b, false))
+    } else {
+        (a.to_vec(), b.to_vec())
+    };
+    match a.cmp(&b) {
+        std::cmp::Ordering::Less => 1,
+        std::cmp::Ordering::Equal => 2,
+        std::cmp::Ordering::Greater => 3,
+    }
+}
+pub unsafe extern "win64" fn compare_w(
+    _lcid: u32,
+    flags: u32,
+    a: *const u16,
+    a_count: i32,
+    b: *const u16,
+    b_count: i32,
+) -> i32 {
+    unsafe { compare(flags, a, a_count, b, b_count) }
+}
+pub unsafe extern "win64" fn compare_ex(
+    _name: *const u16,
+    flags: u32,
+    a: *const u16,
+    a_count: i32,
+    b: *const u16,
+    b_count: i32,
+    _version: usize,
+    _reserved: usize,
+    _param: usize,
+) -> i32 {
+    unsafe { compare(flags, a, a_count, b, b_count) }
+}

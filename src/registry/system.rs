@@ -1,10 +1,285 @@
 use super::*;
+use crate::api::memory::heap;
 use crate::api::system::console;
 use crate::api::system::cpu;
 use crate::api::system::dynamic;
 use crate::api::system::encoding;
 use crate::api::system::startup;
+use crate::api::system::{environment, locale, pointers, time};
 exports! {
+    implemented!(
+        "GetProcessHeap",
+        "memory",
+        "partial",
+        "the single process heap",
+        heap::get_process_heap
+    ),
+    implemented!(
+        "HeapAlloc",
+        "memory",
+        "partial",
+        "process heap; zero-fill; other heaps stop",
+        heap::alloc
+    ),
+    implemented!(
+        "HeapFree",
+        "memory",
+        "partial",
+        "process heap blocks; foreign pointers fail",
+        heap::release
+    ),
+    implemented!(
+        "HeapSize",
+        "memory",
+        "partial",
+        "requested size of process heap blocks",
+        heap::size
+    ),
+    implemented!(
+        "HeapReAlloc",
+        "memory",
+        "partial",
+        "zero-fill and in-place-only; exceptions unavailable",
+        heap::reallocate
+    ),
+    implemented!(
+        "HeapQueryInformation",
+        "memory",
+        "partial",
+        "HeapCompatibilityInformation (LFH)",
+        heap::query_information
+    ),
+    implemented!(
+        "EncodePointer",
+        "system",
+        "implemented",
+        "per-process random cookie and rotation",
+        pointers::encode
+    ),
+    implemented!(
+        "DecodePointer",
+        "system",
+        "implemented",
+        "inverse of EncodePointer",
+        pointers::decode
+    ),
+    implemented!(
+        "EncodeSystemPointer",
+        "system",
+        "implemented",
+        "same as EncodePointer",
+        pointers::encode
+    ),
+    implemented!(
+        "DecodeSystemPointer",
+        "system",
+        "implemented",
+        "same as DecodePointer",
+        pointers::decode
+    ),
+    implemented!(
+        "GetTickCount",
+        "system",
+        "implemented",
+        "milliseconds since boot (CLOCK_BOOTTIME)",
+        time::tick_count
+    ),
+    implemented!(
+        "GetTickCount64",
+        "system",
+        "implemented",
+        "milliseconds since boot (CLOCK_BOOTTIME)",
+        time::tick_count64
+    ),
+    implemented!(
+        "GetSystemTimePreciseAsFileTime",
+        "system",
+        "implemented",
+        "host UTC with 100 ns resolution",
+        time::precise_file_time
+    ),
+    implemented!(
+        "GetSystemTime",
+        "system",
+        "implemented",
+        "host UTC as SYSTEMTIME",
+        time::system_time
+    ),
+    implemented!(
+        "GetLocalTime",
+        "system",
+        "implemented",
+        "host local time as SYSTEMTIME",
+        time::local_time
+    ),
+    implemented!(
+        "FileTimeToSystemTime",
+        "system",
+        "implemented",
+        "UTC conversion with Windows validation",
+        time::file_time_to_system_time
+    ),
+    implemented!(
+        "SystemTimeToFileTime",
+        "system",
+        "implemented",
+        "UTC conversion with Windows validation",
+        time::system_time_to_file_time
+    ),
+    implemented!(
+        "GetEnvironmentVariableA",
+        "system",
+        "implemented",
+        "host environment, case-insensitive names",
+        environment::get_a
+    ),
+    implemented!(
+        "GetEnvironmentVariableW",
+        "system",
+        "implemented",
+        "host environment, case-insensitive names",
+        environment::get_w
+    ),
+    implemented!(
+        "SetEnvironmentVariableA",
+        "system",
+        "implemented",
+        "process environment",
+        environment::set_a
+    ),
+    implemented!(
+        "SetEnvironmentVariableW",
+        "system",
+        "implemented",
+        "process environment",
+        environment::set_w
+    ),
+    implemented!(
+        "GetEnvironmentStringsW",
+        "system",
+        "implemented",
+        "snapshot block of the host environment",
+        environment::strings_w
+    ),
+    implemented!(
+        "FreeEnvironmentStringsW",
+        "system",
+        "implemented",
+        "blocks from GetEnvironmentStringsW",
+        environment::free_strings_w
+    ),
+    implemented!(
+        "ExpandEnvironmentStringsW",
+        "system",
+        "implemented",
+        "%NAME% from the process environment",
+        environment::expand_w
+    ),
+    implemented!(
+        "GetLocaleInfoW",
+        "system",
+        "partial",
+        "user locale only; name, language, country, separators, measure",
+        locale::info_w
+    ),
+    implemented!(
+        "GetLocaleInfoEx",
+        "system",
+        "partial",
+        "user locale only; name, language, country, separators, measure",
+        locale::info_ex
+    ),
+    implemented!(
+        "GetUserDefaultLCID",
+        "system",
+        "implemented",
+        "LANGID of the host locale",
+        locale::user_default_lcid
+    ),
+    implemented!(
+        "GetUserDefaultLocaleName",
+        "system",
+        "implemented",
+        "host locale as a Windows name",
+        locale::user_default_locale_name
+    ),
+    implemented!(
+        "GetSystemDefaultLocaleName",
+        "system",
+        "implemented",
+        "host locale as a Windows name",
+        locale::user_default_locale_name
+    ),
+    implemented!(
+        "IsValidLocale",
+        "system",
+        "partial",
+        "the user locale and en-US",
+        locale::is_valid_locale
+    ),
+    implemented!(
+        "EnumSystemLocalesW",
+        "system",
+        "partial",
+        "the user locale only",
+        locale::enum_system_locales_w
+    ),
+    implemented!(
+        "IsValidCodePage",
+        "system",
+        "partial",
+        "UTF-8 and 1252",
+        locale::is_valid_code_page
+    ),
+    implemented!(
+        "GetCPInfo",
+        "system",
+        "partial",
+        "UTF-8 and 1252",
+        locale::cp_info
+    ),
+    implemented!(
+        "GetConsoleOutputCP",
+        "system",
+        "implemented",
+        "UTF-8 terminal",
+        locale::console_output_cp
+    ),
+    implemented!(
+        "GetStringTypeW",
+        "system",
+        "partial",
+        "CT_CTYPE1 from Unicode properties",
+        locale::string_type_w
+    ),
+    implemented!(
+        "LCMapStringW",
+        "system",
+        "partial",
+        "upper/lower case mapping only",
+        locale::lcmap_w
+    ),
+    implemented!(
+        "LCMapStringEx",
+        "system",
+        "partial",
+        "upper/lower case mapping only",
+        locale::lcmap_ex
+    ),
+    implemented!(
+        "CompareStringW",
+        "system",
+        "partial",
+        "ordinal UTF-16 order, optional case folding",
+        locale::compare_w
+    ),
+    implemented!(
+        "CompareStringEx",
+        "system",
+        "partial",
+        "ordinal UTF-16 order, optional case folding",
+        locale::compare_ex
+    ),
     implemented!(
         "SetConsoleCP",
         "system",
