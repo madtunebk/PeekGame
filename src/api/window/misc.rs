@@ -1,0 +1,677 @@
+//! The rest of USER32 a game touches: TranslateMessage, device contexts, the
+//! clipboard, message boxes and dialogs, IME contexts, DWM attributes, DPI,
+//! desktop objects, device notifications and rectangle helpers.
+use super::{
+    queue,
+    state::{self, windows},
+    strings,
+    types::*,
+};
+use crate::api::system::error;
+use std::{
+    collections::HashMap,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Mutex,
+    },
+};
+fn fail<T>(code: u32, value: T) -> T {
+    error::set(code);
+    value
+}
+/// TranslateMessage: WM_CHAR (WM_SYSCHAR) for a key press that types a character.
+pub(crate) unsafe extern "win64" fn translate_message(message: *const Message) -> i32 {
+    if message.is_null() {
+        return fail(87, 0);
+    }
+    let m = unsafe { *message };
+    if !matches!(
+        m.message,
+        WM_KEYDOWN | WM_KEYUP | WM_SYSKEYDOWN | WM_SYSKEYUP
+    ) {
+        return 0;
+    }
+    if (m.message == WM_KEYDOWN || m.message == WM_SYSKEYDOWN) && m.private != 0 {
+        let char_message = if m.message == WM_KEYDOWN {
+            WM_CHAR
+        } else {
+            WM_SYSCHAR
+        };
+        let mut units = [0u16; 2];
+        let chars = char::from_u32(m.private)
+            .map(|c| c.encode_utf16(&mut units).len())
+            .unwrap_or(0);
+        for &unit in &units[..chars] {
+            queue::post_message_w(m.window, char_message, unit as usize, m.lparam);
+        }
+    }
+    1
+}
+
+// ---- device contexts and GDI --------------------------------------------------------
+static DCS: Mutex<Option<HashMap<usize, usize>>> = Mutex::new(None);
+static NEXT_DC: AtomicUsize = AtomicUsize::new(0x0010_0000);
+/// A device context: a token naming its window (or the screen). PeekGame draws
+/// nothing through GDI; games render with Direct3D.
+pub(crate) extern "win64" fn get_dc(hwnd: usize) -> usize {
+    if hwnd != 0 && hwnd != DESKTOP && !state::exists(hwnd) {
+        return fail(ERROR_WINDOW, 0);
+    }
+    let dc = NEXT_DC.fetch_add(4, Ordering::Relaxed);
+    DCS.lock()
+        .unwrap()
+        .get_or_insert_with(HashMap::new)
+        .insert(dc, hwnd);
+    dc
+}
+pub(crate) extern "win64" fn get_dc_ex(hwnd: usize, _clip: usize, _flags: u32) -> usize {
+    get_dc(hwnd)
+}
+pub(crate) extern "win64" fn get_window_dc(hwnd: usize) -> usize {
+    get_dc(hwnd)
+}
+pub(crate) extern "win64" fn release_dc(_hwnd: usize, dc: usize) -> i32 {
+    DCS.lock()
+        .unwrap()
+        .get_or_insert_with(HashMap::new)
+        .remove(&dc)
+        .is_some() as i32
+}
+pub(crate) extern "win64" fn window_from_dc(dc: usize) -> usize {
+    DCS.lock()
+        .unwrap()
+        .get_or_insert_with(HashMap::new)
+        .get(&dc)
+        .copied()
+        .unwrap_or(0)
+}
+/// GetDeviceCaps for the screen: sizes, 32 bits per pixel, 96 DPI, 60 Hz.
+pub(crate) extern "win64" fn get_device_caps(_dc: usize, index: i32) -> i32 {
+    let (w, h) = crate::host::x11::screen_size().unwrap_or((1920, 1080));
+    match index {
+        2 => 0x0100,        // TECHNOLOGY: DT_RASDISPLAY 1... DRIVERVERSION 0
+        4 => w * 254 / 960, // HORZSIZE (mm at 96 DPI)
+        6 => h * 254 / 960, // VERTSIZE
+        8 | 118 => w,       // HORZRES, DESKTOPHORZRES
+        10 | 117 => h,      // VERTRES, DESKTOPVERTRES
+        12 => 32,           // BITSPIXEL
+        14 => 1,            // PLANES
+        24 => -1,           // NUMCOLORS
+        88 | 90 => 96,      // LOGPIXELSX/Y
+        116 => 60,          // VREFRESH
+        _ => 0,
+    }
+}
+
+// ---- clipboard (this process) ---------------------------------------------------------
+struct Clipboard {
+    open: bool,
+    data: HashMap<u32, usize>,
+}
+static CLIPBOARD: Mutex<Option<Clipboard>> = Mutex::new(None);
+fn clipboard<T>(f: impl FnOnce(&mut Clipboard) -> T) -> T {
+    f(CLIPBOARD.lock().unwrap().get_or_insert_with(|| Clipboard {
+        open: false,
+        data: HashMap::new(),
+    }))
+}
+/// The clipboard holds data within this process (handles from GlobalAlloc, as
+/// programs pass them); the X selection is not connected.
+pub(crate) extern "win64" fn open_clipboard(_owner: usize) -> i32 {
+    clipboard(|c| {
+        if c.open {
+            fail(5, 0)
+        } else {
+            c.open = true;
+            1
+        }
+    })
+}
+pub(crate) extern "win64" fn close_clipboard() -> i32 {
+    clipboard(|c| std::mem::replace(&mut c.open, false) as i32)
+}
+pub(crate) extern "win64" fn empty_clipboard() -> i32 {
+    clipboard(|c| {
+        c.data.clear();
+        1
+    })
+}
+pub(crate) extern "win64" fn set_clipboard_data(format: u32, data: usize) -> usize {
+    clipboard(|c| {
+        c.data.insert(format, data);
+        data
+    })
+}
+pub(crate) extern "win64" fn get_clipboard_data(format: u32) -> usize {
+    clipboard(|c| c.data.get(&format).copied().unwrap_or(0))
+}
+pub(crate) extern "win64" fn is_clipboard_format_available(format: u32) -> i32 {
+    clipboard(|c| c.data.contains_key(&format) as i32)
+}
+pub(crate) unsafe extern "win64" fn register_clipboard_format_w(name: *const u16) -> u32 {
+    queue::register_message(&unsafe { strings::wide(name) }.unwrap_or_default())
+}
+pub(crate) unsafe extern "win64" fn register_window_message_w(name: *const u16) -> u32 {
+    match unsafe { strings::wide(name) } {
+        Ok(n) => queue::register_message(&n),
+        Err(e) => fail(e, 0),
+    }
+}
+pub(crate) unsafe extern "win64" fn register_window_message_a(name: *const i8) -> u32 {
+    match unsafe { strings::narrow(name) } {
+        Ok(n) => queue::register_message(&n),
+        Err(e) => fail(e, 0),
+    }
+}
+
+// ---- message boxes and dialogs ------------------------------------------------------------
+/// MessageBox: the text goes to stderr and the default button answers (IDOK, or
+/// IDYES/IDRETRY for those button sets).
+fn message_box(caption: &str, text: &str, kind: u32) -> i32 {
+    eprintln!("MessageBox [{caption}]: {text}");
+    match kind & 0xf {
+        2 => 4,     // MB_ABORTRETRYIGNORE: IDRETRY
+        3 | 4 => 6, // YESNO(CANCEL): IDYES
+        5 => 4,     // RETRYCANCEL: IDRETRY
+        6 => 10,    // CANCELTRYCONTINUE: IDTRYAGAIN
+        _ => 1,     // IDOK
+    }
+}
+pub(crate) unsafe extern "win64" fn message_box_w(
+    _owner: usize,
+    text: *const u16,
+    caption: *const u16,
+    kind: u32,
+) -> i32 {
+    let text = unsafe { strings::wide(text) }.unwrap_or_default();
+    let caption = unsafe { strings::wide(caption) }.unwrap_or_default();
+    message_box(&caption, &text, kind)
+}
+pub(crate) unsafe extern "win64" fn message_box_a(
+    _owner: usize,
+    text: *const i8,
+    caption: *const i8,
+    kind: u32,
+) -> i32 {
+    let text = unsafe { strings::narrow(text) }.unwrap_or_default();
+    let caption = unsafe { strings::narrow(caption) }.unwrap_or_default();
+    message_box(&caption, &text, kind)
+}
+/// Dialog templates (resources) are not run: DialogBoxParam fails with -1.
+pub(crate) extern "win64" fn dialog_box_param_w(
+    _instance: usize,
+    template: usize,
+    _owner: usize,
+    _procedure: usize,
+    _parameter: isize,
+) -> isize {
+    eprintln!(
+        "DialogBoxParam: dialog resource {template:#x} is not shown (dialogs are not supported)"
+    );
+    fail(50, -1)
+}
+pub(crate) extern "win64" fn end_dialog(_dialog: usize, _result: isize) -> i32 {
+    1
+}
+pub(crate) extern "win64" fn set_dlg_item_text(_dialog: usize, _item: i32, _text: usize) -> i32 {
+    fail(ERROR_WINDOW, 0)
+}
+pub(crate) extern "win64" fn send_dlg_item_message_w(
+    _dialog: usize,
+    _item: i32,
+    _message: u32,
+    _wparam: usize,
+    _lparam: isize,
+) -> isize {
+    0
+}
+
+// ---- IME (imm32): no input method; composition is empty -----------------------------------
+pub(crate) extern "win64" fn imm_get_context(hwnd: usize) -> usize {
+    if state::exists(hwnd) {
+        0x0009_0000 | (hwnd & 0xffff)
+    } else {
+        0
+    }
+}
+pub(crate) extern "win64" fn imm_release_context(_hwnd: usize, _context: usize) -> i32 {
+    1
+}
+pub(crate) extern "win64" fn imm_associate_context(hwnd: usize, _context: usize) -> usize {
+    imm_get_context(hwnd)
+}
+pub(crate) extern "win64" fn imm_associate_context_ex(
+    _hwnd: usize,
+    _context: usize,
+    _flags: u32,
+) -> i32 {
+    1
+}
+pub(crate) extern "win64" fn imm_get_composition_string_w(
+    _context: usize,
+    _index: u32,
+    _out: usize,
+    _size: u32,
+) -> i32 {
+    0
+}
+pub(crate) extern "win64" fn imm_set_composition_string_w(
+    _context: usize,
+    _index: u32,
+    _a: usize,
+    _b: u32,
+    _c: usize,
+    _d: u32,
+) -> i32 {
+    0
+}
+pub(crate) extern "win64" fn imm_notify_ime(
+    _context: usize,
+    _action: u32,
+    _index: u32,
+    _value: u32,
+) -> i32 {
+    1
+}
+pub(crate) unsafe extern "win64" fn imm_get_conversion_status(
+    _context: usize,
+    conversion: *mut u32,
+    sentence: *mut u32,
+) -> i32 {
+    unsafe {
+        if !conversion.is_null() {
+            *conversion = 0;
+        }
+        if !sentence.is_null() {
+            *sentence = 0;
+        }
+    }
+    1
+}
+pub(crate) extern "win64" fn imm_set_conversion_status(
+    _context: usize,
+    _conversion: u32,
+    _sentence: u32,
+) -> i32 {
+    1
+}
+pub(crate) extern "win64" fn imm_set_open_status(_context: usize, _open: i32) -> i32 {
+    1
+}
+pub(crate) extern "win64" fn imm_get_open_status(_context: usize) -> i32 {
+    0
+}
+pub(crate) extern "win64" fn imm_set_candidate_window(_context: usize, _form: usize) -> i32 {
+    1
+}
+pub(crate) extern "win64" fn imm_set_composition_window(_context: usize, _form: usize) -> i32 {
+    1
+}
+
+// ---- DWM ------------------------------------------------------------------------------------
+/// DwmGetWindowAttribute: DWMWA_EXTENDED_FRAME_BOUNDS (9) is the window rectangle;
+/// DWMWA_CLOAKED (14) is 0; others E_INVALIDARG.
+pub(crate) unsafe extern "win64" fn dwm_get_window_attribute(
+    hwnd: usize,
+    attribute: u32,
+    out: *mut u8,
+    size: u32,
+) -> i32 {
+    const E_INVALIDARG: i32 = 0x8007_0057u32 as i32;
+    if out.is_null() {
+        return E_INVALIDARG;
+    }
+    match attribute {
+        9 if size >= 16 => match super::windows::screen_rect(hwnd) {
+            Some(r) => {
+                unsafe { out.cast::<Rect>().write_unaligned(r) };
+                0
+            }
+            None => 0x8007_0578u32 as i32, // HRESULT_FROM_WIN32(ERROR_INVALID_WINDOW_HANDLE)
+        },
+        14 if size >= 4 => {
+            unsafe { out.cast::<u32>().write_unaligned(0) };
+            0
+        }
+        _ => E_INVALIDARG,
+    }
+}
+/// DwmSetWindowAttribute: dark mode, corners, backdrops are the compositor's; S_OK.
+pub(crate) extern "win64" fn dwm_set_window_attribute(
+    _hwnd: usize,
+    _attribute: u32,
+    _value: usize,
+    _size: u32,
+) -> i32 {
+    0
+}
+pub(crate) unsafe extern "win64" fn dwm_is_composition_enabled(enabled: *mut i32) -> i32 {
+    if !enabled.is_null() {
+        unsafe { *enabled = 1 };
+    }
+    0
+}
+pub(crate) extern "win64" fn dwm_flush() -> i32 {
+    0
+}
+
+// ---- DPI: physical pixels at 96 DPI ---------------------------------------------------------
+pub(crate) extern "win64" fn get_dpi_for_window(hwnd: usize) -> u32 {
+    if state::exists(hwnd) || hwnd == DESKTOP {
+        96
+    } else {
+        fail(87, 0)
+    }
+}
+pub(crate) extern "win64" fn get_dpi_for_system() -> u32 {
+    96
+}
+pub(crate) extern "win64" fn set_process_dpi_aware() -> i32 {
+    1
+}
+pub(crate) extern "win64" fn set_process_dpi_awareness_context(_context: isize) -> i32 {
+    1
+}
+pub(crate) extern "win64" fn set_thread_dpi_awareness_context(_context: isize) -> isize {
+    -4 // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
+}
+pub(crate) extern "win64" fn get_system_metrics_for_dpi(index: i32, _dpi: u32) -> i32 {
+    super::display::system_metrics(index)
+}
+pub(crate) extern "win64" fn enable_non_client_dpi_scaling(_hwnd: usize) -> i32 {
+    1
+}
+/// shcore SetProcessDpiAwareness: S_OK.
+pub(crate) extern "win64" fn set_process_dpi_awareness(_value: u32) -> i32 {
+    0
+}
+pub(crate) unsafe extern "win64" fn get_dpi_for_monitor(
+    _monitor: usize,
+    _kind: u32,
+    x: *mut u32,
+    y: *mut u32,
+) -> i32 {
+    unsafe {
+        if !x.is_null() {
+            *x = 96;
+        }
+        if !y.is_null() {
+            *y = 96;
+        }
+    }
+    0
+}
+pub(crate) unsafe extern "win64" fn get_process_dpi_awareness(
+    _process: usize,
+    out: *mut u32,
+) -> i32 {
+    if !out.is_null() {
+        unsafe { *out = 2 };
+    }
+    0
+}
+
+// ---- pointer input: mouse messages stay classic -------------------------------------------
+pub(crate) extern "win64" fn enable_mouse_in_pointer(_enable: i32) -> i32 {
+    fail(50, 0)
+}
+pub(crate) extern "win64" fn is_mouse_in_pointer_enabled() -> i32 {
+    0
+}
+pub(crate) extern "win64" fn get_pointer_info(_id: u32, _out: usize) -> i32 {
+    fail(87, 0)
+}
+pub(crate) extern "win64" fn register_touch_window(_hwnd: usize, _flags: u32) -> i32 {
+    1
+}
+pub(crate) extern "win64" fn unregister_touch_window(_hwnd: usize) -> i32 {
+    1
+}
+
+// ---- desktop objects, processes, notifications ---------------------------------------------
+pub(crate) extern "win64" fn get_thread_desktop(_thread: u32) -> usize {
+    0x000a_0010
+}
+/// GetUserObjectInformationA: UOI_FLAGS (1: visible window station), UOI_NAME (2).
+pub(crate) unsafe extern "win64" fn get_user_object_information_a(
+    _object: usize,
+    index: i32,
+    out: *mut u8,
+    size: u32,
+    needed: *mut u32,
+) -> i32 {
+    let value: Vec<u8> = match index {
+        1 => [0u32, 0, 1].iter().flat_map(|v| v.to_le_bytes()).collect(),
+        2 => b"Default\0".to_vec(),
+        _ => return fail(87, 0),
+    };
+    if !needed.is_null() {
+        unsafe { *needed = value.len() as u32 };
+    }
+    if out.is_null() || (size as usize) < value.len() {
+        return fail(122, 0);
+    }
+    unsafe { std::ptr::copy_nonoverlapping(value.as_ptr(), out, value.len()) };
+    1
+}
+pub(crate) unsafe extern "win64" fn get_user_object_information_w(
+    object: usize,
+    index: i32,
+    out: *mut u8,
+    size: u32,
+    needed: *mut u32,
+) -> i32 {
+    if index != 2 {
+        return unsafe { get_user_object_information_a(object, index, out, size, needed) };
+    }
+    let value: Vec<u8> = "Default\0"
+        .encode_utf16()
+        .flat_map(|u| u.to_le_bytes())
+        .collect();
+    if !needed.is_null() {
+        unsafe { *needed = value.len() as u32 };
+    }
+    if out.is_null() || (size as usize) < value.len() {
+        return fail(122, 0);
+    }
+    unsafe { std::ptr::copy_nonoverlapping(value.as_ptr(), out, value.len()) };
+    1
+}
+pub(crate) extern "win64" fn wait_for_input_idle(_process: usize, _ms: u32) -> u32 {
+    0
+}
+pub(crate) extern "win64" fn disable_process_windows_ghosting() {}
+/// RegisterDeviceNotification: accepted; device arrival/removal is not reported.
+pub(crate) extern "win64" fn register_device_notification_w(
+    _recipient: usize,
+    _filter: usize,
+    _flags: u32,
+) -> usize {
+    static NEXT: AtomicUsize = AtomicUsize::new(0x000b_0000);
+    NEXT.fetch_add(4, Ordering::Relaxed)
+}
+pub(crate) extern "win64" fn unregister_device_notification(_handle: usize) -> i32 {
+    1
+}
+/// Icons: handles that are never drawn (the compositor shows the program's icon
+/// from its desktop entry, if any).
+pub(crate) extern "win64" fn load_icon(_instance: usize, _name: usize) -> usize {
+    static NEXT: AtomicUsize = AtomicUsize::new(0x000c_0000);
+    NEXT.fetch_add(4, Ordering::Relaxed)
+}
+/// LoadImageW: system cursors (IMAGE_CURSOR 2 with OIC/OCR ids and no module) are
+/// cursors; other images are icon-like handles.
+pub(crate) extern "win64" fn load_image_w(
+    instance: usize,
+    name: *const u16,
+    kind: u32,
+    _cx: i32,
+    _cy: i32,
+    _flags: u32,
+) -> usize {
+    if kind == 2 {
+        return super::input::load_cursor_w(instance, name);
+    }
+    if kind == 0 {
+        return 0x000d_0000; // a bitmap handle nothing draws
+    }
+    load_icon(instance, name as usize)
+}
+pub(crate) extern "win64" fn destroy_icon(_icon: usize) -> i32 {
+    1
+}
+pub(crate) extern "win64" fn create_icon_indirect(_info: usize) -> usize {
+    load_icon(0, 0)
+}
+
+// ---- rectangles -----------------------------------------------------------------------------
+pub(crate) unsafe extern "win64" fn copy_rect(out: *mut Rect, source: *const Rect) -> i32 {
+    if out.is_null() || source.is_null() {
+        return 0;
+    }
+    unsafe { *out = *source };
+    1
+}
+pub(crate) unsafe extern "win64" fn set_rect(
+    out: *mut Rect,
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+) -> i32 {
+    if out.is_null() {
+        return 0;
+    }
+    unsafe {
+        *out = Rect {
+            left,
+            top,
+            right,
+            bottom,
+        }
+    };
+    1
+}
+pub(crate) unsafe extern "win64" fn set_rect_empty(out: *mut Rect) -> i32 {
+    unsafe { set_rect(out, 0, 0, 0, 0) }
+}
+pub(crate) unsafe extern "win64" fn offset_rect(rect: *mut Rect, dx: i32, dy: i32) -> i32 {
+    if rect.is_null() {
+        return 0;
+    }
+    let r = unsafe { &mut *rect };
+    r.left += dx;
+    r.right += dx;
+    r.top += dy;
+    r.bottom += dy;
+    1
+}
+pub(crate) unsafe extern "win64" fn inflate_rect(rect: *mut Rect, dx: i32, dy: i32) -> i32 {
+    if rect.is_null() {
+        return 0;
+    }
+    let r = unsafe { &mut *rect };
+    r.left -= dx;
+    r.right += dx;
+    r.top -= dy;
+    r.bottom += dy;
+    1
+}
+/// PtInRect takes the POINT by value (8 bytes in one register).
+pub(crate) unsafe extern "win64" fn pt_in_rect(rect: *const Rect, point: u64) -> i32 {
+    if rect.is_null() {
+        return 0;
+    }
+    let (x, y) = (point as u32 as i32, (point >> 32) as u32 as i32);
+    let r = unsafe { *rect };
+    (x >= r.left && x < r.right && y >= r.top && y < r.bottom) as i32
+}
+pub(crate) unsafe extern "win64" fn is_rect_empty(rect: *const Rect) -> i32 {
+    if rect.is_null() {
+        return 1;
+    }
+    let r = unsafe { *rect };
+    (r.right <= r.left || r.bottom <= r.top) as i32
+}
+pub(crate) unsafe extern "win64" fn intersect_rect(
+    out: *mut Rect,
+    a: *const Rect,
+    b: *const Rect,
+) -> i32 {
+    if out.is_null() || a.is_null() || b.is_null() {
+        return 0;
+    }
+    let (a, b) = unsafe { (*a, *b) };
+    let r = Rect {
+        left: a.left.max(b.left),
+        top: a.top.max(b.top),
+        right: a.right.min(b.right),
+        bottom: a.bottom.min(b.bottom),
+    };
+    let empty = r.right <= r.left || r.bottom <= r.top;
+    unsafe { *out = if empty { Rect::default() } else { r } };
+    (!empty) as i32
+}
+pub(crate) unsafe extern "win64" fn union_rect(
+    out: *mut Rect,
+    a: *const Rect,
+    b: *const Rect,
+) -> i32 {
+    if out.is_null() || a.is_null() || b.is_null() {
+        return 0;
+    }
+    let (a, b) = unsafe { (*a, *b) };
+    unsafe {
+        *out = Rect {
+            left: a.left.min(b.left),
+            top: a.top.min(b.top),
+            right: a.right.max(b.right),
+            bottom: a.bottom.max(b.bottom),
+        }
+    };
+    1
+}
+pub(crate) unsafe extern "win64" fn equal_rect(a: *const Rect, b: *const Rect) -> i32 {
+    if a.is_null() || b.is_null() {
+        return 0;
+    }
+    (unsafe { *a } == unsafe { *b }) as i32
+}
+/// WindowFromPoint: the program window under a screen point (POINT by value).
+pub(crate) extern "win64" fn window_from_point(point: u64) -> usize {
+    let (x, y) = (point as u32 as i32, (point >> 32) as u32 as i32);
+    let list: Vec<usize> = windows()
+        .iter()
+        .filter(|(_, w)| w.visible && w.native != 0)
+        .map(|(&h, _)| h)
+        .collect();
+    list.into_iter()
+        .rev()
+        .find(|&h| {
+            super::windows::screen_rect(h)
+                .is_some_and(|r| x >= r.left && x < r.right && y >= r.top && y < r.bottom)
+        })
+        .unwrap_or(0)
+}
+/// Display configuration (QueryDisplayConfig): not available; programs fall back
+/// to EnumDisplaySettings.
+pub(crate) extern "win64" fn get_display_config_buffer_sizes(
+    _flags: u32,
+    _paths: *mut u32,
+    _modes: *mut u32,
+) -> i32 {
+    50 // ERROR_NOT_SUPPORTED
+}
+pub(crate) extern "win64" fn query_display_config(
+    _flags: u32,
+    _a: usize,
+    _b: usize,
+    _c: usize,
+    _d: usize,
+    _e: usize,
+) -> i32 {
+    50
+}
+pub(crate) extern "win64" fn display_config_get_device_info(_packet: usize) -> i32 {
+    50
+}

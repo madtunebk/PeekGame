@@ -1,4 +1,3 @@
-use crate::api::window::{classes, create, cursor, lifecycle, messages};
 // Explicit export catalog. A known name alone never supplies an implementation.
 use crate::api::{
     filesystem::write,
