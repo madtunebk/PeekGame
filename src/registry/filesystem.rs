@@ -2,6 +2,7 @@ use super::*;
 use crate::api::filesystem::files;
 use crate::api::filesystem::paths;
 exports! {
+    implemented!("SetNamedPipeHandleState", "file", "partial", "local Unix socket byte-stream pipe clients", crate::api::filesystem::pipes::set_state),
     implemented!(
         "CreateFileW",
         "filesystem",

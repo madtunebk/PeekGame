@@ -39,6 +39,8 @@ const EPOCH_1601: i64 = 11_644_473_600;
 struct Entry {
     file: File,
     overlapped: bool,
+    completion: Mutex<Option<crate::api::threading::iocp::Binding>>,
+    completion_modes: std::sync::atomic::AtomicU8,
 }
 type Table = HashMap<usize, Arc<Entry>>;
 static FILES: Mutex<Option<Table>> = Mutex::new(None);
@@ -63,6 +65,9 @@ fn fail<T>(code: u32, value: T) -> T {
 }
 /// CloseHandle for files, pipes and directory handles. False if not one.
 pub fn close(handle: usize) -> bool {
+    if super::pipes::close(handle) {
+        return true;
+    }
     FILES
         .lock()
         .unwrap()
@@ -122,16 +127,27 @@ fn attributes(meta: &std::fs::Metadata, name: Option<&str>) -> u32 {
 /// DuplicateHandle for files, pipes and the standard streams: a new handle on a
 /// duplicated descriptor (shared file position, as on Windows).
 pub(crate) fn duplicate(handle: usize) -> Option<usize> {
-    let file = match get(handle) {
-        Some(entry) => entry.file.try_clone().ok()?,
-        None => {
-            let fd = stdio::fd_for(handle)?;
-            let borrowed = unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) };
-            File::from(borrowed.try_clone_to_owned().ok()?)
-        }
-    };
-    let overlapped = get(handle).is_some_and(|e| e.overlapped);
-    Some(insert(Entry { file, overlapped }))
+    if let Some(target) = super::pipes::duplicate(handle) {
+        return Some(target);
+    }
+    if let Some(entry) = get(handle) {
+        let target = NEXT.fetch_add(16, Ordering::Relaxed);
+        FILES
+            .lock()
+            .unwrap()
+            .get_or_insert_with(HashMap::new)
+            .insert(target, entry);
+        return Some(target);
+    }
+    let fd = stdio::fd_for(handle)?;
+    let borrowed = unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) };
+    let file = File::from(borrowed.try_clone_to_owned().ok()?);
+    Some(insert(Entry {
+        file,
+        overlapped: false,
+        completion: Mutex::new(None),
+        completion_modes: 0.into(),
+    }))
 }
 /// A file handle's file, as a new descriptor (CreateFileMapping keeps its own).
 pub(crate) fn clone_file(handle: usize) -> Option<File> {
@@ -139,6 +155,9 @@ pub(crate) fn clone_file(handle: usize) -> Option<File> {
 }
 /// GetFileType for a file handle: disk, character device or pipe.
 pub(crate) fn file_type(handle: usize) -> Option<u32> {
+    if super::pipes::known(handle) {
+        return Some(3);
+    }
     use std::os::unix::fs::FileTypeExt;
     let kind = get(handle)?.file.metadata().ok()?.file_type();
     Some(if kind.is_char_device() {
@@ -194,6 +213,8 @@ fn create(path: PathBuf, access: u32, disposition: u32, flags: u32) -> usize {
     insert(Entry {
         file,
         overlapped: flags & FILE_FLAG_OVERLAPPED != 0,
+        completion: Mutex::new(None),
+        completion_modes: 0.into(),
     })
 }
 pub unsafe extern "win64" fn create_w(
@@ -205,6 +226,11 @@ pub unsafe extern "win64" fn create_w(
     flags: u32,
     _template: usize,
 ) -> usize {
+    if let Ok(raw) = unsafe { paths::wide(name) } {
+        if let Some(handle) = super::pipes::open(&raw, access, disposition, flags) {
+            return handle;
+        }
+    }
     match unsafe { wide_path(name) } {
         Ok(path) => create(path, access, disposition, flags),
         Err(code) => fail(code, INVALID_HANDLE),
@@ -219,6 +245,11 @@ pub unsafe extern "win64" fn create_a(
     flags: u32,
     _template: usize,
 ) -> usize {
+    if let Ok(raw) = unsafe { paths::narrow(name) } {
+        if let Some(handle) = super::pipes::open(&raw, access, disposition, flags) {
+            return handle;
+        }
+    }
     match unsafe { narrow_path(name) } {
         Ok(path) => create(path, access, disposition, flags),
         Err(code) => fail(code, INVALID_HANDLE),
@@ -246,10 +277,14 @@ pub unsafe extern "win64" fn create_pipe(
         *read = insert(Entry {
             file: File::from_raw_fd(fds[0]),
             overlapped: false,
+            completion: Mutex::new(None),
+            completion_modes: 0.into(),
         });
         *write = insert(Entry {
             file: File::from_raw_fd(fds[1]),
             overlapped: false,
+            completion: Mutex::new(None),
+            completion_modes: 0.into(),
         });
     }
     1
@@ -301,6 +336,11 @@ unsafe fn overlapped(
     if event != 0 {
         crate::api::threading::events::set(event & !1);
     }
+    if event & 1 == 0 && !(status == 0 && entry.completion_modes.load(Ordering::Acquire) & 1 != 0) {
+        if let Some(binding) = entry.completion.lock().unwrap().as_ref() {
+            binding.complete(ov as usize, status as usize, moved as u32);
+        }
+    }
     match result {
         Ok(0) if !writing && n > 0 => fail(ERROR_HANDLE_EOF, 0),
         Ok(_) => 1,
@@ -314,6 +354,9 @@ pub unsafe extern "win64" fn read(
     count: *mut u32,
     ov: *mut u8,
 ) -> i32 {
+    if let Some(result) = unsafe { super::pipes::io(handle, out, n, count, ov, false) } {
+        return result;
+    }
     if !count.is_null() {
         unsafe { *count = 0 };
     }
@@ -359,6 +402,10 @@ pub(crate) unsafe fn write(
     written: *mut u32,
     ov: *mut u8,
 ) -> Option<i32> {
+    if let Some(result) = unsafe { super::pipes::io(handle, data as *mut u8, n, written, ov, true) }
+    {
+        return Some(result);
+    }
     let entry = get(handle)?;
     if !ov.is_null() {
         return Some(unsafe { overlapped(&entry, data as *mut u8, n, written, ov, true) });
@@ -499,9 +546,12 @@ pub unsafe extern "win64" fn peek_named_pipe(
     }
     1
 }
-/// CancelIo / CancelIoEx: overlapped I/O always completes at once, so nothing is
-/// pending (CancelIoEx reports ERROR_NOT_FOUND, as Windows does then).
+/// Pipe I/O can pend and is cancelled by thread (CancelIo) or request (CancelIoEx).
+/// Disk transfers finish immediately and have no outstanding request to cancel.
 pub extern "win64" fn cancel_io(handle: usize) -> i32 {
+    if let Some(result) = super::pipes::cancel_current(handle) {
+        return result;
+    }
     if get(handle).is_some() {
         1
     } else {
@@ -509,19 +559,25 @@ pub extern "win64" fn cancel_io(handle: usize) -> i32 {
     }
 }
 pub extern "win64" fn cancel_io_ex(handle: usize, _overlapped: usize) -> i32 {
+    if let Some(result) = super::pipes::cancel(handle, _overlapped) {
+        return result;
+    }
     if get(handle).is_some() {
         fail(1168, 0)
     } else {
         fail(ERROR_INVALID_HANDLE, 0)
     }
 }
-/// GetOverlappedResult: the transfer already finished; report Internal/InternalHigh.
+/// GetOverlappedResult: disk transfers finish immediately; pipe transfers may pend.
 pub unsafe extern "win64" fn overlapped_result(
     handle: usize,
     ov: *const u8,
     transferred: *mut u32,
     _wait: i32,
 ) -> i32 {
+    if super::pipes::known(handle) {
+        return unsafe { super::pipes::result(handle, ov, transferred, _wait) };
+    }
     if get(handle).is_none() || ov.is_null() {
         return fail(ERROR_INVALID_HANDLE, 0);
     }
@@ -1058,4 +1114,45 @@ pub unsafe extern "win64" fn drive_type_w(root: *const u16) -> u32 {
     } else {
         1 // DRIVE_NO_ROOT_DIR
     }
+}
+
+/// Completion association belongs to the file object, including duplicated handles.
+pub(crate) fn associate_completion(
+    handle: usize,
+    binding: crate::api::threading::iocp::Binding,
+) -> Result<(), u32> {
+    if let Some(result) = super::pipes::associate(handle, binding.clone()) {
+        return result;
+    }
+    let entry = get(handle).ok_or_else(|| {
+        if crate::api::network::sockets::is_socket(handle) {
+            50u32
+        } else {
+            6u32
+        }
+    })?;
+    if !entry.overlapped {
+        return Err(87);
+    }
+    let mut current = entry.completion.lock().unwrap();
+    if let Some(previous) = current.as_ref() {
+        return if previous.same_port(&binding) {
+            Ok(())
+        } else {
+            Err(87)
+        };
+    }
+    *current = Some(binding);
+    Ok(())
+}
+pub(crate) fn set_completion_modes(handle: usize, modes: u8) -> Result<(), u32> {
+    if let Some(result) = super::pipes::modes(handle, modes) {
+        return result;
+    }
+    let entry = get(handle).ok_or(6u32)?;
+    if !entry.overlapped {
+        return Err(87);
+    }
+    entry.completion_modes.fetch_or(modes, Ordering::AcqRel);
+    Ok(())
 }

@@ -9,9 +9,9 @@ into a native ELF.
 
 ```sh
 cargo build --release
-python3 tools/stage_windows_dlls.py
+python3 tools/stage_dist.py
 G="$PWD/games/MarioVsLuigi-Win64-v2.2.0.1/MarioVsLuigi-Win64"
-./target/release/peekgame "$G/NSMB-MarioVsLuigi.exe" --run
+./dist/peekgame "$G/NSMB-MarioVsLuigi.exe" --run
 ```
 
 Needs a host Vulkan driver (`libvulkan.so.1` + ICD). In the session sandbox it
@@ -20,7 +20,8 @@ ran on Xvfb with Mesa lavapipe.
 Where it gets now: UnityPlayer and Mono start, the engine initializes, DXVK
 creates the D3D11 device and swapchain through the `vulkan-1.dll` bridge, frames
 are presented, the game's C# code runs (main menu, translations), plugins load.
-It stops in `discord_game_sdk.dll` at `KERNEL32!CreateIoCompletionPort`.
+IOCP and `FreeLibraryAndExitThread` now work. The latest private-Xvfb run passes
+Discord DLL startup and stops at `CRYPT32!CertOpenStore` in Unity.
 
 Logs: Unity's `Player.log` is under `~/.local/share/peekgame/LocalLow/<company>/<game>/`.
 PeekGame prints `STOP: missing Windows API DLL!Name` for the next unimplemented
@@ -59,5 +60,5 @@ DXVK/glslang snapshots are in `sources/`; the compiler and retained Windows DLLs
 are in `deps/`. They remain local, with upstream revisions/checksums/patches
 tracked in `deps/`. `tools/fetch_sources.py` restores pinned source inputs for a
 fresh checkout. The Unity game copy is under `games/`. No build/runtime input
-comes from the earlier project. Discord integration is disabled for current
-testing; IOCP support is deferred.
+comes from the earlier project. Use `dist/peekgame` for runs; `target/` is build
+output. See `docs/discord-iocp.md` for queue/pipe support and Discord probe limits.

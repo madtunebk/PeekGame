@@ -8,3 +8,5 @@ pub(crate) mod arguments;
 pub(crate) mod paths;
 pub(crate) mod teb;
 pub(crate) mod thread_template;
+
+pub(crate) mod thread_entry;

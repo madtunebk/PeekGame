@@ -230,6 +230,7 @@ pub extern "win64" fn switch_to_thread() -> i32 {
     1
 }
 pub extern "win64" fn sleep_ex(ms: u32, alertable: i32) -> u32 {
+    crate::api::threading::iocp::release_worker();
     if alertable != 0 {
         let result = crate::api::threading::objects::wait_alertable(ms, || None);
         return if result == crate::api::threading::apc::WAIT_IO_COMPLETION {

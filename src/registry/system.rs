@@ -22,12 +22,19 @@ use crate::api::system::{environment, locale, pointers, time};
 use crate::api::{memory::global, system::info};
 use crate::seh;
 exports! {
+    export!("ktmw32.dll", "CreateTransaction", "system", "partial", "unsupported transactions: INVALID_HANDLE_VALUE and ERROR_NOT_SUPPORTED", crate::api::system::transactions::create),
+    export!("ktmw32.dll", "CommitTransaction", "system", "partial", "no valid transaction handles: ERROR_INVALID_HANDLE", crate::api::system::transactions::commit),
+    export!("advapi32.dll", "RegCreateKeyTransactedW", "system", "partial", "unsupported transactions: ERROR_NOT_SUPPORTED", crate::api::system::transactions::create_key),
+    implemented!("GetQueuedCompletionStatus", "threading", "partial", "FIFO completion packets, timeout and close wakeup", crate::api::threading::iocp::get_status),
+    implemented!("GetQueuedCompletionStatusEx", "threading", "partial", "batch dequeue and alertable waits", crate::api::threading::iocp::get_status_ex),
+    implemented!("PostQueuedCompletionStatus", "threading", "partial", "opaque user completion packets", crate::api::threading::iocp::post),
+    implemented!("SetFileCompletionNotificationModes", "file", "partial", "overlapped files: skip synchronous success and event flags", crate::api::threading::iocp::notification_modes),
     implemented!(
         "CreateIoCompletionPort",
         "system",
         "partial",
-        "not supported yet: fails with ERROR_NOT_SUPPORTED",
-        compat::create_io_completion_port
+        "completion queues and overlapped file association",
+        crate::api::threading::iocp::create
     ),
     implemented!(
         "lstrlenW",

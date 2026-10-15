@@ -41,7 +41,7 @@ unsafe extern "C" {
     fn gethostname(name: *mut u8, length: usize) -> i32;
 }
 #[repr(C)]
-pub(super) struct PollFd {
+pub(crate) struct PollFd {
     pub fd: i32,
     pub events: i16,
     pub revents: i16,
@@ -87,7 +87,7 @@ fn message_flags(flags: i32) -> i32 {
 fn fd(s: usize) -> i32 {
     s as i32
 }
-pub(super) fn is_socket(s: usize) -> bool {
+pub(crate) fn is_socket(s: usize) -> bool {
     let mut kind = 0i32;
     let mut length = 4u32;
     unsafe {

@@ -263,6 +263,7 @@ fn check(handle: usize, take: bool) -> Option<bool> {
 }
 /// Waits until `ready` (re-evaluated after every change) or the timeout.
 fn wait_until(ms: u32, mut ready: impl FnMut() -> Option<u32>) -> u32 {
+    super::iocp::release_worker();
     let deadline = (ms != u32::MAX).then(|| Instant::now() + Duration::from_millis(ms as u64));
     let mut generation = GENERATION.lock().unwrap();
     loop {
@@ -289,6 +290,7 @@ fn wait_until(ms: u32, mut ready: impl FnMut() -> Option<u32>) -> u32 {
 /// An alertable wait: queued APCs run first, or as soon as one is queued, and the
 /// wait returns WAIT_IO_COMPLETION.
 pub fn wait_alertable(ms: u32, mut ready: impl FnMut() -> Option<u32>) -> u32 {
+    super::iocp::release_worker();
     if apc::run() {
         return apc::WAIT_IO_COMPLETION;
     }

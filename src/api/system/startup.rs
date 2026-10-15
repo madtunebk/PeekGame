@@ -87,6 +87,7 @@ pub unsafe extern "win64" fn performance_counter(p: *mut i64) -> i32 {
     1
 }
 pub extern "win64" fn sleep(ms: u32) {
+    crate::api::threading::iocp::release_worker();
     std::thread::sleep(std::time::Duration::from_millis(ms as u64));
 }
 pub extern "win64" fn is_debugger_present() -> i32 {

@@ -2,11 +2,13 @@
 
 In rough order of what the game hits next.
 
-1. **IOCP** (`CreateIoCompletionPort`, `GetQueuedCompletionStatus(Ex)`,
-   `PostQueuedCompletionStatus`) — Discord SDK now; also overlapped Winsock
-   (`WSARecv/WSASend` with OVERLAPPED, AcceptEx/ConnectEx via `WSAIoctl`
-   `SIO_GET_EXTENSION_FUNCTION_POINTER`) for Mono/.NET sockets. peek has
-   `iocp.inc` to port. `WSAIoctl(0x4004747b)` is also requested.
+1. **IOCP / Discord follow-up**: queue APIs, overlapped file completions and
+   Unix-socket byte-pipe clients are implemented; the real Discord SDK passes
+   creation/callbacks/destruction against a controlled peer and the running Linux
+   Discord client. Rich presence/invitations/overlay still need game-level checks.
+   Socket overlapped WSARecv/WSASend,
+   AcceptEx/ConnectEx and AFD polling are still missing; unsupported calls fail.
+   See `docs/discord-iocp.md`. Unity's next observed stop is `CertOpenStore`.
 2. **Audio**: WASAPI (MMDevAPI `IMMDeviceEnumerator`, `IAudioClient`,
    `IAudioRenderClient`) on a host backend (PulseAudio/PipeWire). peek has
    `wasapi.inc`. Without it the game runs silent or fails audio init.

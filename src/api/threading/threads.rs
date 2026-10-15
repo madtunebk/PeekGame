@@ -134,7 +134,8 @@ pub unsafe extern "win64" fn create(
                 held = thread.changed.wait(held).unwrap();
             }
         }
-        let result = start(parameter);
+        let result = crate::host::thread_entry::run(start, parameter);
+        super::iocp::release_worker();
         crate::host::thread_template::detach();
         *thread.exit.lock().unwrap() = Some(result);
         thread.changed.notify_all();
@@ -188,7 +189,8 @@ pub unsafe extern "win64" fn duplicate(
     } else if let Some(thread) = existing {
         Some(insert(thread))
     } else {
-        super::events::duplicate(source)
+        super::iocp::duplicate(source)
+            .or_else(|| super::events::duplicate(source))
             .or_else(|| super::objects::duplicate(source))
             .or_else(|| crate::api::filesystem::files::duplicate(source))
     };

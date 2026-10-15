@@ -8,6 +8,8 @@ use crate::api::threading::timers;
 use crate::api::threading::{address, fls, once, slist, srw};
 use crate::api::threading::{critical, tls};
 exports! {
+    implemented!("ExitThread", "threading", "partial", "Windows-created threads; TLS detach and exit status", crate::host::thread_entry::exit),
+    implemented!("FreeLibraryAndExitThread", "threading", "partial", "release module reference then terminate calling Windows thread", crate::host::thread_entry::free_and_exit),
     implemented!(
         "SuspendThread",
         "threading",

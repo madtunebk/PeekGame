@@ -27,3 +27,5 @@ pub(crate) mod time;
 pub(crate) mod toolhelp;
 pub(crate) mod version;
 pub(crate) mod winmm;
+
+pub(crate) mod transactions;

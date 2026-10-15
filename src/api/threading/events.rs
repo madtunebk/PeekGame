@@ -91,7 +91,8 @@ pub fn duplicate(handle: usize) -> Option<usize> {
     Some(target)
 }
 pub extern "win64" fn close(handle: usize) -> i32 {
-    if events().lock().unwrap().remove(&handle).is_some()
+    if super::iocp::close(handle)
+        || events().lock().unwrap().remove(&handle).is_some()
         || super::threads::close(handle)
         || crate::api::filesystem::files::close(handle)
         || super::objects::close(handle)
@@ -106,6 +107,7 @@ pub extern "win64" fn close(handle: usize) -> i32 {
     }
 }
 pub extern "win64" fn wait(handle: usize, milliseconds: u32) -> u32 {
+    super::iocp::release_worker();
     if let Some(result) = super::threads::wait(handle, milliseconds) {
         return result;
     }
