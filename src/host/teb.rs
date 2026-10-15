@@ -10,11 +10,11 @@ unsafe extern "C" {
 struct ThreadEnvironment {
     teb: Box<[u64; 1024]>,
     _peb: Box<[u64; 128]>,
-    _vector: Box<[usize; 64]>,
-    _data: Vec<u8>,
     previous: u64,
 }
 thread_local! {static ENVIRONMENT:RefCell<Option<ThreadEnvironment>>=const{RefCell::new(None)};}
+/// Gives the calling thread a TEB/PEB in gs. `data` is the EXE's TLS template
+/// (slot 0); the TLS vector also holds a block for every DLL with static TLS.
 pub fn initialize(image: usize, data: Vec<u8>) -> Result<(), String> {
     ENVIRONMENT.with(|cell| {
         if cell.borrow().is_some() {
@@ -23,8 +23,6 @@ pub fn initialize(image: usize, data: Vec<u8>) -> Result<(), String> {
         let mut environment = ThreadEnvironment {
             teb: Box::new([0; 1024]),
             _peb: Box::new([0; 128]),
-            _vector: Box::new([0; 64]),
-            _data: data,
             previous: 0,
         };
         let mut attr = [0u64; 8];
@@ -46,8 +44,8 @@ pub fn initialize(image: usize, data: Vec<u8>) -> Result<(), String> {
             environment.teb[9] = syscall(186) as u64;
             environment._peb[2] = image as u64;
             environment.teb[12] = environment._peb.as_ptr() as u64;
-            environment._vector[0] = environment._data.as_ptr() as usize;
-            environment.teb[11] = environment._vector.as_ptr() as u64;
+            crate::images::tls::set_exe_template(data);
+            crate::images::tls::thread_start(&mut environment.teb[11]);
             if syscall(158, 0x1004i32, &mut environment.previous) != 0 {
                 return Err("ARCH_GET_GS failed".into());
             }
@@ -85,6 +83,7 @@ pub fn error() -> Option<u32> {
 }
 impl Drop for ThreadEnvironment {
     fn drop(&mut self) {
+        crate::images::tls::thread_end(&mut self.teb[11]);
         unsafe {
             syscall(158, 0x1001i32, self.previous);
         }

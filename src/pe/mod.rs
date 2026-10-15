@@ -73,7 +73,7 @@ pub struct Tls {
     pub zero_fill: u32,
     pub callbacks: Vec<u64>,
 }
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Image {
     pub machine: u16,
     pub image_base: u64,

@@ -42,9 +42,21 @@ Per-game runtime code pruning is still pending. No PE machine code is translated
 The image is mapped at its preferred base, or elsewhere with its base relocations
 applied when that range is taken (images without relocations still need it). All
 layout, TLS and relocation data comes from the image through `src/pe/`, the one PE
-reader shared by the analyzer, the runner and the relinker. Delayed binding,
-ordinal binding, external PE DLL loading, SEH support, and arbitrary games are
-not supported by this runner yet. Unsupported static imports stop before entry.
+reader shared by the analyzer, the runner and the relinker.
+
+Program PE DLLs (the ones a game ships, such as `UnityPlayer.dll` or Mono) load
+through `src/images/`, ported from peek's `pe_modules.inc`. DLLs PeekGame
+implements always win; any other DLL is searched in the EXE's directory, the
+`SetDllDirectory` directory, then the current directory, case-insensitively. Each is
+mapped at its preferred base or relocated on a 64 KiB boundary, its imports are
+bound (loading its own PE dependencies), its static TLS gets a slot in every
+thread, and its TLS callbacks and `DllMain` run in dependency order, before the
+EXE's entry point. `LoadLibrary(Ex)A/W`, `GetProcAddress` (name, ordinal,
+forwarder), `GetModuleHandle(Ex)A/W`, `FreeLibrary`, `DisableThreadLibraryCalls`
+and `SetDllDirectoryA/W` work on them. API-set names (`api-ms-win-*`) resolve to
+kernel32. An import nothing provides becomes a stop that names it if called; a
+missing data import is not detected. SEH support and arbitrary games are not
+supported by this runner yet. Unsupported static imports stop before entry.
 Dynamic lookup covers registered runtime modules; unavailable DLLs/exports return
 Windows errors 126/127 and are recorded. A trace contains only observed requests,
 so an empty trace never proves a game has no other dynamic imports.
@@ -62,6 +74,7 @@ cargo build --release --offline
 python3 tests/test_imports_abi.py
 python3 tests/test_window_abi.py
 python3 tests/test_relink.py
+python3 tests/test_pe_dlls.py
 ```
 
 Parser tests cover named and ordinal imports, delay imports, truncated files,
@@ -228,9 +241,11 @@ cargo build --release --offline
 ./relinked/testgame/testgame --frames 300
 ```
 
-`--relink` writes one non-PIE Linux executable (default `relinked/<exe-stem>/`,
-or `--output NEW_DIRECTORY`; existing directories are refused). There is no PE
-loader in it, and no `game.exe` or `game_imports.so` beside it:
+`--relink` writes one non-PIE Linux executable named after the EXE (default
+directory `relinked/<exe-stem>/`, or `--output DIRECTORY`, which may already exist;
+an existing executable is never replaced). For a game that ships its own DLLs,
+write it into the game's directory (`--output "$GAME_DIR"`), since it looks for
+them, and for its data, beside itself. The EXE itself needs no PE loader:
 
 - The PE headers and every section become ELF sections linked at their original
   virtual addresses (`.peimage.NN`), so the kernel maps the image as ordinary
@@ -240,6 +255,8 @@ loader in it, and no `game.exe` or `game_imports.so` beside it:
   linker writes the address. Each registry entry defines that symbol (a direct
   jump; data imports use the variable's export name). The runtime is linked in
   statically from `target/release/libgame_imports.a`.
+- Imports from program DLLs (any DLL PeekGame does not implement) are listed in
+  a table; at startup the PE loader loads those DLLs and fills their slots.
 - Unimplemented static imports link to stubs that stop with
   `STOP: missing Windows API <dll>!<name>` (exit 78) only if they are called.
 - `main` calls `peekgame_relinked_main`, which sets up the process, TEB and TLS
@@ -252,8 +269,9 @@ it does not translate or recompile anything. Requirements: `cc` with GNU ld
 (override with `CC`), the X11 development library, and for D3D11 the DXVK X11
 build, which is copied into `runtime/` next to the executable.
 `PEEKGAME_IMPORT_TRACE=FILE` records dynamic imports, as `--run` does.
-Delay and ordinal imports are refused. The image always sits at its preferred
-base, so base relocations are never applied.
+Delay-load slots are left to the image's own helper, which binds them through
+`LoadLibrary`/`GetProcAddress`. The EXE always sits at its preferred base, so its
+base relocations are never applied.
 
 `python3 tests/test_relink.py` checks the ELF layout, link-time IAT binding,
 dynamic lookup, the missing-import stop and the relinked testgame on private Xvfb.

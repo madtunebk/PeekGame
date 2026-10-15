@@ -28,25 +28,40 @@ pub fn build(exe: &Path, output: &Path) -> Result<()> {
     // IAT slot RVA -> symbol the linker writes there.
     let mut slots = BTreeMap::new();
     let mut missing = Vec::new();
+    let mut runtime = Vec::new();
     let mut graphics = false;
-    for import in &image.imports {
-        if import.delayed {
-            return Err("relink does not support delay imports yet".into());
-        }
-        let name = import
-            .name
-            .as_deref()
-            .ok_or("relink does not support ordinal imports yet")?;
-        let symbol = match game_imports::registry::find(&import.dll, name)
-            .filter(|e| e.address_available())
-        {
-            Some(entry) => {
-                graphics |= entry.dll == "d3d11.dll";
-                format!("\"peekgame.{}.{}\"", entry.dll, entry.name)
-            }
-            None => {
-                missing.push(format!("{}!{name}", import.dll));
-                format!(".Lmissing{}", missing.len() - 1)
+    // Delay-load slots point into the image's own helper, which binds them through
+    // LoadLibrary/GetProcAddress when first called: nothing to do here.
+    for import in image.imports.iter().filter(|i| !i.delayed) {
+        let label = || {
+            format!(
+                "{}!{}",
+                import.dll,
+                import
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| format!("#{}", import.ordinal.unwrap_or(0)))
+            )
+        };
+        let symbol = if !game_imports::registry::provides(&import.dll) {
+            // A program DLL (UnityPlayer.dll, ...): bound at startup by the PE loader.
+            runtime.push(import.clone());
+            "0".to_owned()
+        } else {
+            match import
+                .name
+                .as_deref()
+                .and_then(|name| game_imports::registry::find(&import.dll, name))
+                .filter(|e| e.address_available())
+            {
+                Some(entry) => {
+                    graphics |= entry.dll == "d3d11.dll";
+                    format!("\"peekgame.{}.{}\"", entry.dll, entry.name)
+                }
+                None => {
+                    missing.push(label());
+                    format!(".Lmissing{}", missing.len() - 1)
+                }
             }
         };
         if slots.insert(import.iat_rva as usize, symbol).is_some() {
@@ -64,18 +79,24 @@ pub fn build(exe: &Path, output: &Path) -> Result<()> {
             library.display()
         ));
     }
-    if let Some(parent) = output.parent().filter(|p| !p.as_os_str().is_empty()) {
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-    // Refuse to overwrite an earlier result, like --package.
-    fs::create_dir(output).map_err(|e| format!("cannot create {}: {e}", output.display()))?;
-    let work = output.join("build");
-    fs::create_dir(&work).map_err(|e| e.to_string())?;
-    let assembly = work.join("image.S");
-    fs::write(&assembly, render(exe, &image, &slots, &missing)?).map_err(|e| e.to_string())?;
-
+    // The executable may go into an existing directory (the game's own, so it finds
+    // the DLLs and data beside it), but never replaces an existing file.
+    fs::create_dir_all(output).map_err(|e| format!("cannot create {}: {e}", output.display()))?;
     let stem = exe.file_stem().ok_or("EXE has no name")?;
     let target = output.join(stem);
+    if target.exists() {
+        return Err(format!("{} already exists", target.display()));
+    }
+    let work = output.join(format!("{}.relink", stem.to_string_lossy()));
+    fs::create_dir_all(&work).map_err(|e| e.to_string())?;
+    let assembly = work.join("image.S");
+    let exe_name = exe.file_name().ok_or("EXE has no name")?.to_string_lossy();
+    fs::write(
+        &assembly,
+        render(exe, &image, &slots, &missing, &runtime, &exe_name)?,
+    )
+    .map_err(|e| e.to_string())?;
+
     let mut link = Command::new(env::var_os("CC").unwrap_or_else(|| "cc".into()));
     link.arg("-no-pie")
         .arg("-o")
@@ -103,12 +124,12 @@ pub fn build(exe: &Path, output: &Path) -> Result<()> {
 
     if graphics {
         let dxvk = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/dxvk-x11/prefix/lib");
-        let runtime = output.join("runtime");
-        fs::create_dir(&runtime).map_err(|e| e.to_string())?;
+        let directory = output.join("runtime");
+        fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
         for name in ["libdxvk_dxgi.so.0", "libdxvk_d3d11.so.0"] {
             let source = dxvk.join(name);
             if source.is_file() {
-                fs::copy(&source, runtime.join(name)).map_err(|e| e.to_string())?;
+                fs::copy(&source, directory.join(name)).map_err(|e| e.to_string())?;
             } else {
                 eprintln!(
                     "warning: {} not built (tools/build_dxvk_x11.py); D3D11 creation will fail until runtime/{name} exists",
@@ -118,9 +139,10 @@ pub fn build(exe: &Path, output: &Path) -> Result<()> {
         }
     }
     println!(
-        "Relinked: {}\n{} import slot(s) bound at link time, {} unresolved (stop if called).",
+        "Relinked: {}\n{} import slot(s) bound at link time, {} from program DLLs bound at startup, {} unresolved (stop if called).",
         target.display(),
-        slots.len() - missing.len(),
+        slots.len() - missing.len() - runtime.len(),
+        runtime.len(),
         missing.len()
     );
     for name in &missing {
@@ -165,6 +187,8 @@ fn render(
     image: &pe::Image,
     slots: &BTreeMap<usize, String>,
     missing: &[String],
+    runtime: &[pe::Import],
+    exe_name: &str,
 ) -> Result<String> {
     let exe = exe.to_string_lossy();
     if exe.contains(['"', '\\', '\n']) {
@@ -227,9 +251,46 @@ fn render(
         )
         .unwrap();
     }
+    // Imports from program DLLs, bound at startup by the PE loader (layout:
+    // relinked::Info and relinked::Entry).
+    let quoted = |text: &str| -> Result<String> {
+        if text.contains(['"', '\\', '\n']) {
+            return Err(format!("name cannot be embedded in assembly: {text:?}"));
+        }
+        Ok(format!("\"{text}\""))
+    };
+    s.push_str("\n.section .rodata.peekgame_runtime,\"a\",@progbits\n");
+    writeln!(s, ".Lexe_name: .asciz {}", quoted(exe_name)?).unwrap();
+    for (i, import) in runtime.iter().enumerate() {
+        writeln!(s, ".Lrt_dll{i}: .asciz {}", quoted(&import.dll)?).unwrap();
+        if let Some(name) = &import.name {
+            writeln!(s, ".Lrt_name{i}: .asciz {}", quoted(name)?).unwrap();
+        }
+    }
+    writeln!(
+        s,
+        ".balign 8\n.Lruntime_info:\n    .quad .Lexe_name\n    .quad {}",
+        runtime.len()
+    )
+    .unwrap();
+    for (i, import) in runtime.iter().enumerate() {
+        let name = if import.name.is_some() {
+            format!(".Lrt_name{i}")
+        } else {
+            "0".into()
+        };
+        writeln!(
+            s,
+            "    .long {:#x}, {:#x}\n    .quad .Lrt_dll{i}, {name}",
+            import.iat_rva,
+            import.ordinal.map_or(u32::MAX, u32::from)
+        )
+        .unwrap();
+    }
+    s.push_str(".text\n");
     write!(
         s,
-        "\n.globl main\n.type main,@function\nmain:\n    movabs ${:#x}, %rdx\n    mov ${:#x}, %ecx\n    jmp peekgame_relinked_main\n.size main, .-main\n",
+        "\n.globl main\n.type main,@function\nmain:\n    movabs ${:#x}, %rdx\n    mov ${:#x}, %ecx\n    lea .Lruntime_info(%rip), %r8\n    jmp peekgame_relinked_main\n.size main, .-main\n",
         image.image_base, image.entry_rva
     )
     .unwrap();

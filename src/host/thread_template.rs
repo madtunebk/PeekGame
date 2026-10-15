@@ -26,10 +26,12 @@ fn notify(reason: u32) {
 pub fn attach() -> Result<(), String> {
     if let Some(t) = TEMPLATE.get() {
         super::teb::initialize(t.base, t.data.clone())?;
+        crate::images::thread_notify(2);
         notify(2);
     }
     Ok(())
 }
 pub fn detach() {
     notify(3);
+    crate::images::thread_notify(3);
 }

@@ -1,3 +1,4 @@
+//! Maps a PE image into memory: sections copied, relocations applied.
 use crate::pe;
 use std::ffi::c_void;
 unsafe extern "C" {
@@ -23,6 +24,9 @@ pub struct Mapping {
     address: *mut u8,
     size: usize,
 }
+// The mapping owns its pages; the address is only a handle to them.
+unsafe impl Send for Mapping {}
+unsafe impl Sync for Mapping {}
 impl Mapping {
     /// Maps `image` (parsed from `bytes`) at its preferred base, or anywhere and
     /// relocated when that range is taken and the image carries base relocations.
@@ -54,13 +58,27 @@ impl Mapping {
                     "preferred PE base {preferred:#x} is unavailable and the image has no relocations"
                 ));
             }
-            raw = unsafe { mmap(std::ptr::null_mut(), size, 3, MAP_PRIVATE_ANONYMOUS, -1, 0) };
-            if raw as isize == -1 {
+            // Anywhere on a 64 KiB boundary, Windows' allocation granularity: module
+            // handles keep their low bits clear (LoadLibraryEx data-file handles use them).
+            let span = size + LOWEST_IMAGE;
+            let wide = unsafe { mmap(std::ptr::null_mut(), span, 3, MAP_PRIVATE_ANONYMOUS, -1, 0) };
+            if wide as isize == -1 {
                 return Err(format!(
                     "cannot map PE image: {}",
                     std::io::Error::last_os_error()
                 ));
             }
+            let start = (wide as usize).next_multiple_of(LOWEST_IMAGE);
+            unsafe {
+                if start > wide as usize {
+                    munmap(wide, start - wide as usize);
+                }
+                let tail = wide as usize + span - (start + size);
+                if tail > 0 {
+                    munmap((start + size) as *mut c_void, tail);
+                }
+            }
+            raw = start as *mut c_void;
         }
         let mut result = Self {
             address: raw.cast(),
@@ -109,6 +127,13 @@ impl Mapping {
     pub fn base(&self) -> usize {
         self.address as usize
     }
+    pub fn size(&self) -> usize {
+        self.size
+    }
+    pub fn bind_u32(&self, rva: u32, value: u32) -> Result<(), String> {
+        unsafe { self.slot(rva, 4)?.cast::<u32>().write_unaligned(value) };
+        Ok(())
+    }
     pub fn bind(&self, rva: u32, value: usize) -> Result<(), String> {
         unsafe { self.slot(rva, 8)?.cast::<usize>().write_unaligned(value) };
         Ok(())
@@ -118,8 +143,11 @@ impl Mapping {
         if unsafe { mprotect(self.address.cast(), self.size, 0) } != 0 {
             return Err(std::io::Error::last_os_error().to_string());
         }
-        unsafe { game_imports::mapped::protect(image, self.base()) }
+        unsafe { crate::mapped::protect(image, self.base()) }
     }
+    /// Calls the EXE entry point.
+    /// # Safety
+    /// Imports must be bound and the process environment set up.
     pub unsafe fn enter(&self, image: &pe::Image) -> Result<(), String> {
         if !image
             .section_at(image.entry_rva)

@@ -122,8 +122,26 @@ pub fn entries() -> impl Iterator<Item = &'static Export> {
         .chain(window::EXPORTS.iter())
         .chain(graphics::EXPORTS.iter())
 }
+fn canonical(dll: &str) -> String {
+    let lower = dll.to_ascii_lowercase();
+    let lower = lower
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(&lower)
+        .to_owned();
+    // API sets (api-ms-win-*, ext-ms-win-*) are served by kernel32, as kernelbase
+    // forwards them on Windows.
+    if lower.starts_with("api-ms-win-") || lower.starts_with("ext-ms-win-") {
+        return "kernel32".into();
+    }
+    lower.strip_suffix(".dll").unwrap_or(&lower).to_owned()
+}
 pub fn find(dll: &str, name: &str) -> Option<&'static Export> {
-    let normalized = dll.to_ascii_lowercase();
-    let normalized = normalized.strip_suffix(".dll").unwrap_or(&normalized);
+    let normalized = canonical(dll);
     entries().find(|e| e.dll.strip_suffix(".dll").unwrap_or(e.dll) == normalized && e.name == name)
+}
+/// Does PeekGame implement `dll` (at least partly)? Such a DLL is never loaded from disk.
+pub fn provides(dll: &str) -> bool {
+    let normalized = canonical(dll);
+    entries().any(|e| e.dll.strip_suffix(".dll").unwrap_or(e.dll) == normalized)
 }

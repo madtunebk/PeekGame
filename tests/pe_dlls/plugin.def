@@ -1,0 +1,10 @@
+EXPORTS
+add_one
+swap_tls
+process_attach DATA
+thread_attach DATA
+thread_detach DATA
+tls_notes DATA
+hidden @7 NONAME
+Sleepy = KERNEL32.Sleep
+DepValue = dep.dep_value
