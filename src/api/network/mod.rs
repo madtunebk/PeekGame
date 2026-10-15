@@ -6,6 +6,7 @@
 //! numbers, SO_RCVTIMEO/SNDTIMEO in milliseconds, fd_set as count + SOCKET array,
 //! 32-bit timeval, WSAEWOULDBLOCK for connects in progress, no SIGPIPE.
 pub(crate) mod events;
+pub(crate) mod certificates;
 pub(crate) mod resolve;
 pub(crate) mod sockets;
 pub(crate) mod sspi;

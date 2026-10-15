@@ -3,7 +3,8 @@
 A Rust static PE analyzer plus the first modular Windows API backend.
 The analyzer reads PE files without executing them. The backend builds as a Linux
 shared library and uses Windows x64 calling conventions for game-facing functions.
-No Rust package dependencies are required. The window backend links directly to
+No Rust package dependencies are required. Building also needs OpenSSL development
+libraries (`libssl-dev` on Debian/Ubuntu); the runtime uses the host `libcrypto`. The window backend links directly to
 Linux libX11 (development headers/library required at build time); SDL is not used.
 
 ## Analyze a game

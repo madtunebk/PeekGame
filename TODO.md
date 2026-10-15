@@ -8,13 +8,14 @@ In rough order of what the game hits next.
    Discord client. Rich presence/invitations/overlay still need game-level checks.
    Socket overlapped WSARecv/WSASend,
    AcceptEx/ConnectEx and AFD polling are still missing; unsupported calls fail.
-   See `docs/discord-iocp.md`. Unity's next observed stop is `CertOpenStore`.
+   See `docs/discord-iocp.md`. Certificate-store/chain stops have since been fixed.
 2. **Audio**: WASAPI (MMDevAPI `IMMDeviceEnumerator`, `IAudioClient`,
    `IAudioRenderClient`) on a host backend (PulseAudio/PipeWire). peek has
    `wasapi.inc`. Without it the game runs silent or fails audio init.
-3. **Online play**: HTTPS — crypt32 certificate chain verification (peek
-   `crypt32.inc`, `cert_chain.inc`), WinHTTP requests if used, async sockets
-   (item 1).
+3. **Online play**: CRYPT32 ROOT/memory stores and OpenSSL BASE/SSL validation
+   are implemented (see `docs/certificates.md`). Online revocation/AIA retrieval,
+   richer certificate policies, WinHTTP requests if used, and async sockets
+   (item 1) remain. Verify the full online session on real hardware.
 4. **Check rendering on real hardware** (user's GPU instead of lavapipe):
    swapchain resize, fullscreen toggling (`SetWindowPos` on a caption-less
    window), vsync/frame latency.

@@ -3,6 +3,19 @@ use super::*;
 use crate::api::network::{self, events, resolve, sockets, sspi, winhttp};
 use crate::api::threading::events as win_events;
 exports! {
+    export!("crypt32.dll", "CertGetCertificateChain", "network", "partial", "OpenSSL verification against host trust, no online revocation", network::certificates::chain::get),
+    export!("crypt32.dll", "CertFreeCertificateChain", "network", "partial", "owned Windows chain contexts", network::certificates::chain::free),
+    export!("crypt32.dll", "CertDuplicateCertificateChain", "network", "partial", "reference-counted chain contexts", network::certificates::chain::duplicate),
+    export!("crypt32.dll", "CertVerifyCertificateChainPolicy", "network", "partial", "BASE/SSL: trust, signatures, expiry, EKU and DNS/IP names", network::certificates::chain::policy),
+    export!("crypt32.dll", "CertOpenStore", "network", "partial", "memory and read-only host ROOT stores", network::certificates::open),
+    export!("crypt32.dll", "CertOpenSystemStoreA", "network", "partial", "read-only host ROOT", network::certificates::open_system_a),
+    export!("crypt32.dll", "CertOpenSystemStoreW", "network", "partial", "read-only host ROOT", network::certificates::open_system_w),
+    export!("crypt32.dll", "CertEnumCertificatesInStore", "network", "partial", "DER and CERT_INFO; consumes previous reference", network::certificates::enumerate),
+    export!("crypt32.dll", "CertDuplicateCertificateContext", "network", "partial", "reference-counted contexts", network::certificates::duplicate),
+    export!("crypt32.dll", "CertFreeCertificateContext", "network", "partial", "releases a context reference", network::certificates::free),
+    export!("crypt32.dll", "CertCloseStore", "network", "partial", "normal/check close; external contexts survive", network::certificates::close),
+    export!("crypt32.dll", "CertCreateCertificateContext", "network", "partial", "bounds-checked X.509 metadata", network::certificates::create_context),
+    export!("crypt32.dll", "CertAddEncodedCertificateToStore", "network", "partial", "memory stores: new/use-existing/replace/always", network::certificates::add),
     export!(
         "winhttp.dll",
         "WinHttpGetIEProxyConfigForCurrentUser",

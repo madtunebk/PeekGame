@@ -20,8 +20,9 @@ ran on Xvfb with Mesa lavapipe.
 Where it gets now: UnityPlayer and Mono start, the engine initializes, DXVK
 creates the D3D11 device and swapchain through the `vulkan-1.dll` bridge, frames
 are presented, the game's C# code runs (main menu, translations), plugins load.
-IOCP and `FreeLibraryAndExitThread` now work. The latest private-Xvfb run passes
-Discord DLL startup and stops at `CRYPT32!CertOpenStore` in Unity.
+IOCP and `FreeLibraryAndExitThread` work, including the real Discord SDK. CRYPT32
+now provides ROOT/memory stores and OpenSSL chain/SSL policy validation. The latest
+private-Xvfb check stayed running for 25 seconds without a STOP or Curl error 35.
 
 Logs: Unity's `Player.log` is under `~/.local/share/peekgame/LocalLow/<company>/<game>/`.
 PeekGame prints `STOP: missing Windows API DLL!Name` for the next unimplemented
