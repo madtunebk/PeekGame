@@ -1,0 +1,15 @@
+[package]
+name = "peekgame"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "peekgame"
+path = "src/main.rs"
+
+[lib]
+name = "game_imports"
+path = "src/lib.rs"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]

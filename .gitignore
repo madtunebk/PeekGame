@@ -1,0 +1,10 @@
+/target/
+/reports/
+/cache/*
+!/cache/.gitkeep
+/logs/*
+!/logs/.gitkeep
+/packages/
+/tests/godot_image/.godot/
+/sources/
+
