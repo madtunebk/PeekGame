@@ -97,6 +97,7 @@ pub extern "win64" fn close(handle: usize) -> i32 {
         || super::objects::close(handle)
         || crate::api::system::toolhelp::close(handle)
         || crate::api::system::security::close(handle)
+        || crate::api::memory::mapping::close(handle)
     {
         1
     } else {
@@ -136,8 +137,7 @@ pub extern "win64" fn wait(handle: usize, milliseconds: u32) -> u32 {
 }
 pub extern "win64" fn wait_ex(handle: usize, milliseconds: u32, alertable: i32) -> u32 {
     if alertable != 0 {
-        error::set(50);
-        return u32::MAX;
+        return super::objects::wait_single_alertable(handle, milliseconds);
     }
     wait(handle, milliseconds)
 }

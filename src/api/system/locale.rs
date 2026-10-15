@@ -32,58 +32,59 @@ fn locale_name() -> String {
         (lang, country) => format!("{lang}-{country}"),
     }
 }
-/// LANGID of the user's language (peek's table); unknown languages are en-US.
+/// Languages PeekGame knows the LANGID of (peek's table), most specific first.
+const TABLE: &[(&str, u16)] = &[
+    ("en_US", 0x0409),
+    ("en_GB", 0x0809),
+    ("en_AU", 0x0c09),
+    ("en_CA", 0x1009),
+    ("en", 0x0409),
+    ("pt_BR", 0x0416),
+    ("pt_PT", 0x0816),
+    ("pt", 0x0816),
+    ("es_MX", 0x080a),
+    ("es", 0x0c0a),
+    ("zh_TW", 0x0404),
+    ("zh_HK", 0x0c04),
+    ("zh", 0x0804),
+    ("fr_CA", 0x0c0c),
+    ("fr", 0x040c),
+    ("de", 0x0407),
+    ("it", 0x0410),
+    ("ro", 0x0418),
+    ("ru", 0x0419),
+    ("uk", 0x0422),
+    ("pl", 0x0415),
+    ("cs", 0x0405),
+    ("sk", 0x041b),
+    ("hu", 0x040e),
+    ("bg", 0x0402),
+    ("el", 0x0408),
+    ("tr", 0x041f),
+    ("nl", 0x0413),
+    ("sv", 0x041d),
+    ("da", 0x0406),
+    ("nb", 0x0414),
+    ("no", 0x0414),
+    ("fi", 0x040b),
+    ("ja", 0x0411),
+    ("ko", 0x0412),
+    ("ar", 0x0401),
+    ("he", 0x040d),
+    ("hr", 0x041a),
+    ("sr", 0x081a),
+    ("sl", 0x0424),
+    ("lt", 0x0427),
+    ("lv", 0x0426),
+    ("et", 0x0425),
+    ("vi", 0x042a),
+    ("th", 0x041e),
+    ("id", 0x0421),
+    ("ca", 0x0403),
+    ("hi", 0x0439),
+];
+/// LANGID of the user's language; unknown languages are en-US.
 pub(crate) fn langid() -> u16 {
-    const TABLE: &[(&str, u16)] = &[
-        ("en_US", 0x0409),
-        ("en_GB", 0x0809),
-        ("en_AU", 0x0c09),
-        ("en_CA", 0x1009),
-        ("en", 0x0409),
-        ("pt_BR", 0x0416),
-        ("pt_PT", 0x0816),
-        ("pt", 0x0816),
-        ("es_MX", 0x080a),
-        ("es", 0x0c0a),
-        ("zh_TW", 0x0404),
-        ("zh_HK", 0x0c04),
-        ("zh", 0x0804),
-        ("fr_CA", 0x0c0c),
-        ("fr", 0x040c),
-        ("de", 0x0407),
-        ("it", 0x0410),
-        ("ro", 0x0418),
-        ("ru", 0x0419),
-        ("uk", 0x0422),
-        ("pl", 0x0415),
-        ("cs", 0x0405),
-        ("sk", 0x041b),
-        ("hu", 0x040e),
-        ("bg", 0x0402),
-        ("el", 0x0408),
-        ("tr", 0x041f),
-        ("nl", 0x0413),
-        ("sv", 0x041d),
-        ("da", 0x0406),
-        ("nb", 0x0414),
-        ("no", 0x0414),
-        ("fi", 0x040b),
-        ("ja", 0x0411),
-        ("ko", 0x0412),
-        ("ar", 0x0401),
-        ("he", 0x040d),
-        ("hr", 0x041a),
-        ("sr", 0x081a),
-        ("sl", 0x0424),
-        ("lt", 0x0427),
-        ("lv", 0x0426),
-        ("et", 0x0425),
-        ("vi", 0x042a),
-        ("th", 0x041e),
-        ("id", 0x0421),
-        ("ca", 0x0403),
-        ("hi", 0x0439),
-    ];
     let Some(l) = user_locale() else {
         return 0x0409;
     };
@@ -371,4 +372,80 @@ pub unsafe extern "win64" fn compare_ex(
     _param: usize,
 ) -> i32 {
     unsafe { compare(flags, a, a_count, b, b_count) }
+}
+
+/// The LANGID a "ll-CC" or "ll" locale name stands for.
+fn lcid_of(name: &str) -> Option<u32> {
+    if name.is_empty() || name.eq_ignore_ascii_case(&locale_name()) {
+        return Some(langid() as u32);
+    }
+    let tag = name.replace('-', "_");
+    TABLE
+        .iter()
+        .find(|(t, _)| t.eq_ignore_ascii_case(&tag))
+        .map(|(_, id)| *id as u32)
+}
+/// The locale name of `lcid`: the user's own, or a "ll-CC" entry of the table.
+fn name_of(lcid: u32) -> Option<String> {
+    if own_lcid(lcid) {
+        return Some(locale_name());
+    }
+    TABLE
+        .iter()
+        .find(|(t, id)| *id as u32 == lcid && t.contains('_'))
+        .map(|(t, _)| t.replace('_', "-"))
+}
+pub unsafe extern "win64" fn locale_name_to_lcid(name: *const u16, _flags: u32) -> u32 {
+    let name = String::from_utf16_lossy(unsafe { text::units(name) });
+    lcid_of(&name).unwrap_or_else(|| {
+        error::set(87);
+        0
+    })
+}
+/// LCIDToLocaleName: length with the NUL; 0 asks for the length.
+pub unsafe extern "win64" fn lcid_to_locale_name(
+    lcid: u32,
+    out: *mut u16,
+    capacity: i32,
+    _flags: u32,
+) -> i32 {
+    let Some(name) = name_of(lcid) else {
+        error::set(87);
+        return 0;
+    };
+    let name = text::wide(&name);
+    let needed = name.len() as i32 + 1;
+    if capacity == 0 {
+        return needed;
+    }
+    if out.is_null() || capacity < needed {
+        error::set(ERROR_INSUFFICIENT_BUFFER);
+        return 0;
+    }
+    unsafe { text::copy_out(&name, out, capacity as u32) };
+    needed
+}
+pub unsafe extern "win64" fn is_valid_locale_name(name: *const u16) -> i32 {
+    let name = String::from_utf16_lossy(unsafe { text::units(name) });
+    (!name.is_empty() && lcid_of(&name).is_some()) as i32
+}
+type EnumLocalesEx = extern "win64" fn(*const u16, u32, isize) -> i32;
+/// EnumSystemLocalesEx: the user's locale (LOCALE_SPECIFICDATA when it names a
+/// country, else LOCALE_NEUTRALDATA).
+pub unsafe extern "win64" fn enum_system_locales_ex(
+    callback: Option<EnumLocalesEx>,
+    _flags: u32,
+    parameter: isize,
+    _reserved: usize,
+) -> i32 {
+    let Some(callback) = callback else {
+        error::set(87);
+        return 0;
+    };
+    let name = locale_name();
+    let kind = if name.contains('-') { 2 } else { 0x10 };
+    let mut wide = text::wide(&name);
+    wide.push(0);
+    callback(wide.as_ptr(), kind, parameter);
+    1
 }

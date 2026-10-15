@@ -31,6 +31,58 @@ pub(crate) fn exited(handle: usize) -> Option<bool> {
     let done = thread.exit.lock().unwrap().is_some();
     Some(done)
 }
+/// The calling thread's record (made on first use for threads PeekGame did not
+/// create, such as the main thread).
+fn current_thread() -> Arc<Thread> {
+    CURRENT.with(|current| {
+        current
+            .borrow_mut()
+            .get_or_insert_with(|| record(startup::thread_id()))
+            .clone()
+    })
+}
+fn record(id: u32) -> Arc<Thread> {
+    Arc::new(Thread {
+        id,
+        exit: Mutex::new(None),
+        changed: Condvar::new(),
+        suspended: Mutex::new(false),
+    })
+}
+/// The thread ID behind a thread handle (GetCurrentThread's pseudo handle included).
+pub(crate) fn id_of(handle: usize) -> Option<u32> {
+    if handle == usize::MAX - 1 {
+        return Some(startup::thread_id());
+    }
+    threads().lock().unwrap().get(&handle).map(|t| t.id)
+}
+/// OpenThread: a new handle to a thread of this process, by ID.
+pub extern "win64" fn open(_access: u32, _inherit: i32, id: u32) -> usize {
+    let known = threads()
+        .lock()
+        .unwrap()
+        .values()
+        .find(|t| t.id == id)
+        .cloned();
+    let thread = match known {
+        Some(thread) => thread,
+        None if id == startup::thread_id() => current_thread(),
+        // A thread PeekGame did not create (its exit is not observed).
+        None if std::path::Path::new(&format!("/proc/self/task/{id}")).exists() => record(id),
+        None => {
+            error::set(87);
+            return 0;
+        }
+    };
+    insert(thread)
+}
+/// GetThreadId.
+pub extern "win64" fn thread_id_of(handle: usize) -> u32 {
+    id_of(handle).unwrap_or_else(|| {
+        error::set(6);
+        0
+    })
+}
 fn insert(thread: Arc<Thread>) -> usize {
     let handle = NEXT.fetch_add(16, Ordering::Relaxed);
     threads().lock().unwrap().insert(handle, thread);
@@ -132,20 +184,7 @@ pub unsafe extern "win64" fn duplicate(
     }
     let existing = threads().lock().unwrap().get(&source).cloned();
     let target = if source == usize::MAX - 1 {
-        Some(CURRENT.with(|current| {
-            let mut current = current.borrow_mut();
-            let thread = current
-                .get_or_insert_with(|| {
-                    Arc::new(Thread {
-                        id: startup::thread_id(),
-                        exit: Mutex::new(None),
-                        changed: Condvar::new(),
-                        suspended: Mutex::new(false),
-                    })
-                })
-                .clone();
-            insert(thread)
-        }))
+        Some(insert(current_thread()))
     } else if let Some(thread) = existing {
         Some(insert(thread))
     } else {

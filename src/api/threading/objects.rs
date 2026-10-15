@@ -2,7 +2,7 @@
 //! and kernel32_ext.inc). Every operation that can make an object signalled calls
 //! [`changed`], which wakes waiters on several objects; they then re-check their
 //! handles. Names are a process-local namespace.
-use super::{events, threads};
+use super::{apc, events, threads};
 use crate::api::{system::error, text};
 use std::{
     collections::HashMap,
@@ -250,6 +250,32 @@ fn wait_until(ms: u32, mut ready: impl FnMut() -> Option<u32>) -> u32 {
         }
     }
 }
+/// An alertable wait: queued APCs run first, or as soon as one is queued, and the
+/// wait returns WAIT_IO_COMPLETION.
+pub fn wait_alertable(ms: u32, mut ready: impl FnMut() -> Option<u32>) -> u32 {
+    if apc::run() {
+        return apc::WAIT_IO_COMPLETION;
+    }
+    let result = wait_until(ms, || {
+        if apc::pending() {
+            Some(apc::WAIT_IO_COMPLETION)
+        } else {
+            ready()
+        }
+    });
+    if result == apc::WAIT_IO_COMPLETION {
+        apc::run();
+    }
+    result
+}
+/// WaitForSingleObjectEx with bAlertable.
+pub fn wait_single_alertable(handle: usize, ms: u32) -> u32 {
+    if check(handle, false).is_none() {
+        error::set(6);
+        return WAIT_FAILED;
+    }
+    wait_alertable(ms, || check(handle, true)?.then_some(WAIT_OBJECT_0))
+}
 /// WaitForSingleObject for semaphores and mutexes; None if not one.
 pub fn wait_single(handle: usize, ms: u32) -> Option<u32> {
     with(|t| t.contains_key(&handle))
@@ -261,6 +287,15 @@ pub unsafe extern "win64" fn wait_multiple(
     all: i32,
     ms: u32,
 ) -> u32 {
+    unsafe { wait_multiple_ex(count, handles, all, ms, 0) }
+}
+pub unsafe extern "win64" fn wait_multiple_ex(
+    count: u32,
+    handles: *const usize,
+    all: i32,
+    ms: u32,
+    alertable: i32,
+) -> u32 {
     if count == 0 || count > 64 || handles.is_null() {
         error::set(87);
         return WAIT_FAILED;
@@ -270,7 +305,7 @@ pub unsafe extern "win64" fn wait_multiple(
         error::set(6);
         return WAIT_FAILED;
     }
-    wait_until(ms, || {
+    let ready = || {
         if all != 0 {
             if handles.iter().all(|&h| check(h, false) == Some(true)) {
                 handles.iter().for_each(|&h| {
@@ -285,14 +320,10 @@ pub unsafe extern "win64" fn wait_multiple(
                 .position(|&h| check(h, true) == Some(true))
                 .map(|i| WAIT_OBJECT_0 + i as u32)
         }
-    })
-}
-pub unsafe extern "win64" fn wait_multiple_ex(
-    count: u32,
-    handles: *const usize,
-    all: i32,
-    ms: u32,
-    _alertable: i32,
-) -> u32 {
-    unsafe { wait_multiple(count, handles, all, ms) }
+    };
+    if alertable != 0 {
+        wait_alertable(ms, ready)
+    } else {
+        wait_until(ms, ready)
+    }
 }

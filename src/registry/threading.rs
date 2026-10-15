@@ -1,10 +1,32 @@
 use super::*;
+use crate::api::threading::apc;
 use crate::api::threading::events;
 use crate::api::threading::objects;
 use crate::api::threading::threads;
 use crate::api::threading::{address, fls, once, slist, srw};
 use crate::api::threading::{critical, tls};
 exports! {
+    implemented!(
+        "QueueUserAPC",
+        "threading",
+        "partial",
+        "runs in the thread's next alertable wait",
+        apc::queue
+    ),
+    implemented!(
+        "OpenThread",
+        "threading",
+        "partial",
+        "threads of this process by ID",
+        threads::open
+    ),
+    implemented!(
+        "GetThreadId",
+        "threading",
+        "partial",
+        "thread handles and the current-thread pseudo handle",
+        threads::thread_id_of
+    ),
     implemented!(
         "ResumeThread",
         "threading",

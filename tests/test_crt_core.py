@@ -9,4 +9,5 @@ result=subprocess.run([str(root/'target/release/peekgame'),str(exe),'--output',s
     capture_output=True,text=True,timeout=20)
 assert result.returncode==0,f'crt_core.exe exit {result.returncode}\n{result.stderr}'
 print('PASS: heap, SList, FLS with thread-exit callbacks, SRW and condition variables, InitOnce,'
-      ' WaitOnAddress, pointer encoding, time, environment, locale and strings, TLS slots in the TEB')
+      ' WaitOnAddress, pointer encoding, time, environment, locale and strings, TLS slots in the TEB,'
+          ' date/time pictures, time zones, locale names')

@@ -20,6 +20,7 @@ static DWORD WINAPI worker(void *p){
 }
 static int same(const WCHAR *a,const WCHAR *b){while(*a&&*a==*b){a++;b++;}return *a==*b;}
 typedef struct {SLIST_ENTRY entry;int value;} __attribute__((aligned(16))) Item;
+static int same_w(const WCHAR *a,const WCHAR *b){while(*a&&*a==*b){a++;b++;}return *a==*b;}
 void entry(void){
  HANDLE heap=GetProcessHeap();
  char *p=HeapAlloc(heap,HEAP_ZERO_MEMORY,100);
@@ -64,5 +65,14 @@ void entry(void){
  DWORD64 expansion;__asm__("mov %%gs:0x1780,%0":"=r"(expansion));
  if(((DWORD64*)expansion)[high-64]!=0x5678||TlsGetValue(high)!=(void*)0x5678)ExitProcess(27);
  if(!TlsFree(low)||TlsAlloc()!=low||TlsGetValue(low))ExitProcess(28);
+ /* Date and time pictures, time zone round trip. */
+ SYSTEMTIME when={2024,3,2,5,14,7,9,0};WCHAR text[64];
+ if(!GetDateFormatW(LOCALE_USER_DEFAULT,0,&when,L"dddd d MMM yyyy 'at'",text,64)||!same_w(text,L"Tuesday 5 Mar 2024 at"))ExitProcess(29);
+ if(!GetTimeFormatEx(0,0,&when,L"hh:mm:ss tt",text,64)||!same_w(text,L"02:07:09 PM"))ExitProcess(30);
+ if(!GetTimeFormatW(LOCALE_USER_DEFAULT,TIME_FORCE24HOURFORMAT|TIME_NOSECONDS,&when,L"HH:mm:ss",text,64)||!same_w(text,L"14:07"))ExitProcess(31);
+ SYSTEMTIME local,utc;TIME_ZONE_INFORMATION zone;
+ if(GetTimeZoneInformation(&zone)==TIME_ZONE_ID_INVALID)ExitProcess(32);
+ if(!SystemTimeToTzSpecificLocalTime(0,&when,&local)||!TzSpecificLocalTimeToSystemTime(0,&local,&utc)||utc.wHour!=14||utc.wMinute!=7)ExitProcess(33);
+ if(LocaleNameToLCID(L"en-US",0)!=0x409||!IsValidLocaleName(L"en-US"))ExitProcess(34);
  ExitProcess(0);
 }

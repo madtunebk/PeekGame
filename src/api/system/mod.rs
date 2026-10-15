@@ -1,6 +1,7 @@
 pub(crate) mod command_line;
 pub(crate) mod debug;
 pub(crate) mod error;
+pub(crate) mod formats;
 pub(crate) mod modules;
 pub(crate) mod process;
 pub(crate) mod standard_handles;

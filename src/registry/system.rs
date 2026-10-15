@@ -1,10 +1,12 @@
 use super::*;
+use crate::api::memory::mapping;
 use crate::api::memory::{heap, virtual_memory};
 use crate::api::system::console;
 use crate::api::system::cpu;
 use crate::api::system::dynamic;
 use crate::api::system::encoding;
 use crate::api::system::etw;
+use crate::api::system::formats;
 use crate::api::system::message;
 use crate::api::system::psapi;
 use crate::api::system::random;
@@ -15,6 +17,167 @@ use crate::api::system::{environment, locale, pointers, time};
 use crate::api::{memory::global, system::info};
 use crate::seh;
 exports! {
+    implemented!(
+        "SetThreadStackGuarantee",
+        "threading",
+        "partial",
+        "recorded per thread",
+        info::set_thread_stack_guarantee
+    ),
+    implemented!(
+        "CreateFileMappingW",
+        "memory",
+        "partial",
+        "files and pagefile-backed memory; names within this process",
+        mapping::create_w
+    ),
+    implemented!(
+        "CreateFileMappingA",
+        "memory",
+        "partial",
+        "files and pagefile-backed memory; names within this process",
+        mapping::create_a
+    ),
+    implemented!(
+        "OpenFileMappingW",
+        "memory",
+        "partial",
+        "names created by this process",
+        mapping::open_w
+    ),
+    implemented!(
+        "MapViewOfFile",
+        "memory",
+        "partial",
+        "shared, copy-on-write and executable views",
+        mapping::map_view
+    ),
+    implemented!(
+        "MapViewOfFileEx",
+        "memory",
+        "partial",
+        "as MapViewOfFile, at a requested free address",
+        mapping::map_view_ex
+    ),
+    implemented!(
+        "UnmapViewOfFile",
+        "memory",
+        "partial",
+        "by view base",
+        mapping::unmap_view
+    ),
+    implemented!(
+        "FlushViewOfFile",
+        "memory",
+        "partial",
+        "msync of the view's pages",
+        mapping::flush_view
+    ),
+    implemented!(
+        "GetTimeZoneInformation",
+        "system",
+        "partial",
+        "host zone database; transitions found by scanning this year",
+        time::time_zone_information
+    ),
+    implemented!(
+        "GetDynamicTimeZoneInformation",
+        "system",
+        "partial",
+        "as GetTimeZoneInformation; key name is the standard name",
+        time::dynamic_time_zone_information
+    ),
+    implemented!(
+        "SystemTimeToTzSpecificLocalTime",
+        "system",
+        "partial",
+        "current time zone only",
+        time::system_time_to_tz_local
+    ),
+    implemented!(
+        "TzSpecificLocalTimeToSystemTime",
+        "system",
+        "partial",
+        "current time zone only",
+        time::tz_local_to_system_time
+    ),
+    implemented!(
+        "CompareFileTime",
+        "system",
+        "partial",
+        "complete",
+        time::compare_file_time
+    ),
+    implemented!(
+        "FileTimeToLocalFileTime",
+        "system",
+        "partial",
+        "offset in effect at that time",
+        time::file_time_to_local
+    ),
+    implemented!(
+        "LocalFileTimeToFileTime",
+        "system",
+        "partial",
+        "offset in effect at that time",
+        time::local_to_file_time
+    ),
+    implemented!(
+        "GetDateFormatW",
+        "system",
+        "partial",
+        "format pictures; English names, en-US defaults",
+        formats::date_format_w
+    ),
+    implemented!(
+        "GetDateFormatEx",
+        "system",
+        "partial",
+        "format pictures; English names, en-US defaults",
+        formats::date_format_ex
+    ),
+    implemented!(
+        "GetTimeFormatW",
+        "system",
+        "partial",
+        "format pictures; en-US default",
+        formats::time_format_w
+    ),
+    implemented!(
+        "GetTimeFormatEx",
+        "system",
+        "partial",
+        "format pictures; en-US default",
+        formats::time_format_ex
+    ),
+    implemented!(
+        "LocaleNameToLCID",
+        "system",
+        "partial",
+        "user's locale and known language tags",
+        locale::locale_name_to_lcid
+    ),
+    implemented!(
+        "LCIDToLocaleName",
+        "system",
+        "partial",
+        "user's locale and known language tags",
+        locale::lcid_to_locale_name
+    ),
+    implemented!(
+        "IsValidLocaleName",
+        "system",
+        "partial",
+        "user's locale and known language tags",
+        locale::is_valid_locale_name
+    ),
+    implemented!(
+        "EnumSystemLocalesEx",
+        "system",
+        "partial",
+        "the user's locale",
+        locale::enum_system_locales_ex
+    ),
     implemented!(
         "RaiseException",
         "system",

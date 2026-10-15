@@ -229,7 +229,15 @@ pub extern "win64" fn switch_to_thread() -> i32 {
     unsafe { sched_yield() };
     1
 }
-pub extern "win64" fn sleep_ex(ms: u32, _alertable: i32) -> u32 {
+pub extern "win64" fn sleep_ex(ms: u32, alertable: i32) -> u32 {
+    if alertable != 0 {
+        let result = crate::api::threading::objects::wait_alertable(ms, || None);
+        return if result == crate::api::threading::apc::WAIT_IO_COMPLETION {
+            result
+        } else {
+            0
+        };
+    }
     if ms == u32::MAX {
         loop {
             std::thread::park();
@@ -390,4 +398,16 @@ pub unsafe extern "win64" fn module_file_name_a(
             0
         }
     }
+}
+thread_local! {static STACK_GUARANTEE: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };}
+/// SetThreadStackGuarantee: records the size (stack overflows are dispatched while
+/// 16 KiB remain, which covers what programs ask for) and returns the previous one.
+pub unsafe extern "win64" fn set_thread_stack_guarantee(size: *mut u32) -> i32 {
+    if size.is_null() {
+        crate::api::system::error::set(87);
+        return 0;
+    }
+    let previous = STACK_GUARANTEE.with(|g| g.replace(unsafe { *size }));
+    unsafe { *size = previous };
+    1
 }

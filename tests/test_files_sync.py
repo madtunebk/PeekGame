@@ -14,6 +14,6 @@ try:
         capture_output=True,text=True,timeout=20,cwd=work)
     assert result.returncode==0,f'files_sync.exe exit {result.returncode}\n{result.stderr}'
     print('PASS: files (create/read/write/seek/overlapped/errors), directories, searches, semaphores, mutexes,'
-          ' multi-object waits, CREATE_SUSPENDED')
+          ' multi-object waits, CREATE_SUSPENDED, file mappings, APCs in alertable waits, OpenThread')
 finally:
     shutil.rmtree(work,ignore_errors=True)

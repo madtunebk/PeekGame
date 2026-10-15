@@ -133,6 +133,10 @@ pub(crate) fn duplicate(handle: usize) -> Option<usize> {
     let overlapped = get(handle).is_some_and(|e| e.overlapped);
     Some(insert(Entry { file, overlapped }))
 }
+/// A file handle's file, as a new descriptor (CreateFileMapping keeps its own).
+pub(crate) fn clone_file(handle: usize) -> Option<File> {
+    get(handle)?.file.try_clone().ok()
+}
 /// GetFileType for a file handle: disk, character device or pipe.
 pub(crate) fn file_type(handle: usize) -> Option<u32> {
     use std::os::unix::fs::FileTypeExt;

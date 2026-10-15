@@ -4,6 +4,9 @@
 static HANDLE semaphore;
 static volatile LONG started;
 static DWORD WINAPI worker(void *p){(void)p;started=1;return ReleaseSemaphore(semaphore,1,0)?0:1;}
+static volatile LONG apc_calls;
+static void CALLBACK apc(ULONG_PTR data){apc_calls+=(LONG)data;}
+static DWORD WINAPI alertable_sleeper(void *p){(void)p;return SleepEx(INFINITE,TRUE)==WAIT_IO_COMPLETION?0:1;}
 static int same(const WCHAR *a,const WCHAR *b){while(*a&&*a==*b){a++;b++;}return *a==*b;}
 void entry(void){
  HANDLE f=CreateFileW(L"data.bin",GENERIC_READ|GENERIC_WRITE,0,0,CREATE_NEW,0,0);
@@ -33,5 +36,28 @@ void entry(void){
  if(WaitForSingleObject(mutex,0)!=WAIT_OBJECT_0||!ReleaseMutex(mutex)||!ReleaseMutex(mutex)||ReleaseMutex(mutex))ExitProcess(20);
  SetEvent(event);HANDLE all[2]={event,thread};
  if(WaitForMultipleObjects(2,all,TRUE,5000)!=WAIT_OBJECT_0)ExitProcess(21);
+ /* File mappings: a shared view writes through to the file; a named pagefile mapping
+  * opened again by name shows the same memory. */
+ f=CreateFileW(L"map.bin",GENERIC_READ|GENERIC_WRITE,0,0,CREATE_NEW,0,0);
+ if(f==INVALID_HANDLE_VALUE||!WriteFile(f,"abcdefgh",8,&n,0))ExitProcess(22);
+ HANDLE map=CreateFileMappingW(f,0,PAGE_READWRITE,0,0,0);
+ char *view=map?MapViewOfFile(map,FILE_MAP_WRITE,0,0,0):0;
+ if(!view||view[2]!='c')ExitProcess(23);
+ view[0]='X';if(!FlushViewOfFile(view,0)||!UnmapViewOfFile(view)||UnmapViewOfFile(view)||!CloseHandle(map))ExitProcess(24);
+ at.QuadPart=0;SetFilePointerEx(f,at,0,FILE_BEGIN);
+ if(!ReadFile(f,buf,8,&n,0)||buf[0]!='X'||!CloseHandle(f)||!DeleteFileW(L"map.bin"))ExitProcess(25);
+ HANDLE shared=CreateFileMappingW(INVALID_HANDLE_VALUE,0,PAGE_READWRITE,0,65536,L"peekgame-test");
+ HANDLE again=OpenFileMappingW(FILE_MAP_ALL_ACCESS,FALSE,L"peekgame-test");
+ int *a=shared?MapViewOfFile(shared,FILE_MAP_ALL_ACCESS,0,0,0):0,*b=again?MapViewOfFile(again,FILE_MAP_READ,0,0,4096):0;
+ if(!a||!b)ExitProcess(26);
+ a[10]=4321;if(b[10]!=4321)ExitProcess(27);
+ /* APCs run in alertable waits, which then return WAIT_IO_COMPLETION. */
+ if(!QueueUserAPC(apc,GetCurrentThread(),5)||WaitForSingleObjectEx(event,1000,TRUE)!=WAIT_IO_COMPLETION||apc_calls!=5)ExitProcess(28);
+ if(WaitForSingleObjectEx(event,0,TRUE)!=WAIT_OBJECT_0)ExitProcess(29); /* still set (manual reset) */
+ DWORD sleeper_id;HANDLE sleeper=CreateThread(0,0,alertable_sleeper,0,0,&sleeper_id);
+ HANDLE opened=OpenThread(THREAD_ALL_ACCESS,FALSE,sleeper_id);
+ if(!sleeper||!opened||GetThreadId(opened)!=sleeper_id)ExitProcess(30);
+ Sleep(50);if(!QueueUserAPC(apc,opened,2))ExitProcess(31);
+ DWORD code=1;if(WaitForSingleObject(sleeper,5000)!=WAIT_OBJECT_0||!GetExitCodeThread(sleeper,&code)||code||apc_calls!=7)ExitProcess(32);
  ExitProcess(0);
 }
