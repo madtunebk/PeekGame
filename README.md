@@ -10,9 +10,10 @@ Linux libX11 (development headers/library required at build time); SDL is not us
 
 ```sh
 cargo build --release --offline
-./target/release/peekgame --analyze tests/testgame/testgame.exe
+python3 tools/stage_dist.py
+./dist/peekgame --analyze tests/testgame/testgame.exe
 # The EXE-first form is also accepted:
-./target/release/peekgame /path/to/game.exe --analyze --output reports/my-game
+./dist/peekgame /path/to/game.exe --analyze --output reports/my-game
 ```
 
 The analyzer writes `imports.json` (schema version 2) and `imports.txt` to
@@ -169,7 +170,7 @@ Future decompiler ideas are recorded in [docs/future-analysis-tools.md](docs/fut
 ```sh
 python3 tools/build_dxvk_x11.py
 cargo build --release --offline
-./target/release/peekgame tests/testgame/testgame.exe --run --frames 300
+./dist/peekgame tests/testgame/testgame.exe --run --frames 300
 ```
 
 The isolated DXVK Native build uses our X11 WSI, without SDL. D3D11/COM support
@@ -199,7 +200,7 @@ code through Rust Win64 API functions, not decompilation.
 
 ```sh
 cargo build --release --offline
-./target/release/peekgame tests/testgame/testgame.exe --package
+./dist/peekgame tests/testgame/testgame.exe --package
 ./packages/testgame/play --frames 300
 ```
 
@@ -236,7 +237,7 @@ refusal to overwrite an existing package. Artifacts stay under project `cache/`.
 
 ```sh
 cargo build --release --offline
-./target/release/peekgame tests/testgame/testgame.exe --relink
+./dist/peekgame tests/testgame/testgame.exe --relink
 ./relinked/testgame/testgame --frames 300
 ```
 

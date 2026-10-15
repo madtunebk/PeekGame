@@ -31,7 +31,13 @@ fn load() -> Result<Driver, String> {
     let dir = std::env::var_os("PEEKGAME_DXVK_DIR")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| {
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/dxvk-x11/prefix/lib")
+            let bundled = std::env::current_exe()
+                .ok()
+                .and_then(|path| path.parent().map(|parent| parent.join("lib")))
+                .filter(|path| path.join("libdxvk_d3d11.so.0").is_file());
+            bundled.unwrap_or_else(|| {
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/dxvk-x11/prefix/lib")
+            })
         });
     match std::env::var("DXVK_WSI_DRIVER") {
         Ok(value) if value != "PeekX11" => {

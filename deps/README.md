@@ -30,13 +30,16 @@ On a fresh checkout, download the recorded release and put its x64 `d3d11.dll`
 and `dxgi.dll` in `deps/dxvk/windows-x64/`, then:
 
 ```sh
-python3 tools/stage_windows_dlls.py  # prepares target/release/windows-dlls and windows-dlls
+cargo build --release --offline
+python3 tools/stage_dist.py
+./dist/peekgame /path/to/game.exe --run
 ```
 
-Staging verifies checksums and prepares both the release runner and the optional
-root-level `./peekgame` copy. Re-run it after removing build output. Use
-`--destination DIRECTORY` for another runner location. Without these DLLs the
-limited internal DXGI implementation cannot supply Unity's `CreateDXGIFactory2`.
+The distribution contains `dist/peekgame` and `dist/windows-dlls/`; build output
+stays in `target/`. Staging verifies DLL checksums. Use
+`tools/stage_windows_dlls.py --destination DIRECTORY` only for another runner
+location. Without these DLLs the limited internal DXGI implementation cannot
+supply Unity's `CreateDXGIFactory2`.
 Alternatively, set `PEEKGAME_WINDOWS_DLLS` to the
 absolute local runtime directory. The Native source snapshot and retained
 Windows DLLs are separate inputs; rebuilding one is not claimed to reproduce

@@ -1,4 +1,4 @@
-"""Stage retained Windows DXVK DLLs beside the release and root runners."""
+"""Stage retained Windows DXVK DLLs beside the distribution runner."""
 import argparse
 import hashlib
 import json
@@ -6,7 +6,7 @@ from pathlib import Path
 import shutil
 root=Path(__file__).resolve().parents[1]
 p=argparse.ArgumentParser(description=__doc__)
-p.add_argument('--destination',type=Path,help='stage only here instead of both local runner directories')
+p.add_argument('--destination',type=Path,help='override the default dist/windows-dlls directory')
 a=p.parse_args()
 source=root/'deps/dxvk/windows-x64'
 metadata=json.loads((source/'PROVENANCE.json').read_text())
@@ -14,7 +14,7 @@ for name in ('d3d11.dll','dxgi.dll'):
     actual=hashlib.sha256((source/name).read_bytes()).hexdigest()
     if actual!=metadata['files'][name]['sha256']:raise SystemExit(f'Checksum mismatch: {source/name}')
 destinations=([a.destination] if a.destination else
-              [root/'target/release/windows-dlls',root/'windows-dlls'])
+              [root/'dist/windows-dlls'])
 for destination in destinations:
     destination.mkdir(parents=True,exist_ok=True)
     for name in ('d3d11.dll','dxgi.dll','DXVK-LICENSE','PROVENANCE.json'):
