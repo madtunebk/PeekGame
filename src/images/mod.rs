@@ -171,8 +171,7 @@ pub fn lookup(
     ordinal: Option<u16>,
 ) -> Option<usize> {
     match provider {
-        Provider::Builtin => name
-            .and_then(|n| registry::find(dll, n))
+        Provider::Builtin => registry::find_import(dll, name, ordinal)
             .and_then(|e| e.address)
             .map(|get| get() as usize),
         Provider::Module(module) => export(module, name, ordinal.map(u32::from), 0),
@@ -484,6 +483,14 @@ pub fn handle_reference(module: &Module, flags: u32) {
 }
 pub fn disable_thread_calls(module: &Module) {
     module.thread_calls.store(false, Ordering::Relaxed);
+}
+pub fn add_dll_directory(path: &str) -> Option<usize> {
+    let _guard = LOADER.lock();
+    search::add_directory(path)
+}
+pub fn remove_dll_directory(cookie: usize) -> bool {
+    let _guard = LOADER.lock();
+    search::remove_directory(cookie)
 }
 pub fn set_dll_directory(path: Option<&str>) -> bool {
     let _guard = LOADER.lock();

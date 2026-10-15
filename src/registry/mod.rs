@@ -107,6 +107,8 @@ mod com;
 mod crt;
 mod filesystem;
 mod graphics;
+mod network;
+mod ordinals;
 mod shell;
 mod system;
 mod threading;
@@ -121,6 +123,7 @@ pub fn entries() -> impl Iterator<Item = &'static Export> {
         .chain(threading::EXPORTS.iter())
         .chain(window::EXPORTS.iter())
         .chain(graphics::EXPORTS.iter())
+        .chain(network::EXPORTS.iter())
 }
 fn canonical(dll: &str) -> String {
     let lower = dll.to_ascii_lowercase();
@@ -138,6 +141,10 @@ fn canonical(dll: &str) -> String {
     {
         return "ole32".into();
     }
+    // WSOCK32 is the Winsock 1.1 front of WS2_32.
+    if lower == "wsock32.dll" || lower == "wsock32" {
+        return "ws2_32".into();
+    }
     if lower.starts_with("api-ms-win-") || lower.starts_with("ext-ms-win-") {
         return "kernel32".into();
     }
@@ -146,6 +153,14 @@ fn canonical(dll: &str) -> String {
 pub fn find(dll: &str, name: &str) -> Option<&'static Export> {
     let normalized = canonical(dll);
     entries().find(|e| e.dll.strip_suffix(".dll").unwrap_or(e.dll) == normalized && e.name == name)
+}
+/// An import by name, or by ordinal through the DLL's fixed ordinal table.
+pub fn find_import(dll: &str, name: Option<&str>, ordinal: Option<u16>) -> Option<&'static Export> {
+    let name = match name {
+        Some(name) => name,
+        None => ordinals::name(&canonical(dll), ordinal?)?,
+    };
+    find(dll, name)
 }
 /// Does PeekGame implement `dll` (at least partly)? Such a DLL is never loaded from disk.
 pub fn provides(dll: &str) -> bool {

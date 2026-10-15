@@ -1,7 +1,7 @@
 //! Where LoadLibrary looks for a program DLL. A bare name is searched in the EXE's
 //! directory, then the SetDllDirectory directory, then the current directory (not
 //! while a DLL directory is set, even ""); `first_dir` comes before all. A name with
-//! a path is looked up there only. As in LoadLibrary, a name without an extension
+//! a path is looked up there only. AddDllDirectory directories come last. As in LoadLibrary, a name without an extension
 //! means NAME.dll and a trailing '.' means no extension. Matching ignores case.
 use std::{
     path::{Path, PathBuf},
@@ -11,6 +11,24 @@ static EXE_DIRECTORY: Mutex<Option<PathBuf>> = Mutex::new(None);
 /// `None`: not set. `Some(None)`: set to "" (only the EXE directory is searched).
 static DLL_DIRECTORY: Mutex<Option<Option<PathBuf>>> = Mutex::new(None);
 
+/// AddDllDirectory directories, by cookie, searched after the DLL directory.
+static ADDED: Mutex<Vec<(usize, PathBuf)>> = Mutex::new(Vec::new());
+static NEXT_COOKIE: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0x4444_0000);
+/// AddDllDirectory: a cookie for RemoveDllDirectory; None if `path` is not an
+/// existing absolute directory.
+pub fn add_directory(path: &str) -> Option<usize> {
+    let dir = host_path(path).filter(|d| d.is_absolute() && d.is_dir())?;
+    let cookie = NEXT_COOKIE.fetch_add(16, std::sync::atomic::Ordering::Relaxed);
+    ADDED.lock().unwrap().push((cookie, dir));
+    Some(cookie)
+}
+pub fn remove_directory(cookie: usize) -> bool {
+    let mut added = ADDED.lock().unwrap();
+    let before = added.len();
+    added.retain(|(c, _)| *c != cookie);
+    added.len() != before
+}
 pub fn set_exe_directory(dir: Option<&Path>) {
     *EXE_DIRECTORY.lock().unwrap() = dir.map(Path::to_owned);
 }
@@ -85,9 +103,16 @@ pub fn find(name: &str, first_dir: Option<&Path>) -> Option<PathBuf> {
     {
         return Some(found);
     }
-    match &*DLL_DIRECTORY.lock().unwrap() {
+    let configured = match &*DLL_DIRECTORY.lock().unwrap() {
         Some(Some(dir)) => find_in(dir, &file),
         Some(None) => None,
         None => find_in(Path::new("."), &file),
-    }
+    };
+    configured.or_else(|| {
+        ADDED
+            .lock()
+            .unwrap()
+            .iter()
+            .find_map(|(_, dir)| find_in(dir, &file))
+    })
 }

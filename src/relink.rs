@@ -48,11 +48,12 @@ pub fn build(exe: &Path, output: &Path) -> Result<()> {
             runtime.push(import.clone());
             "0".to_owned()
         } else {
-            match import
-                .name
-                .as_deref()
-                .and_then(|name| game_imports::registry::find(&import.dll, name))
-                .filter(|e| e.address_available())
+            match game_imports::registry::find_import(
+                &import.dll,
+                import.name.as_deref(),
+                import.ordinal,
+            )
+            .filter(|e| e.address_available())
             {
                 Some(entry) => {
                     graphics |= entry.dll == "d3d11.dll";

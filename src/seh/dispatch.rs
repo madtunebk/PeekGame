@@ -335,6 +335,16 @@ fn dispatch(record: &mut ExceptionRecord, context: &mut Context) -> ! {
     }
     let filter = FILTER.load(Ordering::Acquire);
     if filter != 0 {
+        // The program's crash handler takes over from here: say what it caught.
+        eprintln!(
+            "PeekGame: unhandled exception {:#010x} at {} ({}), passed to the program's filter",
+            record.code,
+            describe(record.address),
+            (0..record.count as usize)
+                .map(|i| format!("{:#x}", record.information[i]))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
         let filter: extern "win64" fn(*mut ExceptionPointers) -> i32 =
             unsafe { std::mem::transmute(filter) };
         let mut pointers = ExceptionPointers { record, context };

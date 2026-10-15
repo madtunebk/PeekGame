@@ -103,15 +103,10 @@ pub unsafe extern "win64" fn free_strings_w(block: *mut u16) -> i32 {
     drop(unsafe { Box::from_raw(std::ptr::slice_from_raw_parts_mut(block, length)) });
     1
 }
-/// ExpandEnvironmentStringsW: `%NAME%` becomes the variable's value; unknown names
-/// stay as written. Returns the size needed including the NUL.
-pub unsafe extern "win64" fn expand_w(source: *const u16, out: *mut u16, capacity: u32) -> u32 {
-    let Some(source) = (unsafe { text::string(source) }) else {
-        error::set(87);
-        return 0;
-    };
+/// `%NAME%` replaced by the variable's value; unknown names stay as written.
+pub(crate) fn expand(source: &str) -> String {
     let mut result = String::new();
-    let mut rest = source.as_str();
+    let mut rest = source;
     while let Some(start) = rest.find('%') {
         result.push_str(&rest[..start]);
         let after = &rest[start + 1..];
@@ -133,6 +128,16 @@ pub unsafe extern "win64" fn expand_w(source: *const u16, out: *mut u16, capacit
         }
     }
     result.push_str(rest);
+    result
+}
+/// ExpandEnvironmentStringsW: `%NAME%` becomes the variable's value; unknown names
+/// stay as written. Returns the size needed including the NUL.
+pub unsafe extern "win64" fn expand_w(source: *const u16, out: *mut u16, capacity: u32) -> u32 {
+    let Some(source) = (unsafe { text::string(source) }) else {
+        error::set(87);
+        return 0;
+    };
+    let result = expand(&source);
     let wide = text::wide(&result);
     let needed = wide.len() as u32 + 1;
     if !out.is_null() && capacity >= needed {

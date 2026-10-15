@@ -10,13 +10,318 @@ use crate::api::system::formats;
 use crate::api::system::message;
 use crate::api::system::psapi;
 use crate::api::system::random;
+use crate::api::system::registry_keys;
 use crate::api::system::security;
 use crate::api::system::startup;
 use crate::api::system::toolhelp;
+use crate::api::system::version;
 use crate::api::system::{environment, locale, pointers, time};
 use crate::api::{memory::global, system::info};
 use crate::seh;
 exports! {
+    export!(
+        "advapi32.dll",
+        "RegOpenKeyExW",
+        "system",
+        "partial",
+        "HKCU persisted under APPDATA/registry; other roots empty and read-only",
+        registry_keys::open_key_ex_w
+    ),
+    export!(
+        "advapi32.dll",
+        "RegOpenKeyExA",
+        "system",
+        "partial",
+        "HKCU persisted under APPDATA/registry; other roots empty and read-only",
+        registry_keys::open_key_ex_a
+    ),
+    export!(
+        "advapi32.dll",
+        "RegOpenKeyW",
+        "system",
+        "partial",
+        "HKCU persisted under APPDATA/registry; other roots empty and read-only",
+        registry_keys::open_key_w
+    ),
+    export!(
+        "advapi32.dll",
+        "RegOpenKeyA",
+        "system",
+        "partial",
+        "HKCU persisted under APPDATA/registry; other roots empty and read-only",
+        registry_keys::open_key_a
+    ),
+    export!(
+        "advapi32.dll",
+        "RegCreateKeyExW",
+        "system",
+        "partial",
+        "HKCU persisted under APPDATA/registry; other roots empty and read-only",
+        registry_keys::create_key_ex_w
+    ),
+    export!(
+        "advapi32.dll",
+        "RegCreateKeyExA",
+        "system",
+        "partial",
+        "HKCU persisted under APPDATA/registry; other roots empty and read-only",
+        registry_keys::create_key_ex_a
+    ),
+    export!(
+        "advapi32.dll",
+        "RegCreateKeyW",
+        "system",
+        "partial",
+        "HKCU persisted under APPDATA/registry; other roots empty and read-only",
+        registry_keys::create_key_w
+    ),
+    export!(
+        "advapi32.dll",
+        "RegCreateKeyA",
+        "system",
+        "partial",
+        "HKCU persisted under APPDATA/registry; other roots empty and read-only",
+        registry_keys::create_key_a
+    ),
+    export!(
+        "advapi32.dll",
+        "RegCloseKey",
+        "system",
+        "partial",
+        "HKCU persisted under APPDATA/registry; other roots empty and read-only",
+        registry_keys::close_key
+    ),
+    export!(
+        "advapi32.dll",
+        "RegFlushKey",
+        "system",
+        "partial",
+        "HKCU persisted under APPDATA/registry; other roots empty and read-only",
+        registry_keys::flush_key
+    ),
+    export!(
+        "advapi32.dll",
+        "RegQueryValueExW",
+        "system",
+        "partial",
+        "HKCU persisted under APPDATA/registry; other roots empty and read-only",
+        registry_keys::query_value_ex_w
+    ),
+    export!(
+        "advapi32.dll",
+        "RegQueryValueExA",
+        "system",
+        "partial",
+        "HKCU persisted under APPDATA/registry; other roots empty and read-only",
+        registry_keys::query_value_ex_a
+    ),
+    export!(
+        "advapi32.dll",
+        "RegSetValueExW",
+        "system",
+        "partial",
+        "HKCU persisted under APPDATA/registry; other roots empty and read-only",
+        registry_keys::set_value_ex_w
+    ),
+    export!(
+        "advapi32.dll",
+        "RegSetValueExA",
+        "system",
+        "partial",
+        "HKCU persisted under APPDATA/registry; other roots empty and read-only",
+        registry_keys::set_value_ex_a
+    ),
+    export!(
+        "advapi32.dll",
+        "RegSetKeyValueW",
+        "system",
+        "partial",
+        "HKCU persisted under APPDATA/registry; other roots empty and read-only",
+        registry_keys::set_key_value_w
+    ),
+    export!(
+        "advapi32.dll",
+        "RegDeleteValueW",
+        "system",
+        "partial",
+        "HKCU persisted under APPDATA/registry; other roots empty and read-only",
+        registry_keys::delete_value_w
+    ),
+    export!(
+        "advapi32.dll",
+        "RegDeleteValueA",
+        "system",
+        "partial",
+        "HKCU persisted under APPDATA/registry; other roots empty and read-only",
+        registry_keys::delete_value_a
+    ),
+    export!(
+        "advapi32.dll",
+        "RegDeleteKeyW",
+        "system",
+        "partial",
+        "HKCU persisted under APPDATA/registry; other roots empty and read-only",
+        registry_keys::delete_key_w
+    ),
+    export!(
+        "advapi32.dll",
+        "RegDeleteKeyA",
+        "system",
+        "partial",
+        "HKCU persisted under APPDATA/registry; other roots empty and read-only",
+        registry_keys::delete_key_a
+    ),
+    export!(
+        "advapi32.dll",
+        "RegDeleteKeyExW",
+        "system",
+        "partial",
+        "HKCU persisted under APPDATA/registry; other roots empty and read-only",
+        registry_keys::delete_key_ex_w
+    ),
+    export!(
+        "advapi32.dll",
+        "RegDeleteTreeW",
+        "system",
+        "partial",
+        "HKCU persisted under APPDATA/registry; other roots empty and read-only",
+        registry_keys::delete_tree_w
+    ),
+    export!(
+        "advapi32.dll",
+        "RegEnumKeyExW",
+        "system",
+        "partial",
+        "HKCU persisted under APPDATA/registry; other roots empty and read-only",
+        registry_keys::enum_key_ex_w
+    ),
+    export!(
+        "advapi32.dll",
+        "RegEnumKeyW",
+        "system",
+        "partial",
+        "HKCU persisted under APPDATA/registry; other roots empty and read-only",
+        registry_keys::enum_key_w
+    ),
+    export!(
+        "advapi32.dll",
+        "RegEnumValueW",
+        "system",
+        "partial",
+        "HKCU persisted under APPDATA/registry; other roots empty and read-only",
+        registry_keys::enum_value_w
+    ),
+    export!(
+        "advapi32.dll",
+        "RegQueryInfoKeyW",
+        "system",
+        "partial",
+        "HKCU persisted under APPDATA/registry; other roots empty and read-only",
+        registry_keys::query_info_key_w
+    ),
+    export!(
+        "advapi32.dll",
+        "RegGetValueW",
+        "system",
+        "partial",
+        "HKCU persisted under APPDATA/registry; other roots empty and read-only",
+        registry_keys::get_value_w
+    ),
+    export!(
+        "shlwapi.dll",
+        "SHDeleteKeyW",
+        "system",
+        "partial",
+        "recursive delete in HKCU",
+        registry_keys::delete_tree_w
+    ),
+    implemented!(
+        "AddDllDirectory",
+        "system",
+        "partial",
+        "searched after the DLL directory",
+        dynamic::add_dll_directory
+    ),
+    implemented!(
+        "RemoveDllDirectory",
+        "system",
+        "partial",
+        "by cookie",
+        dynamic::remove_dll_directory
+    ),
+    implemented!(
+        "SetDefaultDllDirectories",
+        "system",
+        "partial",
+        "flags accepted; search order unchanged",
+        dynamic::set_default_dll_directories
+    ),
+    implemented!(
+        "GetVersion",
+        "system",
+        "partial",
+        "Windows 10.0.19045",
+        version::get_version
+    ),
+    implemented!(
+        "GetVersionExW",
+        "system",
+        "partial",
+        "Windows 10.0.19045 workstation",
+        version::get_version_ex_w
+    ),
+    implemented!(
+        "GetVersionExA",
+        "system",
+        "partial",
+        "Windows 10.0.19045 workstation",
+        version::get_version_ex_a
+    ),
+    implemented!(
+        "VerSetConditionMask",
+        "system",
+        "partial",
+        "complete",
+        version::ver_set_condition_mask
+    ),
+    implemented!(
+        "VerifyVersionInfoW",
+        "system",
+        "partial",
+        "against Windows 10.0.19045 workstation",
+        version::verify_version_info_w
+    ),
+    implemented!(
+        "VerifyVersionInfoA",
+        "system",
+        "partial",
+        "against Windows 10.0.19045 workstation",
+        version::verify_version_info_a
+    ),
+    export!(
+        "ntdll.dll",
+        "RtlGetVersion",
+        "system",
+        "partial",
+        "Windows 10.0.19045 workstation",
+        version::rtl_get_version
+    ),
+    export!(
+        "ntdll.dll",
+        "RtlVerifyVersionInfo",
+        "system",
+        "partial",
+        "against Windows 10.0.19045 workstation",
+        version::rtl_verify_version_info
+    ),
+    export!(
+        "ntdll.dll",
+        "VerSetConditionMask",
+        "system",
+        "partial",
+        "complete",
+        version::ver_set_condition_mask
+    ),
     implemented!(
         "SetThreadStackGuarantee",
         "threading",

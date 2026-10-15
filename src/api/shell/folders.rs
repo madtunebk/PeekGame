@@ -29,7 +29,7 @@ const FOLDERS: &[(&str, i32, &str)] = &[
     ("374DE290-123F-4565-9164-39C4925E467B", -1, "Downloads"),
 ];
 /// The AppData root on the host (created) and its Windows path.
-fn appdata() -> Option<PathBuf> {
+pub(crate) fn appdata() -> Option<PathBuf> {
     let root = match std::env::var("APPDATA") {
         Ok(windows) if !windows.is_empty() => paths::host(&windows).ok()?,
         _ => {

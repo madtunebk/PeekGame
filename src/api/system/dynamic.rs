@@ -168,12 +168,13 @@ pub unsafe extern "win64" fn get_proc_address(module: usize, name: *const c_char
         },
     };
     let (dll, address) = if let Some(dll) = builtin_name(module) {
-        let address = match ordinal {
-            Some(_) => None,
-            None => registry::find(&dll, &text)
-                .and_then(|e| e.address)
-                .map(|get| get() as usize),
-        };
+        let address = registry::find_import(
+            &dll,
+            ordinal.is_none().then_some(text.as_str()),
+            ordinal.map(|o| o as u16),
+        )
+        .and_then(|e| e.address)
+        .map(|get| get() as usize);
         (dll, address)
     } else if let Some(pe) = images::by_handle(module) {
         let address =
@@ -244,4 +245,32 @@ fn set_dll_directory(path: Option<&str>) -> i32 {
         error::set(3);
         0
     }
+}
+/// AddDllDirectory: a directory searched for program DLLs; returns its cookie.
+pub unsafe extern "win64" fn add_dll_directory(path: *const u16) -> usize {
+    let Some(path) = (unsafe { wide(path) }) else {
+        error::set(87);
+        return 0;
+    };
+    images::add_dll_directory(&path).unwrap_or_else(|| {
+        error::set(3);
+        0
+    })
+}
+pub extern "win64" fn remove_dll_directory(cookie: usize) -> i32 {
+    if images::remove_dll_directory(cookie) {
+        1
+    } else {
+        error::set(87);
+        0
+    }
+}
+/// SetDefaultDllDirectories: accepted. PeekGame's DLLs never come from disk and
+/// program DLLs are searched as described in images::search for every flag set.
+pub extern "win64" fn set_default_dll_directories(flags: u32) -> i32 {
+    if flags == 0 || flags & !0x1f00 != 0 {
+        error::set(87);
+        return 0;
+    }
+    1
 }
