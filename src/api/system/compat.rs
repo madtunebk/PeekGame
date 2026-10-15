@@ -159,3 +159,83 @@ pub unsafe extern "win64" fn change_display_settings_ex(
         -2
     }
 }
+// lstr*: the old string helpers (NULL counts as empty).
+unsafe fn units<'a>(p: *const u16) -> &'a [u16] {
+    unsafe { text::units(p) }
+}
+pub unsafe extern "win64" fn lstrlen_w(s: *const u16) -> i32 {
+    unsafe { units(s) }.len() as i32
+}
+pub unsafe extern "win64" fn lstrlen_a(s: *const c_char) -> i32 {
+    if s.is_null() {
+        0
+    } else {
+        unsafe { CStr::from_ptr(s) }.to_bytes().len() as i32
+    }
+}
+fn order(o: std::cmp::Ordering) -> i32 {
+    o as i32
+}
+pub unsafe extern "win64" fn lstrcmp_w(a: *const u16, b: *const u16) -> i32 {
+    order(
+        String::from_utf16_lossy(unsafe { units(a) })
+            .cmp(&String::from_utf16_lossy(unsafe { units(b) })),
+    )
+}
+pub unsafe extern "win64" fn lstrcmpi_w(a: *const u16, b: *const u16) -> i32 {
+    order(
+        String::from_utf16_lossy(unsafe { units(a) })
+            .to_lowercase()
+            .cmp(&String::from_utf16_lossy(unsafe { units(b) }).to_lowercase()),
+    )
+}
+unsafe fn bytes<'a>(p: *const c_char) -> &'a [u8] {
+    if p.is_null() {
+        &[]
+    } else {
+        unsafe { CStr::from_ptr(p) }.to_bytes()
+    }
+}
+pub unsafe extern "win64" fn lstrcmp_a(a: *const c_char, b: *const c_char) -> i32 {
+    order(unsafe { bytes(a) }.cmp(unsafe { bytes(b) }))
+}
+pub unsafe extern "win64" fn lstrcmpi_a(a: *const c_char, b: *const c_char) -> i32 {
+    order(
+        unsafe { bytes(a) }
+            .to_ascii_lowercase()
+            .cmp(&unsafe { bytes(b) }.to_ascii_lowercase()),
+    )
+}
+pub unsafe extern "win64" fn lstrcpy_w(out: *mut u16, s: *const u16) -> *mut u16 {
+    let s = unsafe { units(s) };
+    unsafe {
+        std::ptr::copy(s.as_ptr(), out, s.len());
+        *out.add(s.len()) = 0;
+    }
+    out
+}
+pub unsafe extern "win64" fn lstrcpyn_w(out: *mut u16, s: *const u16, max: i32) -> *mut u16 {
+    if max <= 0 {
+        return out;
+    }
+    let s = unsafe { units(s) };
+    let n = s.len().min(max as usize - 1);
+    unsafe {
+        std::ptr::copy(s.as_ptr(), out, n);
+        *out.add(n) = 0;
+    }
+    out
+}
+pub unsafe extern "win64" fn lstrcat_w(out: *mut u16, s: *const u16) -> *mut u16 {
+    let at = unsafe { units(out) }.len();
+    unsafe { lstrcpy_w(out.add(at), s) };
+    out
+}
+pub unsafe extern "win64" fn lstrcpy_a(out: *mut c_char, s: *const c_char) -> *mut c_char {
+    let s = unsafe { bytes(s) };
+    unsafe {
+        std::ptr::copy(s.as_ptr().cast(), out, s.len());
+        *out.add(s.len()) = 0;
+    }
+    out
+}

@@ -7,5 +7,7 @@ pub(crate) mod objects;
 pub(crate) mod once;
 pub(crate) mod slist;
 pub(crate) mod srw;
+pub(crate) mod suspend;
 pub(crate) mod threads;
+pub(crate) mod timers;
 pub(crate) mod tls;

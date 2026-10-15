@@ -1,5 +1,5 @@
 use super::Export;
-use crate::api::com::{apartment, winrt};
+use crate::api::com::{apartment, bstr, winrt};
 macro_rules! com {
     (@link $name:literal,$function:path $(,)?) => {
         link_symbol!("ole32.dll", $name, $function);
@@ -16,6 +16,86 @@ macro_rules! com {
     };
 }
 exports! {
+    export!(
+        "oleaut32.dll",
+        "SysAllocString",
+        "com",
+        "partial",
+        "BSTR layout as on Windows",
+        bstr::alloc_string
+    ),
+    export!(
+        "oleaut32.dll",
+        "SysAllocStringLen",
+        "com",
+        "partial",
+        "BSTR layout as on Windows",
+        bstr::alloc_string_len
+    ),
+    export!(
+        "oleaut32.dll",
+        "SysAllocStringByteLen",
+        "com",
+        "partial",
+        "BSTR layout as on Windows",
+        bstr::alloc_string_byte_len
+    ),
+    export!(
+        "oleaut32.dll",
+        "SysFreeString",
+        "com",
+        "partial",
+        "BSTR layout as on Windows",
+        bstr::free_string
+    ),
+    export!(
+        "oleaut32.dll",
+        "SysStringLen",
+        "com",
+        "partial",
+        "BSTR layout as on Windows",
+        bstr::string_len
+    ),
+    export!(
+        "oleaut32.dll",
+        "SysStringByteLen",
+        "com",
+        "partial",
+        "BSTR layout as on Windows",
+        bstr::string_byte_len
+    ),
+    export!(
+        "oleaut32.dll",
+        "SysReAllocString",
+        "com",
+        "partial",
+        "BSTR layout as on Windows",
+        bstr::realloc_string
+    ),
+    export!(
+        "oleaut32.dll",
+        "SysReAllocStringLen",
+        "com",
+        "partial",
+        "BSTR layout as on Windows",
+        bstr::realloc_string_len
+    ),
+    export!(
+        "oleaut32.dll",
+        "VariantInit",
+        "com",
+        "partial",
+        "BSTR layout as on Windows",
+        bstr::variant_init
+    ),
+    export!(
+        "oleaut32.dll",
+        "VariantClear",
+        "com",
+        "partial",
+        "BSTR layout as on Windows",
+        bstr::variant_clear
+    ),
     export!(
         "ole32.dll",
         "RoInitialize",

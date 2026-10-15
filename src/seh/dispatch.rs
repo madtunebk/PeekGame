@@ -741,3 +741,30 @@ pub fn install_fault_handlers() {
         }
     });
 }
+/// A signal's ucontext as a Windows CONTEXT (integer registers, flags, FPU/SSE).
+pub(crate) unsafe fn context_from_signal(u: *mut u8, c: &mut Context) {
+    unsafe {
+        std::ptr::write_bytes(c as *mut Context, 0, 1);
+        c.flags = 0x10_000b; // CONTEXT_FULL
+        for (reg, &index) in REG.iter().enumerate() {
+            *c.int_reg(reg) = *greg(u, index);
+        }
+        c.rip = *greg(u, REG_RIP);
+        c.eflags = *greg(u, REG_EFL) as u32;
+        let fpregs = *(u.add(224) as *const *const u8);
+        if !fpregs.is_null() {
+            std::ptr::copy_nonoverlapping(fpregs, c.extended.as_mut_ptr(), 512);
+            c.mxcsr = (fpregs.add(24) as *const u32).read_unaligned();
+        }
+    }
+}
+/// Writes a CONTEXT's integer registers and rip back into a signal's ucontext.
+pub(crate) unsafe fn context_to_signal(c: &mut Context, u: *mut u8) {
+    unsafe {
+        for (reg, &index) in REG.iter().enumerate() {
+            *greg(u, index) = *c.int_reg(reg);
+        }
+        *greg(u, REG_RIP) = c.rip;
+        *greg(u, REG_EFL) = c.eflags as u64;
+    }
+}

@@ -1,8 +1,40 @@
 //! WS2_32 (WSOCK32 resolves here too).
 use super::*;
-use crate::api::network::{self, events, resolve, sockets, sspi};
+use crate::api::network::{self, events, resolve, sockets, sspi, winhttp};
 use crate::api::threading::events as win_events;
 exports! {
+    export!(
+        "winhttp.dll",
+        "WinHttpGetIEProxyConfigForCurrentUser",
+        "network",
+        "partial",
+        "no proxy",
+        winhttp::ie_proxy_config
+    ),
+    export!(
+        "winhttp.dll",
+        "WinHttpOpen",
+        "network",
+        "partial",
+        "session token",
+        winhttp::open
+    ),
+    export!(
+        "winhttp.dll",
+        "WinHttpCloseHandle",
+        "network",
+        "partial",
+        "complete",
+        winhttp::close_handle
+    ),
+    export!(
+        "winhttp.dll",
+        "WinHttpGetProxyForUrl",
+        "network",
+        "partial",
+        "no proxy auto-configuration",
+        winhttp::proxy_for_url
+    ),
     export!(
         "secur32.dll",
         "InitSecurityInterfaceW",

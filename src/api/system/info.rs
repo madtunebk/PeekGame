@@ -411,3 +411,15 @@ pub unsafe extern "win64" fn set_thread_stack_guarantee(size: *mut u32) -> i32 {
     unsafe { *size = previous };
     1
 }
+thread_local! {static THREAD_ERROR_MODE: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };}
+/// SetThreadErrorMode: recorded per thread (there are no error dialogs to hide).
+pub unsafe extern "win64" fn set_thread_error_mode(mode: u32, old: *mut u32) -> i32 {
+    let previous = THREAD_ERROR_MODE.with(|m| m.replace(mode));
+    if !old.is_null() {
+        unsafe { *old = previous };
+    }
+    1
+}
+pub extern "win64" fn get_thread_error_mode() -> u32 {
+    THREAD_ERROR_MODE.with(|m| m.get())
+}

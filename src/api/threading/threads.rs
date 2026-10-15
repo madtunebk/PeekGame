@@ -189,6 +189,7 @@ pub unsafe extern "win64" fn duplicate(
         Some(insert(thread))
     } else {
         super::events::duplicate(source)
+            .or_else(|| super::objects::duplicate(source))
             .or_else(|| crate::api::filesystem::files::duplicate(source))
     };
     let Some(target) = target else {
@@ -275,6 +276,14 @@ pub unsafe extern "win64" fn begin_thread(
 
 /// ResumeThread: starts a thread created suspended. Suspending running threads
 /// (SuspendThread) is not implemented yet, so their count is always 0.
+/// Is this a thread created with CREATE_SUSPENDED that has not started yet?
+pub(crate) fn created_suspended(handle: usize) -> bool {
+    threads()
+        .lock()
+        .unwrap()
+        .get(&handle)
+        .is_some_and(|t| *t.suspended.lock().unwrap())
+}
 pub extern "win64" fn resume(handle: usize) -> u32 {
     let Some(thread) = threads().lock().unwrap().get(&handle).cloned() else {
         error::set(6);

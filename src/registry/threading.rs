@@ -2,10 +2,82 @@ use super::*;
 use crate::api::threading::apc;
 use crate::api::threading::events;
 use crate::api::threading::objects;
+use crate::api::threading::suspend;
 use crate::api::threading::threads;
+use crate::api::threading::timers;
 use crate::api::threading::{address, fls, once, slist, srw};
 use crate::api::threading::{critical, tls};
 exports! {
+    implemented!(
+        "SuspendThread",
+        "threading",
+        "partial",
+        "stops the thread in a signal handler",
+        suspend::suspend
+    ),
+    implemented!(
+        "GetThreadContext",
+        "threading",
+        "partial",
+        "suspended threads",
+        suspend::get_context
+    ),
+    implemented!(
+        "SetThreadContext",
+        "threading",
+        "partial",
+        "suspended threads; applied on resume",
+        suspend::set_context
+    ),
+    implemented!(
+        "Wow64SuspendThread",
+        "threading",
+        "partial",
+        "as SuspendThread",
+        suspend::suspend
+    ),
+    implemented!(
+        "CreateWaitableTimerExW",
+        "threading",
+        "partial",
+        "event signalled by a timer thread",
+        timers::create_ex_w
+    ),
+    implemented!(
+        "CreateWaitableTimerW",
+        "threading",
+        "partial",
+        "event signalled by a timer thread",
+        timers::create_w
+    ),
+    implemented!(
+        "CreateWaitableTimerA",
+        "threading",
+        "partial",
+        "event signalled by a timer thread",
+        timers::create_w
+    ),
+    implemented!(
+        "SetWaitableTimer",
+        "threading",
+        "partial",
+        "relative/absolute due time, period; no completion routines",
+        timers::set
+    ),
+    implemented!(
+        "SetWaitableTimerEx",
+        "threading",
+        "partial",
+        "as SetWaitableTimer",
+        timers::set_ex
+    ),
+    implemented!(
+        "CancelWaitableTimer",
+        "threading",
+        "partial",
+        "complete",
+        timers::cancel
+    ),
     implemented!(
         "QueueUserAPC",
         "threading",
@@ -32,7 +104,7 @@ exports! {
         "threading",
         "partial",
         "starts CREATE_SUSPENDED threads; SuspendThread pending",
-        threads::resume
+        suspend::resume
     ),
     implemented!(
         "CreateSemaphoreExW",

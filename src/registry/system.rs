@@ -4,6 +4,7 @@ use crate::api::memory::{heap, virtual_memory};
 use crate::api::system::compat;
 use crate::api::system::console;
 use crate::api::system::cpu;
+use crate::api::system::devices;
 use crate::api::system::dynamic;
 use crate::api::system::encoding;
 use crate::api::system::etw;
@@ -16,10 +17,463 @@ use crate::api::system::security;
 use crate::api::system::startup;
 use crate::api::system::toolhelp;
 use crate::api::system::version;
+use crate::api::system::winmm;
 use crate::api::system::{environment, locale, pointers, time};
 use crate::api::{memory::global, system::info};
 use crate::seh;
 exports! {
+    implemented!(
+        "lstrlenW",
+        "system",
+        "partial",
+        "complete",
+        compat::lstrlen_w
+    ),
+    implemented!(
+        "lstrlenA",
+        "system",
+        "partial",
+        "complete",
+        compat::lstrlen_a
+    ),
+    implemented!(
+        "lstrcmpW",
+        "system",
+        "partial",
+        "ordinal comparison",
+        compat::lstrcmp_w
+    ),
+    implemented!(
+        "lstrcmpiW",
+        "system",
+        "partial",
+        "case-insensitive",
+        compat::lstrcmpi_w
+    ),
+    implemented!(
+        "lstrcmpA",
+        "system",
+        "partial",
+        "byte comparison",
+        compat::lstrcmp_a
+    ),
+    implemented!(
+        "lstrcmpiA",
+        "system",
+        "partial",
+        "ASCII case-insensitive",
+        compat::lstrcmpi_a
+    ),
+    implemented!(
+        "lstrcpyW",
+        "system",
+        "partial",
+        "complete",
+        compat::lstrcpy_w
+    ),
+    implemented!(
+        "lstrcpynW",
+        "system",
+        "partial",
+        "complete",
+        compat::lstrcpyn_w
+    ),
+    implemented!(
+        "lstrcatW",
+        "system",
+        "partial",
+        "complete",
+        compat::lstrcat_w
+    ),
+    implemented!(
+        "lstrcpyA",
+        "system",
+        "partial",
+        "complete",
+        compat::lstrcpy_a
+    ),
+    implemented!(
+        "SetThreadErrorMode",
+        "system",
+        "partial",
+        "recorded per thread",
+        info::set_thread_error_mode
+    ),
+    implemented!(
+        "GetThreadErrorMode",
+        "system",
+        "partial",
+        "recorded per thread",
+        info::get_thread_error_mode
+    ),
+    export!(
+        "hid.dll",
+        "HidD_GetHidGuid",
+        "system",
+        "partial",
+        "the HID class GUID",
+        devices::hid_guid
+    ),
+    export!(
+        "hid.dll",
+        "HidD_GetSerialNumberString",
+        "system",
+        "partial",
+        "no HID devices",
+        devices::hid_false
+    ),
+    export!(
+        "hid.dll",
+        "HidD_GetManufacturerString",
+        "system",
+        "partial",
+        "no HID devices",
+        devices::hid_false
+    ),
+    export!(
+        "hid.dll",
+        "HidD_GetProductString",
+        "system",
+        "partial",
+        "no HID devices",
+        devices::hid_false
+    ),
+    export!(
+        "hid.dll",
+        "HidD_FreePreparsedData",
+        "system",
+        "partial",
+        "no HID devices",
+        devices::hid_false
+    ),
+    export!(
+        "hid.dll",
+        "HidD_GetPreparsedData",
+        "system",
+        "partial",
+        "no HID devices",
+        devices::hid_false
+    ),
+    export!(
+        "hid.dll",
+        "HidD_GetAttributes",
+        "system",
+        "partial",
+        "no HID devices",
+        devices::hid_false
+    ),
+    export!(
+        "hid.dll",
+        "HidD_SetOutputReport",
+        "system",
+        "partial",
+        "no HID devices",
+        devices::hid_false
+    ),
+    export!(
+        "hid.dll",
+        "HidD_GetFeature",
+        "system",
+        "partial",
+        "no HID devices",
+        devices::hid_false
+    ),
+    export!(
+        "hid.dll",
+        "HidD_SetFeature",
+        "system",
+        "partial",
+        "no HID devices",
+        devices::hid_false
+    ),
+    export!(
+        "hid.dll",
+        "HidD_GetInputReport",
+        "system",
+        "partial",
+        "no HID devices",
+        devices::hid_false
+    ),
+    export!(
+        "hid.dll",
+        "HidP_GetData",
+        "system",
+        "partial",
+        "no HID devices",
+        devices::hidp_invalid
+    ),
+    export!(
+        "hid.dll",
+        "HidP_MaxDataListLength",
+        "system",
+        "partial",
+        "no HID devices",
+        devices::hidp_invalid
+    ),
+    export!(
+        "hid.dll",
+        "HidP_SetUsages",
+        "system",
+        "partial",
+        "no HID devices",
+        devices::hidp_invalid
+    ),
+    export!(
+        "hid.dll",
+        "HidP_SetUsageValue",
+        "system",
+        "partial",
+        "no HID devices",
+        devices::hidp_invalid
+    ),
+    export!(
+        "hid.dll",
+        "HidP_GetButtonCaps",
+        "system",
+        "partial",
+        "no HID devices",
+        devices::hidp_invalid
+    ),
+    export!(
+        "hid.dll",
+        "HidP_GetValueCaps",
+        "system",
+        "partial",
+        "no HID devices",
+        devices::hidp_invalid
+    ),
+    export!(
+        "hid.dll",
+        "HidP_GetCaps",
+        "system",
+        "partial",
+        "no HID devices",
+        devices::hidp_invalid
+    ),
+    export!(
+        "hid.dll",
+        "HidP_GetUsageValue",
+        "system",
+        "partial",
+        "no HID devices",
+        devices::hidp_invalid
+    ),
+    export!(
+        "hid.dll",
+        "HidP_GetUsages",
+        "system",
+        "partial",
+        "no HID devices",
+        devices::hidp_invalid
+    ),
+    export!(
+        "setupapi.dll",
+        "SetupDiGetClassDevsA",
+        "system",
+        "partial",
+        "empty device set",
+        devices::get_class_devs
+    ),
+    export!(
+        "setupapi.dll",
+        "SetupDiGetClassDevsW",
+        "system",
+        "partial",
+        "empty device set",
+        devices::get_class_devs
+    ),
+    export!(
+        "setupapi.dll",
+        "SetupDiEnumDeviceInterfaces",
+        "system",
+        "partial",
+        "no devices",
+        devices::no_more_items
+    ),
+    export!(
+        "setupapi.dll",
+        "SetupDiEnumDeviceInfo",
+        "system",
+        "partial",
+        "no devices",
+        devices::no_more_items
+    ),
+    export!(
+        "setupapi.dll",
+        "SetupDiGetDeviceInterfaceDetailW",
+        "system",
+        "partial",
+        "no devices",
+        devices::no_more_items
+    ),
+    export!(
+        "setupapi.dll",
+        "SetupDiGetDeviceInterfaceDetailA",
+        "system",
+        "partial",
+        "no devices",
+        devices::no_more_items
+    ),
+    export!(
+        "setupapi.dll",
+        "SetupDiGetDeviceRegistryPropertyW",
+        "system",
+        "partial",
+        "no devices",
+        devices::no_more_items
+    ),
+    export!(
+        "setupapi.dll",
+        "SetupDiGetDeviceRegistryPropertyA",
+        "system",
+        "partial",
+        "no devices",
+        devices::no_more_items
+    ),
+    export!(
+        "setupapi.dll",
+        "SetupDiGetDevicePropertyW",
+        "system",
+        "partial",
+        "no devices",
+        devices::no_more_items
+    ),
+    export!(
+        "setupapi.dll",
+        "SetupDiDestroyDeviceInfoList",
+        "system",
+        "partial",
+        "complete",
+        devices::destroy_list
+    ),
+    export!(
+        "winmm.dll",
+        "timeGetTime",
+        "system",
+        "partial",
+        "timers; no winmm audio devices",
+        winmm::time_get_time
+    ),
+    export!(
+        "winmm.dll",
+        "timeGetDevCaps",
+        "system",
+        "partial",
+        "timers; no winmm audio devices",
+        winmm::time_get_dev_caps
+    ),
+    export!(
+        "winmm.dll",
+        "timeBeginPeriod",
+        "system",
+        "partial",
+        "timers; no winmm audio devices",
+        winmm::time_period
+    ),
+    export!(
+        "winmm.dll",
+        "timeEndPeriod",
+        "system",
+        "partial",
+        "timers; no winmm audio devices",
+        winmm::time_period
+    ),
+    export!(
+        "winmm.dll",
+        "timeSetEvent",
+        "system",
+        "partial",
+        "timers; no winmm audio devices",
+        winmm::time_set_event
+    ),
+    export!(
+        "winmm.dll",
+        "timeKillEvent",
+        "system",
+        "partial",
+        "timers; no winmm audio devices",
+        winmm::time_kill_event
+    ),
+    export!(
+        "winmm.dll",
+        "waveOutGetNumDevs",
+        "system",
+        "partial",
+        "timers; no winmm audio devices",
+        winmm::no_devices
+    ),
+    export!(
+        "winmm.dll",
+        "waveInGetNumDevs",
+        "system",
+        "partial",
+        "timers; no winmm audio devices",
+        winmm::no_devices
+    ),
+    export!(
+        "winmm.dll",
+        "midiInGetNumDevs",
+        "system",
+        "partial",
+        "timers; no winmm audio devices",
+        winmm::no_devices
+    ),
+    export!(
+        "winmm.dll",
+        "midiOutGetNumDevs",
+        "system",
+        "partial",
+        "timers; no winmm audio devices",
+        winmm::no_devices
+    ),
+    export!(
+        "winmm.dll",
+        "waveOutOpen",
+        "system",
+        "partial",
+        "timers; no winmm audio devices",
+        winmm::bad_device
+    ),
+    export!(
+        "winmm.dll",
+        "waveInOpen",
+        "system",
+        "partial",
+        "timers; no winmm audio devices",
+        winmm::bad_device
+    ),
+    export!(
+        "winmm.dll",
+        "waveOutGetDevCapsW",
+        "system",
+        "partial",
+        "timers; no winmm audio devices",
+        winmm::bad_device
+    ),
+    export!(
+        "winmm.dll",
+        "waveOutGetDevCapsA",
+        "system",
+        "partial",
+        "timers; no winmm audio devices",
+        winmm::bad_device
+    ),
+    export!(
+        "winmm.dll",
+        "waveInGetDevCapsW",
+        "system",
+        "partial",
+        "timers; no winmm audio devices",
+        winmm::bad_device
+    ),
+    export!(
+        "winmm.dll",
+        "waveInGetDevCapsA",
+        "system",
+        "partial",
+        "timers; no winmm audio devices",
+        winmm::bad_device
+    ),
     implemented!(
         "CreateSemaphoreA",
         "threading",

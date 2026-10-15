@@ -1,6 +1,7 @@
 pub(crate) mod command_line;
 pub(crate) mod compat;
 pub(crate) mod debug;
+pub(crate) mod devices;
 pub(crate) mod error;
 pub(crate) mod formats;
 pub(crate) mod modules;
@@ -25,3 +26,4 @@ pub(crate) mod startup;
 pub(crate) mod time;
 pub(crate) mod toolhelp;
 pub(crate) mod version;
+pub(crate) mod winmm;

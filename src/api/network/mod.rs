@@ -9,6 +9,7 @@ pub(crate) mod events;
 pub(crate) mod resolve;
 pub(crate) mod sockets;
 pub(crate) mod sspi;
+pub(crate) mod winhttp;
 use crate::api::system::error;
 use std::ffi::c_void;
 

@@ -55,7 +55,39 @@ fn create(name: Option<String>, object: Object) -> usize {
         handle
     })
 }
+/// DuplicateHandle: a second handle naming the same semaphore or mutex.
+static ALIASES: Mutex<Option<HashMap<usize, usize>>> = Mutex::new(None);
+fn resolve(handle: usize) -> usize {
+    ALIASES
+        .lock()
+        .unwrap()
+        .as_ref()
+        .and_then(|a| a.get(&handle).copied())
+        .unwrap_or(handle)
+}
+pub fn duplicate(handle: usize) -> Option<usize> {
+    let original = resolve(handle);
+    if !with(|t| t.contains_key(&original)) {
+        return None;
+    }
+    let alias = NEXT.fetch_add(16, Ordering::Relaxed);
+    ALIASES
+        .lock()
+        .unwrap()
+        .get_or_insert_with(HashMap::new)
+        .insert(alias, original);
+    Some(alias)
+}
 pub fn close(handle: usize) -> bool {
+    if ALIASES
+        .lock()
+        .unwrap()
+        .as_mut()
+        .and_then(|a| a.remove(&handle))
+        .is_some()
+    {
+        return true;
+    }
     with(|t| t.remove(&handle)).is_some()
 }
 
@@ -92,20 +124,22 @@ pub unsafe extern "win64" fn release_semaphore(
     count: i32,
     previous: *mut i32,
 ) -> i32 {
-    let result = with(|t| match t.get_mut(&handle).map(|n| &mut n.object) {
-        Some(Object::Semaphore {
-            count: current,
-            maximum,
-        }) => {
-            if count <= 0 || *current > *maximum - count {
-                return Err(ERROR_TOO_MANY_POSTS);
+    let result = with(
+        |t| match t.get_mut(&resolve(handle)).map(|n| &mut n.object) {
+            Some(Object::Semaphore {
+                count: current,
+                maximum,
+            }) => {
+                if count <= 0 || *current > *maximum - count {
+                    return Err(ERROR_TOO_MANY_POSTS);
+                }
+                let old = *current;
+                *current += count;
+                Ok(old)
             }
-            let old = *current;
-            *current += count;
-            Ok(old)
-        }
-        _ => Err(6),
-    });
+            _ => Err(6),
+        },
+    );
     match result {
         Ok(old) => {
             if !previous.is_null() {
@@ -151,17 +185,19 @@ pub unsafe extern "win64" fn create_mutex_a(
 }
 pub extern "win64" fn release_mutex(handle: usize) -> i32 {
     let me = std::thread::current().id();
-    let result = with(|t| match t.get_mut(&handle).map(|n| &mut n.object) {
-        Some(Object::Mutex { owner, depth }) if *owner == Some(me) => {
-            *depth -= 1;
-            if *depth == 0 {
-                *owner = None;
+    let result = with(
+        |t| match t.get_mut(&resolve(handle)).map(|n| &mut n.object) {
+            Some(Object::Mutex { owner, depth }) if *owner == Some(me) => {
+                *depth -= 1;
+                if *depth == 0 {
+                    *owner = None;
+                }
+                Ok(())
             }
-            Ok(())
-        }
-        Some(Object::Mutex { .. }) => Err(ERROR_NOT_OWNER),
-        _ => Err(6),
-    });
+            Some(Object::Mutex { .. }) => Err(ERROR_NOT_OWNER),
+            _ => Err(6),
+        },
+    );
     match result {
         Ok(()) => {
             changed();
@@ -206,7 +242,7 @@ fn check(handle: usize, take: bool) -> Option<bool> {
     }
     let me = std::thread::current().id();
     with(|t| {
-        Some(match &mut t.get_mut(&handle)?.object {
+        Some(match &mut t.get_mut(&resolve(handle))?.object {
             Object::Semaphore { count, .. } => {
                 let free = *count > 0;
                 if free && take {
@@ -278,7 +314,7 @@ pub fn wait_single_alertable(handle: usize, ms: u32) -> u32 {
 }
 /// WaitForSingleObject for semaphores and mutexes; None if not one.
 pub fn wait_single(handle: usize, ms: u32) -> Option<u32> {
-    with(|t| t.contains_key(&handle))
+    with(|t| t.contains_key(&resolve(handle)))
         .then(|| wait_until(ms, || check(handle, true)?.then_some(WAIT_OBJECT_0)))
 }
 pub unsafe extern "win64" fn wait_multiple(

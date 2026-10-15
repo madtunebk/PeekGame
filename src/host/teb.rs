@@ -9,7 +9,6 @@ unsafe extern "C" {
 }
 struct ThreadEnvironment {
     teb: Box<[u64; 1024]>,
-    _peb: Box<[u64; 128]>,
     /// TlsExpansionSlots (TEB+0x1780): TLS indices 64 and up.
     expansion: Box<[usize; EXPANSION]>,
     previous: u64,
@@ -53,6 +52,68 @@ pub fn clear_tls_slot(index: usize) {
         unsafe { slot_in(teb, index).write(0) };
     }
 }
+/// The process environment block, shared by every thread (Windows code reads it
+/// through gs:0x60): image base, process heap, the process parameters (command
+/// line, image path, standard handles), processor count and OS version.
+fn peb(image: usize) -> usize {
+    static PEB: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *PEB.get_or_init(|| {
+        let peb: &'static mut [u8; 0x800] = Box::leak(Box::new([0u8; 0x800]));
+        let parameters: &'static mut [u8; 0x400] = Box::leak(Box::new([0u8; 0x400]));
+        let put = |b: &mut [u8], at: usize, v: u64, n: usize| {
+            b[at..at + n].copy_from_slice(&v.to_le_bytes()[..n])
+        };
+        // UNICODE_STRING: Length, MaximumLength (bytes), Buffer @8.
+        let string = |b: &mut [u8], at: usize, text: &str| {
+            let units: &'static mut [u16] = Box::leak(
+                text.encode_utf16()
+                    .chain([0])
+                    .collect::<Vec<u16>>()
+                    .into_boxed_slice(),
+            );
+            let length = (units.len() - 1) * 2;
+            put(b, at, length as u64, 2);
+            put(b, at + 2, length as u64 + 2, 2);
+            put(b, at + 8, units.as_ptr() as u64, 8);
+        };
+        let process = crate::host::process::PROCESS.get();
+        let command_line = process
+            .map(|p| p.command_line.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let image_path = crate::images::exe()
+            .map(|m| crate::host::paths::windows(&m.path))
+            .unwrap_or_default();
+        let directory = std::env::current_dir()
+            .map(|d| crate::host::paths::windows(&d) + "\\")
+            .unwrap_or_default();
+        put(parameters, 0, 0x400, 4); // MaximumLength
+        put(parameters, 4, 0x400, 4); // Length
+        put(parameters, 8, 1, 4); // Flags: RTL_USER_PROC_PARAMS_NORMALIZED
+        if let Some(p) = process {
+            for (i, h) in p.standard_handles.iter().enumerate() {
+                put(parameters, 0x20 + 8 * i, *h as u64, 8);
+            }
+        }
+        string(parameters, 0x38, &directory);
+        string(parameters, 0x60, &image_path);
+        string(parameters, 0x70, &command_line);
+        put(peb, 0x10, image as u64, 8); // ImageBaseAddress
+        put(peb, 0x20, parameters.as_ptr() as u64, 8); // ProcessParameters
+        put(
+            peb,
+            0x30,
+            crate::api::memory::heap::get_process_heap() as u64,
+            8,
+        ); // ProcessHeap
+        let cpus = std::thread::available_parallelism().map_or(1, |n| n.get());
+        put(peb, 0xb8, cpus as u64, 4); // NumberOfProcessors
+        put(peb, 0x118, 10, 4); // OSMajorVersion
+        put(peb, 0x11c, 0, 4); // OSMinorVersion
+        put(peb, 0x120, 19045, 2); // OSBuildNumber
+        put(peb, 0x124, 2, 4); // OSPlatformId: VER_PLATFORM_WIN32_NT
+        peb.as_ptr() as usize
+    })
+}
 thread_local! {static ENVIRONMENT:RefCell<Option<ThreadEnvironment>>=const{RefCell::new(None)};}
 /// Gives the calling thread a TEB/PEB in gs. `data` is the EXE's TLS template
 /// (slot 0); the TLS vector also holds a block for every DLL with static TLS.
@@ -63,7 +124,6 @@ pub fn initialize(image: usize, data: Vec<u8>) -> Result<(), String> {
         }
         let mut environment = ThreadEnvironment {
             teb: Box::new([0; 1024]),
-            _peb: Box::new([0; 128]),
             expansion: Box::new([0; EXPANSION]),
             previous: 0,
         };
@@ -84,8 +144,7 @@ pub fn initialize(image: usize, data: Vec<u8>) -> Result<(), String> {
             environment.teb[6] = environment.teb.as_ptr() as u64;
             environment.teb[8] = getpid() as u64;
             environment.teb[9] = syscall(186) as u64;
-            environment._peb[2] = image as u64;
-            environment.teb[12] = environment._peb.as_ptr() as u64;
+            environment.teb[12] = peb(image) as u64;
             environment.teb[0x1780 / 8] = environment.expansion.as_ptr() as u64;
             crate::images::tls::set_exe_template(data);
             crate::images::tls::thread_start(&mut environment.teb[11]);
