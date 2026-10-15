@@ -1,12 +1,209 @@
 use super::*;
-use crate::api::memory::heap;
+use crate::api::memory::{heap, virtual_memory};
 use crate::api::system::console;
 use crate::api::system::cpu;
 use crate::api::system::dynamic;
 use crate::api::system::encoding;
 use crate::api::system::startup;
 use crate::api::system::{environment, locale, pointers, time};
+use crate::api::{memory::global, system::info};
 exports! {
+    implemented!(
+        "SetErrorMode",
+        "system",
+        "implemented",
+        "process error mode bits",
+        info::set_error_mode
+    ),
+    implemented!(
+        "GetErrorMode",
+        "system",
+        "implemented",
+        "process error mode bits",
+        info::get_error_mode
+    ),
+    implemented!(
+        "GetSystemInfo",
+        "system",
+        "implemented",
+        "real CPU set, page size, 64 KiB granularity, cpuid",
+        info::system_info
+    ),
+    implemented!(
+        "GetNativeSystemInfo",
+        "system",
+        "implemented",
+        "same as GetSystemInfo (x64 process)",
+        info::system_info
+    ),
+    implemented!(
+        "GlobalMemoryStatusEx",
+        "system",
+        "implemented",
+        "/proc/meminfo and process size",
+        info::global_memory_status_ex
+    ),
+    implemented!(
+        "GetLogicalProcessorInformationEx",
+        "system",
+        "partial",
+        "cores, packages, single NUMA node, one group (64 CPUs)",
+        info::logical_processor_information_ex
+    ),
+    implemented!(
+        "SetThreadPriority",
+        "threading",
+        "partial",
+        "accepted; host scheduling unchanged",
+        info::set_thread_priority
+    ),
+    implemented!(
+        "SetThreadAffinityMask",
+        "threading",
+        "partial",
+        "returns the usable CPU mask; host scheduling unchanged",
+        info::set_thread_affinity_mask
+    ),
+    implemented!(
+        "SwitchToThread",
+        "threading",
+        "implemented",
+        "sched_yield",
+        info::switch_to_thread
+    ),
+    implemented!(
+        "SleepEx",
+        "threading",
+        "partial",
+        "no APC delivery",
+        info::sleep_ex
+    ),
+    implemented!(
+        "SetThreadDescription",
+        "threading",
+        "partial",
+        "calling thread's Linux name",
+        info::set_thread_description
+    ),
+    implemented!(
+        "GetTempPathW",
+        "filesystem",
+        "implemented",
+        "TMP, TEMP, TMPDIR or /tmp on Z:",
+        info::temp_path_w
+    ),
+    implemented!(
+        "GetComputerNameW",
+        "system",
+        "implemented",
+        "host name first label, uppercased",
+        info::computer_name_w
+    ),
+    implemented!(
+        "GetSystemDirectoryW",
+        "filesystem",
+        "partial",
+        "conventional path; nothing exists there",
+        info::system_directory_w
+    ),
+    implemented!(
+        "GetSystemDirectoryA",
+        "filesystem",
+        "partial",
+        "conventional path; nothing exists there",
+        info::system_directory_a
+    ),
+    implemented!(
+        "GetWindowsDirectoryW",
+        "filesystem",
+        "partial",
+        "conventional path; nothing exists there",
+        info::windows_directory_w
+    ),
+    implemented!(
+        "GetCurrentDirectoryA",
+        "filesystem",
+        "implemented",
+        "host current directory on Z:",
+        info::current_directory_a
+    ),
+    implemented!(
+        "OutputDebugStringW",
+        "system",
+        "partial",
+        "text goes to stderr",
+        info::output_debug_string_w
+    ),
+    implemented!(
+        "GetModuleFileNameA",
+        "filesystem",
+        "partial",
+        "EXE and loaded PE modules, Z: paths",
+        info::module_file_name_a
+    ),
+    implemented!(
+        "GlobalAlloc",
+        "memory",
+        "partial",
+        "fixed and moveable blocks",
+        global::alloc
+    ),
+    implemented!(
+        "GlobalLock",
+        "memory",
+        "implemented",
+        "lock count",
+        global::lock
+    ),
+    implemented!(
+        "GlobalUnlock",
+        "memory",
+        "implemented",
+        "lock count",
+        global::unlock
+    ),
+    implemented!(
+        "GlobalFree",
+        "memory",
+        "implemented",
+        "unlocked blocks",
+        global::free
+    ),
+    implemented!(
+        "GlobalSize",
+        "memory",
+        "implemented",
+        "block size",
+        global::size
+    ),
+    implemented!(
+        "VirtualAlloc",
+        "memory",
+        "partial",
+        "reserve/commit as anonymous mappings on 64 KiB boundaries",
+        virtual_memory::alloc
+    ),
+    implemented!(
+        "VirtualFree",
+        "memory",
+        "partial",
+        "release whole reservations, decommit pages",
+        virtual_memory::free
+    ),
+    implemented!(
+        "VirtualProtect",
+        "memory",
+        "implemented",
+        "mprotect with the previous protection from /proc/self/maps",
+        virtual_memory::protect
+    ),
+    implemented!(
+        "VirtualQuery",
+        "memory",
+        "partial",
+        "regions from /proc/self/maps; image and reservation bases",
+        virtual_memory::query
+    ),
     implemented!(
         "GetProcessHeap",
         "memory",

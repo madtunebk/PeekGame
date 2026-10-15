@@ -131,6 +131,13 @@ fn canonical(dll: &str) -> String {
         .to_owned();
     // API sets (api-ms-win-*, ext-ms-win-*) are served by kernel32, as kernelbase
     // forwards them on Windows.
+    // WinRT and COM API sets belong to combase.dll, which ole32 fronts here.
+    if lower.starts_with("api-ms-win-core-winrt-")
+        || lower.starts_with("api-ms-win-core-com-")
+        || lower == "combase.dll"
+    {
+        return "ole32".into();
+    }
     if lower.starts_with("api-ms-win-") || lower.starts_with("ext-ms-win-") {
         return "kernel32".into();
     }

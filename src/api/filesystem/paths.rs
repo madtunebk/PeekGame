@@ -1,5 +1,5 @@
 use crate::{api::system::error, host::paths};
-use std::{ffi::c_char, path::PathBuf};
+use std::ffi::c_char;
 fn fail(code: u32) -> u32 {
     error::set(code);
     0
@@ -68,42 +68,6 @@ pub unsafe extern "win64" fn full_w(
             result
         }
         Err(e) => fail(e),
-    }
-}
-pub unsafe extern "win64" fn module_w(module: usize, out: *mut u16, size: u32) -> u32 {
-    let Some(process) = crate::host::process::PROCESS.get() else {
-        return fail(5023);
-    };
-    if module != 0 && module != process.image_base {
-        return fail(126);
-    }
-    if size == 0 {
-        return fail(122);
-    }
-    let line = process
-        .command_line
-        .to_string_lossy()
-        .encode_utf16()
-        .collect::<Vec<_>>();
-    let args = crate::host::arguments::split(&line);
-    let Some(name) = args.first() else {
-        return fail(87);
-    };
-    let path = PathBuf::from(String::from_utf16_lossy(name));
-    let text = paths::windows(&path).encode_utf16().collect::<Vec<_>>();
-    if out.is_null() {
-        return fail(87);
-    }
-    let n = text.len().min(size as usize - 1);
-    unsafe {
-        std::ptr::copy_nonoverlapping(text.as_ptr(), out, n);
-        *out.add(n) = 0;
-    }
-    if text.len() >= size as usize {
-        error::set(122);
-        size
-    } else {
-        text.len() as u32
     }
 }
 pub unsafe extern "win64" fn attributes_w(input: *const u16) -> u32 {

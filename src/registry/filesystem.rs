@@ -33,8 +33,8 @@ exports! {
         "GetModuleFileNameW",
         "filesystem",
         "partial",
-        "configured main executable; runtime module files unavailable",
-        paths::module_w
+        "EXE and loaded PE modules, Z: paths",
+        crate::api::system::info::module_file_name_w
     ),
     implemented!(
         "GetFileAttributesW",
