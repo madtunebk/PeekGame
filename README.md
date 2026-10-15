@@ -157,9 +157,8 @@ the desktop. Its C caller verifies Windows structure sizes and calling conventio
 real native dimensions and visibility, callback reentry, filtered/no-remove queues,
 actual X11 resize/key/close events, and ordered destruction/quit notifications.
 
-The existing DXVK Native build in sdl3-window uses SDL WSI. Graphics integration
-must choose a separate X11/Vulkan WSI path rather than pass X11 tokens to an SDL
-backend. This prototype does not yet implement that graphics bridge.
+DXVK Native uses local `sources/dxvk`, `deps/shader-tools` and our X11 WSI.
+See [deps/README.md](deps/README.md) for setup without the earlier project.
 
 API behavior references are recorded in [docs/api-contracts.md](docs/api-contracts.md).
 
@@ -281,3 +280,13 @@ dynamic lookup, the missing-import stop and the relinked testgame on private Xvf
 `tests/godot_image/` is a minimal Godot image scene, with a Windows export and
 verified native Linux reference. See its README for build commands and current
 PeekGame startup blockers. Run `python3 tools/build_godot_image.py` to rebuild.
+
+## Repository inputs and local-only files
+
+Only source, tests, scripts and dependency metadata belong in Git. Games,
+decompiled third-party code, installed tools, binaries, logs and caches stay
+local under the paths listed in `.gitignore`. Dependencies live inside this
+project; the earlier loader is reference material only. A fresh checkout can
+fetch pinned sources using `python3 tools/fetch_sources.py`, then build DXVK
+using `python3 tools/build_dxvk_x11.py`. See `deps/README.md` for Windows DLLs.
+Rebuild the owned test fixture with `make -C tests/testgame`.

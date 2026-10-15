@@ -1,6 +1,0 @@
-https://github.com/suhteevah/win32-nostd
-https://github.com/suhteevah/vulkan-nostd
-https://github.com/suhteevah/dxvk-bridge-nostd
-https://github.com/suhteevah/vfs-nostd
-https://github.com/suhteevah/pe-loader-nostd
-https://github.com/suhteevah/dotnet-clr-nostd

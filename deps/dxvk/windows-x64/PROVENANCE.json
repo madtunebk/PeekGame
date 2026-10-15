@@ -1,0 +1,15 @@
+{
+  "description": "Existing working Windows DXVK runtime; retained independently of target build output",
+  "files": {
+    "d3d11.dll": {
+      "sha256": "453586874b69fa894217331e63ad75cd0e58cbddcafae96858a934e8e63bf000",
+      "bytes": 4218894
+    },
+    "dxgi.dll": {
+      "sha256": "0070b66a4e1878a92083cf6fde8fd9a583ec05e8534493799f4a0f6ca45a5ef1",
+      "bytes": 2760718
+    }
+  },
+  "version": "v2.5.3",
+  "download_url": "https://github.com/doitsujin/dxvk/releases/download/v2.5.3/dxvk-2.5.3.tar.gz"
+}

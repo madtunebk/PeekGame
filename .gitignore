@@ -1,3 +1,4 @@
+# Build output, packages, runtime data and user-owned games
 /target/
 /reports/
 /cache/*
@@ -6,7 +7,45 @@
 !/logs/.gitkeep
 /packages/
 /relinked/
-/tests/godot_image/.godot/
+/games/
+/windows-dlls/
 /sources/
+/tests/godot_image/.godot/
 
+# Installed tools and generated dependency artifacts
+/tools/ilspy/
+/tools/retdec/
+/deps/shader-tools/bin/
+/deps/shader-tools/lib/
+/deps/shader-tools/include/
+/deps/shader-tools/share/
+/peekgame
+/play
+
+# Executables, libraries, debug/decompiler output and logs
+*.exe
+*.dll
+*.so
+*.so.*
+*.a
+*.o
+*.obj
+*.pdb
+*.nupkg
+*.pck
+*.pak
+*.dsm
+*.bc
+*.ll
+*.exe.c
+*.exe.c.json
+*.log
+/core
+/core.*
 __pycache__/
+
+# Private scratch/configuration; keep examples eligible for review
+/notes.txt
+.env
+.env.*
+!.env.example

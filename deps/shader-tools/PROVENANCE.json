@@ -1,0 +1,5 @@
+{
+  "source": "sources/glslang",
+  "rebuild": "python3 tools/build_glslang.py",
+  "sha256": "26a7c0ec9263f2fbef146a877bc88caad6d2c091fe9e1bbcba323cc6659347dd"
+}

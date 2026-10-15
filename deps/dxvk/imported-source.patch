@@ -1,0 +1,18 @@
+diff --git a/src/d3d11/d3d11_texture.cpp b/src/d3d11/d3d11_texture.cpp
+index 2da6f5c..b4bd363 100644
+--- a/src/d3d11/d3d11_texture.cpp
++++ b/src/d3d11/d3d11_texture.cpp
+@@ -59,6 +59,13 @@ namespace dxvk {
+           "\n  MiscFlags:  ", m_desc.MiscFlags,
+           "\n  FeatureLevel:  ", pDevice->GetFeatureLevel()));
+ 
++      // Sharing needs Win32 external memory handles. Without them (a Vulkan driver that is not a
++      // Windows driver), fail like a Windows driver that cannot share resources instead of
++      // creating an image whose shared handle can never be exported.
++      if (!pDevice->GetDXVKDevice()->features().khrExternalMemoryWin32)
++        throw DxvkError(str::format("D3D11: Cannot create shared texture: VK_KHR_external_memory_win32 not supported",
++          "\n  MiscFlags:  ", m_desc.MiscFlags));
++
+       imageInfo.shared = true;
+       imageInfo.sharing.mode = hSharedHandle == INVALID_HANDLE_VALUE ? DxvkSharedHandleMode::Export : DxvkSharedHandleMode::Import;
+       imageInfo.sharing.type = (m_desc.MiscFlags & D3D11_RESOURCE_MISC_SHARED_NTHANDLE)

@@ -9,9 +9,8 @@ into a native ELF.
 
 ```sh
 cargo build --release
-# DXVK's Windows DLLs (x64) replace PeekGame's own d3d11/dxgi:
-mkdir -p target/release/windows-dlls
-cp dxvk-2.5.3/x64/{d3d11,dxgi}.dll target/release/windows-dlls/   # or PEEKGAME_WINDOWS_DLLS=<dir>
+python3 tools/stage_windows_dlls.py
+G="$PWD/games/MarioVsLuigi-Win64-v2.2.0.1/MarioVsLuigi-Win64"
 ./target/release/peekgame "$G/NSMB-MarioVsLuigi.exe" --run
 ```
 
@@ -53,3 +52,12 @@ call; unhandled exceptions are printed before the program's crash handler runs
 `python3 tests/test_<name>.py` (window_abi, crt_core, files_sync, seh,
 tls_threads, pe_dlls, imports_abi, relink, …). They build small mingw programs
 and run them through PeekGame (window tests on a private Xvfb).
+
+## Local dependency ownership
+
+DXVK/glslang snapshots are in `sources/`; the compiler and retained Windows DLLs
+are in `deps/`. They remain local, with upstream revisions/checksums/patches
+tracked in `deps/`. `tools/fetch_sources.py` restores pinned source inputs for a
+fresh checkout. The Unity game copy is under `games/`. No build/runtime input
+comes from the earlier project. Discord integration is disabled for current
+testing; IOCP support is deferred.
