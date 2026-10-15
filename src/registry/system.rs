@@ -23,6 +23,13 @@ use crate::api::{memory::global, system::info};
 use crate::seh;
 exports! {
     implemented!(
+        "CreateIoCompletionPort",
+        "system",
+        "partial",
+        "not supported yet: fails with ERROR_NOT_SUPPORTED",
+        compat::create_io_completion_port
+    ),
+    implemented!(
         "lstrlenW",
         "system",
         "partial",

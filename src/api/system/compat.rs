@@ -239,3 +239,12 @@ pub unsafe extern "win64" fn lstrcpy_a(out: *mut c_char, s: *const c_char) -> *m
     }
     out
 }
+/// I/O completion ports are not implemented yet: creation fails with
+/// ERROR_NOT_SUPPORTED, so libraries that need them fail their initialization
+/// cleanly (see TODO.md).
+pub extern "win64" fn create_io_completion_port(_file: usize, _port: usize, _key: usize, _threads: u32) -> usize {
+    static WARNED: std::sync::Once = std::sync::Once::new();
+    WARNED.call_once(|| eprintln!("CreateIoCompletionPort: I/O completion ports are not supported yet"));
+    error::set(50);
+    0
+}

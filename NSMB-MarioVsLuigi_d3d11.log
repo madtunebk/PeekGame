@@ -267,3 +267,95 @@ info:  VK_EXT_conservative_rasterization
 info:    extension supported                    : 0
 info:  VK_EXT_custom_border_color
 info:    customBorderColors                     : 1
+info:    customBorderColorWithoutFormat         : 1
+info:  VK_EXT_depth_clip_enable
+info:    depthClipEnable                        : 1
+info:  VK_EXT_depth_bias_control
+info:    depthBiasControl                       : 1
+info:    leastRepresentableValueForceUnormRepresentation : 1
+info:    floatRepresentation                    : 0
+info:    depthBiasExact                         : 1
+info:  VK_EXT_extended_dynamic_state3
+info:    extDynamicState3AlphaToCoverageEnable  : 1
+info:    extDynamicState3DepthClipEnable        : 1
+info:    extDynamicState3RasterizationSamples   : 1
+info:    extDynamicState3SampleMask             : 1
+info:    extDynamicState3LineRasterizationMode  : 1
+info:  VK_EXT_fragment_shader_interlock
+info:    fragmentShaderSampleInterlock          : 1
+info:    fragmentShaderPixelInterlock           : 1
+info:  VK_EXT_full_screen_exclusive
+info:    extension supported                    : 0
+info:  VK_EXT_graphics_pipeline_library
+info:    graphicsPipelineLibrary                : 1
+info:  VK_EXT_line_rasterization
+info:    rectangularLines                       : 1
+info:    smoothLines                            : 1
+info:  VK_EXT_memory_budget
+info:    extension supported                    : 1
+info:  VK_EXT_memory_priority
+info:    memoryPriority                         : 1
+info:  VK_EXT_non_seamless_cube_map
+info:    nonSeamlessCubeMap                     : 0
+info:  VK_EXT_pageable_device_local_memory
+info:    pageableDeviceLocalMemory              : 1
+info:  VK_EXT_robustness2
+info:    robustBufferAccess2                    : 1
+info:    robustImageAccess2                     : 1
+info:    nullDescriptor                         : 1
+info:  VK_EXT_shader_module_identifier
+info:    shaderModuleIdentifier                 : 0
+info:  VK_EXT_shader_stencil_export
+info:    extension supported                    : 1
+info:  VK_EXT_swapchain_colorspace
+info:    extension supported                    : 0
+info:  VK_EXT_swapchain_maintenance1
+info:    swapchainMaintenance1                  : 1
+info:  VK_EXT_hdr_metadata
+info:    extension supported                    : 1
+info:  VK_EXT_transform_feedback
+info:    transformFeedback                      : 1
+info:    geometryStreams                        : 1
+info:  VK_EXT_vertex_attribute_divisor
+info:    vertexAttributeInstanceRateDivisor     : 1
+info:    vertexAttributeInstanceRateZeroDivisor : 1
+info:  VK_KHR_external_memory_win32
+info:    extension supported                    : 0
+info:  VK_KHR_external_semaphore_win32
+info:    extension supported                    : 0
+info:  VK_KHR_maintenance5
+info:    maintenance5                           : 1
+info:  VK_KHR_present_id
+info:    presentId                              : 0
+info:  VK_KHR_present_wait
+info:    presentWait                            : 0
+info:  VK_NV_descriptor_pool_overallocation
+info:    descriptorPoolOverallocation           : 0
+info:  VK_NV_raw_access_chains
+info:    shaderRawAccessChains                  : 0
+info:  VK_NVX_binary_import
+info:    extension supported                    : 0
+info:  VK_NVX_image_view_handle
+info:    extension supported                    : 0
+info:  VK_KHR_win32_keyed_mutex
+info:    extension supported                    : 0
+info:  Queue families:
+info:    Graphics : 0
+info:    Transfer : 0
+info:    Sparse   : 0
+info:  Memory type mask for sparse resources: 0x1
+info:  Memory type mask for buffer resources: 0x1, usage: 0x19ff
+warn:  DXVK: No state cache file found
+info:  DXVK: Graphics pipeline libraries supported
+info:  Presenter: Actual swap chain properties:
+info:    Format:       VK_FORMAT_B8G8R8A8_UNORM
+info:    Color space:  VK_COLOR_SPACE_SRGB_NONLINEAR_KHR
+info:    Present mode: VK_PRESENT_MODE_IMMEDIATE_KHR (dynamic: yes)
+info:    Buffer size:  1280x720
+info:    Image count:  4
+warn:  D3D11DXGIDevice::QueryInterface: Unknown interface query
+warn:  0ec870a6-5d7e-4c22-8cfc-5baae07616ed
+info:  DXVK: Using 4 compiler threads
+info:  Presenter: Actual swap chain properties:
+info:    Format:       VK_FORMAT_B8G8R8A8_UNORM
+info:    Color space:  VK_COLOR_SPACE_SRGB_NONLINEAR_KHR
