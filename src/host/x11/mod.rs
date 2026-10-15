@@ -4,6 +4,29 @@ mod keyboard;
 mod types;
 pub(crate) use events::NativeEvent;
 use std::{ffi::CString, sync::OnceLock};
+/// Size of the default X screen, from a process-wide connection kept open for
+/// display queries (monitors, metrics). None without a display.
+pub(crate) fn screen_size() -> Option<(i32, i32)> {
+    struct Shared(*mut types::Display);
+    unsafe impl Send for Shared {}
+    unsafe impl Sync for Shared {}
+    static SHARED: OnceLock<Option<Shared>> = OnceLock::new();
+    let shared = SHARED.get_or_init(|| {
+        Connection::open().ok().map(|c| {
+            let display = c.display;
+            std::mem::forget(c);
+            Shared(display)
+        })
+    });
+    let display = shared.as_ref()?.0;
+    unsafe {
+        let screen = ffi::XDefaultScreen(display);
+        Some((
+            ffi::XDisplayWidth(display, screen),
+            ffi::XDisplayHeight(display, screen),
+        ))
+    }
+}
 pub(crate) struct Connection {
     pub display: *mut types::Display,
     protocols: u64,

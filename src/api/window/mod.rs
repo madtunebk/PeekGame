@@ -1,6 +1,7 @@
 pub(crate) mod classes;
 pub(crate) mod create;
 pub(crate) mod cursor;
+pub(crate) mod display;
 pub(crate) mod lifecycle;
 pub(crate) mod messages;
 mod pump;

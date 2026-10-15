@@ -6,6 +6,8 @@ unsafe extern "C" {
     pub fn XOpenDisplay(name: *const c_char) -> *mut Display;
     pub fn XCloseDisplay(display: *mut Display) -> c_int;
     pub fn XDefaultScreen(display: *mut Display) -> c_int;
+    pub fn XDisplayWidth(display: *mut Display, screen: c_int) -> c_int;
+    pub fn XDisplayHeight(display: *mut Display, screen: c_int) -> c_int;
     pub fn XRootWindow(display: *mut Display, screen: c_int) -> c_ulong;
     pub fn XCreateSimpleWindow(
         display: *mut Display,

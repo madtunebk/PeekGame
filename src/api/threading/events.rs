@@ -95,6 +95,8 @@ pub extern "win64" fn close(handle: usize) -> i32 {
         || super::threads::close(handle)
         || crate::api::filesystem::files::close(handle)
         || super::objects::close(handle)
+        || crate::api::system::toolhelp::close(handle)
+        || crate::api::system::security::close(handle)
     {
         1
     } else {

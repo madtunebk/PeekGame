@@ -95,6 +95,10 @@ pub fn by_name(name: &str) -> Option<Arc<Module>> {
         .find(|m| m.name.eq_ignore_ascii_case(&wanted))
         .cloned()
 }
+/// Every loaded image, in load order (the EXE first).
+pub fn all() -> Vec<Arc<Module>> {
+    MODULES.lock().unwrap().clone()
+}
 pub fn exe() -> Option<Arc<Module>> {
     MODULES.lock().unwrap().first().cloned()
 }

@@ -119,6 +119,20 @@ fn attributes(meta: &std::fs::Metadata, name: Option<&str>) -> u32 {
     }
 }
 
+/// DuplicateHandle for files, pipes and the standard streams: a new handle on a
+/// duplicated descriptor (shared file position, as on Windows).
+pub(crate) fn duplicate(handle: usize) -> Option<usize> {
+    let file = match get(handle) {
+        Some(entry) => entry.file.try_clone().ok()?,
+        None => {
+            let fd = stdio::fd_for(handle)?;
+            let borrowed = unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) };
+            File::from(borrowed.try_clone_to_owned().ok()?)
+        }
+    };
+    let overlapped = get(handle).is_some_and(|e| e.overlapped);
+    Some(insert(Entry { file, overlapped }))
+}
 /// GetFileType for a file handle: disk, character device or pipe.
 pub(crate) fn file_type(handle: usize) -> Option<u32> {
     use std::os::unix::fs::FileTypeExt;

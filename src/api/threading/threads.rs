@@ -119,12 +119,13 @@ pub unsafe extern "win64" fn duplicate(
     unsafe {
         *out = 0;
     }
+    // Only this process exists. Inheritance concerns child processes, so the flag is
+    // accepted; access must be "the same" (DUPLICATE_SAME_ACCESS or no extra rights).
+    let _ = inherit;
     if source_process != usize::MAX
         || target_process != usize::MAX
-        || inherit != 0
         || options & !3 != 0
-        || options & 2 == 0
-        || access != 0
+        || (options & 2 == 0 && access != 0)
     {
         error::set(50);
         return 0;
@@ -149,6 +150,7 @@ pub unsafe extern "win64" fn duplicate(
         Some(insert(thread))
     } else {
         super::events::duplicate(source)
+            .or_else(|| crate::api::filesystem::files::duplicate(source))
     };
     let Some(target) = target else {
         error::set(6);

@@ -4,11 +4,316 @@ use crate::api::system::console;
 use crate::api::system::cpu;
 use crate::api::system::dynamic;
 use crate::api::system::encoding;
+use crate::api::system::etw;
+use crate::api::system::message;
+use crate::api::system::psapi;
 use crate::api::system::random;
+use crate::api::system::security;
 use crate::api::system::startup;
+use crate::api::system::toolhelp;
 use crate::api::system::{environment, locale, pointers, time};
 use crate::api::{memory::global, system::info};
 exports! {
+    export!(
+        "advapi32.dll",
+        "EventRegister",
+        "diagnostics",
+        "implemented",
+        "no ETW: ERROR_NOT_SUPPORTED, null handle",
+        etw::register
+    ),
+    export!(
+        "advapi32.dll",
+        "EventUnregister",
+        "diagnostics",
+        "implemented",
+        "no ETW",
+        etw::unregister
+    ),
+    export!(
+        "advapi32.dll",
+        "EventWrite",
+        "diagnostics",
+        "implemented",
+        "no ETW: invalid handle",
+        etw::write
+    ),
+    export!(
+        "advapi32.dll",
+        "EventWriteTransfer",
+        "diagnostics",
+        "implemented",
+        "no ETW: invalid handle",
+        etw::write_transfer
+    ),
+    export!(
+        "advapi32.dll",
+        "EventSetInformation",
+        "diagnostics",
+        "implemented",
+        "no ETW: invalid handle",
+        etw::set_information
+    ),
+    export!(
+        "advapi32.dll",
+        "EventEnabled",
+        "diagnostics",
+        "implemented",
+        "never enabled",
+        etw::enabled
+    ),
+    export!(
+        "advapi32.dll",
+        "EventProviderEnabled",
+        "diagnostics",
+        "implemented",
+        "never enabled",
+        etw::provider_enabled
+    ),
+    implemented!(
+        "AreFileApisANSI",
+        "system",
+        "implemented",
+        "ANSI is UTF-8",
+        etw::file_apis_ansi
+    ),
+    implemented!(
+        "GetTempPath2W",
+        "filesystem",
+        "implemented",
+        "same as GetTempPathW",
+        info::temp_path_w
+    ),
+    implemented!(
+        "FormatMessageW",
+        "system",
+        "partial",
+        "system texts for common errors; plain FROM_STRING",
+        message::format_w
+    ),
+    implemented!(
+        "FormatMessageA",
+        "system",
+        "partial",
+        "system texts for common errors; plain FROM_STRING",
+        message::format_a
+    ),
+    implemented!(
+        "K32EnumProcessModules",
+        "system",
+        "implemented",
+        "loaded PE modules",
+        psapi::enum_process_modules
+    ),
+    implemented!(
+        "K32EnumProcessModulesEx",
+        "system",
+        "implemented",
+        "loaded PE modules",
+        psapi::enum_process_modules_ex
+    ),
+    implemented!(
+        "K32GetModuleInformation",
+        "system",
+        "implemented",
+        "base, size, entry",
+        psapi::module_information
+    ),
+    implemented!(
+        "K32GetModuleFileNameExW",
+        "system",
+        "implemented",
+        "current process",
+        psapi::module_file_name_ex_w
+    ),
+    implemented!(
+        "K32GetModuleFileNameExA",
+        "system",
+        "implemented",
+        "current process",
+        psapi::module_file_name_ex_a
+    ),
+    implemented!(
+        "K32GetModuleBaseNameW",
+        "system",
+        "implemented",
+        "current process",
+        psapi::module_base_name_w
+    ),
+    implemented!(
+        "K32GetModuleBaseNameA",
+        "system",
+        "implemented",
+        "current process",
+        psapi::module_base_name_a
+    ),
+    implemented!(
+        "K32GetProcessMemoryInfo",
+        "system",
+        "partial",
+        "/proc/self/status figures",
+        psapi::process_memory_info
+    ),
+    implemented!(
+        "K32GetPerformanceInfo",
+        "system",
+        "partial",
+        "/proc/meminfo figures",
+        psapi::performance_info
+    ),
+    export!(
+        "psapi.dll",
+        "EnumProcessModules",
+        "system",
+        "implemented",
+        "loaded PE modules",
+        psapi::enum_process_modules
+    ),
+    export!(
+        "psapi.dll",
+        "EnumProcessModulesEx",
+        "system",
+        "implemented",
+        "loaded PE modules",
+        psapi::enum_process_modules_ex
+    ),
+    export!(
+        "psapi.dll",
+        "GetModuleInformation",
+        "system",
+        "implemented",
+        "base, size, entry",
+        psapi::module_information
+    ),
+    export!(
+        "psapi.dll",
+        "GetModuleFileNameExW",
+        "system",
+        "implemented",
+        "current process",
+        psapi::module_file_name_ex_w
+    ),
+    export!(
+        "psapi.dll",
+        "GetModuleBaseNameW",
+        "system",
+        "implemented",
+        "current process",
+        psapi::module_base_name_w
+    ),
+    export!(
+        "psapi.dll",
+        "GetProcessMemoryInfo",
+        "system",
+        "partial",
+        "/proc/self/status figures",
+        psapi::process_memory_info
+    ),
+    export!(
+        "advapi32.dll",
+        "OpenProcessToken",
+        "security",
+        "partial",
+        "current process, query access",
+        security::open_process_token
+    ),
+    export!(
+        "advapi32.dll",
+        "OpenThreadToken",
+        "security",
+        "implemented",
+        "no impersonation: ERROR_NO_TOKEN",
+        security::open_thread_token
+    ),
+    export!(
+        "advapi32.dll",
+        "GetTokenInformation",
+        "security",
+        "partial",
+        "elevation and integrity level (root is elevated)",
+        security::token_information
+    ),
+    export!(
+        "advapi32.dll",
+        "GetSidSubAuthority",
+        "security",
+        "implemented",
+        "SID layout",
+        security::sid_sub_authority
+    ),
+    export!(
+        "advapi32.dll",
+        "GetSidSubAuthorityCount",
+        "security",
+        "implemented",
+        "SID layout",
+        security::sid_sub_authority_count
+    ),
+    export!(
+        "advapi32.dll",
+        "AllocateLocallyUniqueId",
+        "security",
+        "implemented",
+        "unique for the process",
+        security::allocate_luid
+    ),
+    export!(
+        "advapi32.dll",
+        "GetUserNameA",
+        "security",
+        "implemented",
+        "effective Linux account",
+        security::user_name_a
+    ),
+    implemented!(
+        "CreateToolhelp32Snapshot",
+        "system",
+        "partial",
+        "process (/proc) and own-thread snapshots",
+        toolhelp::create_snapshot
+    ),
+    implemented!(
+        "Process32First",
+        "system",
+        "implemented",
+        "snapshot processes",
+        toolhelp::process32_first
+    ),
+    implemented!(
+        "Process32Next",
+        "system",
+        "implemented",
+        "snapshot processes",
+        toolhelp::process32_next
+    ),
+    implemented!(
+        "Process32FirstW",
+        "system",
+        "implemented",
+        "snapshot processes",
+        toolhelp::process32_first_w
+    ),
+    implemented!(
+        "Process32NextW",
+        "system",
+        "implemented",
+        "snapshot processes",
+        toolhelp::process32_next_w
+    ),
+    implemented!(
+        "Thread32First",
+        "system",
+        "implemented",
+        "threads of this process",
+        toolhelp::thread32_first
+    ),
+    implemented!(
+        "Thread32Next",
+        "system",
+        "implemented",
+        "threads of this process",
+        toolhelp::thread32_next
+    ),
     export!(
         "bcrypt.dll",
         "BCryptGenRandom",
