@@ -310,6 +310,20 @@
   crt_core, files_sync, iocp, tls_threads, endthread, seh, `cargo test` pass.
   MarioVsLuigi 0 exceptions (crash handler refused, room joined); DOOM runs.
 
+## SetWindowPos size hints (windowed mode stuck at 32x32)
+
+- **Trigger:** in windowed mode (r_fullscreen 0, from the cloud profile) DOOM rendered
+  and saved r_windowWidth/Height 32. Its window is created 32x32 and resized with
+  SetWindowPos to 2560x1440. Non-resizable windows get fixed-size WM hints (min = max);
+  SetWindowPos sent the X resize before updating them, so Mutter constrained the new
+  request with the old 32x32 limits.
+- **Fix:** `set_window_pos` updates the fixed-size hints before XMoveResizeWindow.
+  Mutter now fits the 2560x1440 request into the work area (2560x1321 below the top
+  bar), which DOOM renders and saves.
+- `PEEKGAME_TRACE_WINDOW` also logs X ConfigureNotify sizes and every XMoveResizeWindow.
+- **Verification:** windowed DOOM: render size 2560x1321, saved 2560x1321;
+  window_abi, godot_input, display_topology, audit_fixes, mouse_hooks pass.
+
 ## Next
 
 - Done: `CloseWindow` (minimize); unbridged interfaces logged once; 720x576 came

@@ -68,6 +68,10 @@ pub(super) fn pump() {
             NativeEvent::Xdnd {event,..} => super::ole_drop::enqueue(hwnd,event),
             NativeEvent::Configure {width,height,x,y,..}=>{
                 let (x,y)=if state::with_window(hwnd,|w|w.parent==0).unwrap_or(false){state::client_origin(hwnd).unwrap_or((x,y))}else{(x,y)};
+                if std::env::var_os("PEEKGAME_TRACE_WINDOW").is_some() {
+                    let expected=state::with_window(hwnd,|w|w.expected).ok().flatten();
+                    eprintln!("[window] X Configure {hwnd:#x} ({x},{y}) {width}x{height} expected={expected:?}");
+                }
                 let changed=state::with_window(hwnd,|w|{
                     let moved=(w.x,w.y)!=(x,y);w.x=x;w.y=y;
                     let resized=(w.width,w.height)!=(width,height);w.expected=None;

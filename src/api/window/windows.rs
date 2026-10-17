@@ -546,6 +546,12 @@ pub(crate) extern "win64" fn set_window_pos(
     if native != 0 {
         if let Ok(c) = connection() {
             if flags & 3 != 3 {
+                // Fixed-size hints first: the window manager applies the hints current
+                // when it handles the request, so the old size (min = max) would clamp
+                // the new one (DOOM's 32x32 creation size stuck in windowed mode).
+                if parent == 0 && style & WS_THICKFRAME == 0 {
+                    c.set_resizable(native, false, nw, nh);
+                }
                 c.move_resize(
                     native,
                     nx,
@@ -554,9 +560,6 @@ pub(crate) extern "win64" fn set_window_pos(
                     nh.max(1) as u32,
                     parent == 0,
                 );
-                if parent == 0 && style & WS_THICKFRAME == 0 {
-                    c.set_resizable(native, false, nw, nh);
-                }
             }
             if flags & 4 == 0 && (after == 0 || after == usize::MAX) && flags & 0x10 == 0 {
                 c.raise_and_focus(native);

@@ -294,6 +294,9 @@ impl Connection {
         } else {
             (x, y)
         };
+        if std::env::var_os("PEEKGAME_TRACE_WINDOW").is_some() {
+            eprintln!("[window] XMoveResizeWindow {window:#x} ({x},{y}) {width}x{height}");
+        }
         unsafe {
             ffi::XMoveResizeWindow(self.display, window, x, y, width.max(1), height.max(1));
             ffi::XFlush(self.display);
