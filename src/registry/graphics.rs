@@ -128,7 +128,7 @@ exports! {
     export!("vulkan-1.dll", "vkGetPhysicalDeviceSurfaceCapabilitiesKHR", "graphics/vulkan", "partial", "host", vulkan::get_physical_device_surface_capabilities_khr),
     export!("vulkan-1.dll", "vkGetPhysicalDeviceSurfaceFormatsKHR", "graphics/vulkan", "partial", "host", vulkan::get_physical_device_surface_formats_khr),
     export!("vulkan-1.dll", "vkGetPhysicalDeviceSurfacePresentModesKHR", "graphics/vulkan", "partial", "host", vulkan::get_physical_device_surface_present_modes_khr),
-    export!("vulkan-1.dll", "vkCreateSwapchainKHR", "graphics/vulkan", "partial", "host", vulkan::create_swapchain_khr),
+    export!("vulkan-1.dll", "vkCreateSwapchainKHR", "graphics/vulkan", "partial", "host", vulkan::create_swapchain),
     export!("vulkan-1.dll", "vkDestroySwapchainKHR", "graphics/vulkan", "partial", "host", vulkan::destroy_swapchain_khr),
     export!("vulkan-1.dll", "vkGetSwapchainImagesKHR", "graphics/vulkan", "partial", "host", vulkan::get_swapchain_images_khr),
     export!("vulkan-1.dll", "vkAcquireNextImageKHR", "graphics/vulkan", "partial", "host", vulkan::acquire_next_image_khr),

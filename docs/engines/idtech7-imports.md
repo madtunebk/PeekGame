@@ -324,6 +324,19 @@
 - **Verification:** windowed DOOM: render size 2560x1321, saved 2560x1321;
   window_abi, godot_input, display_topology, audit_fixes, mouse_hooks pass.
 
+## vkCreateSwapchainKHR present mode (tearing)
+
+- **Finding:** DOOM requests VK_PRESENT_MODE_FIFO (2, vsync), which is tear-free by
+  spec; the bridge forwards it unchanged, so tearing is a display-stack issue
+  (NVIDIA on X11/GNOME), not the game or the bridge.
+- **Added knob:** `create_swapchain` (`src/api/graphics/vulkan.rs`) reads
+  presentMode at offset 88 of VkSwapchainCreateInfoKHR; `PEEKGAME_VULKAN_PRESENT`
+  overrides it (immediate/mailbox/fifo|vsync/relaxed). `PEEKGAME_TRACE_GL` logs the
+  requested and applied mode. Default behaviour unchanged (pure passthrough).
+- **Real fixes for the NVIDIA/X11 tearing:** `nvidia-settings` "Force Full
+  Composition Pipeline" on the X screen, or true fullscreen (r_fullscreen 1).
+- **Verification:** DOOM logs present mode 2; with the override, `2 -> 1`.
+
 ## Next
 
 - Done: `CloseWindow` (minimize); unbridged interfaces logged once; 720x576 came

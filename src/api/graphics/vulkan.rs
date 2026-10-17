@@ -198,6 +198,7 @@ fn own(name: &[u8]) -> Option<usize> {
             cmd_set_overestimation as *const () as usize
         }
         b"vkSetDeviceMemoryPriorityEXT" => set_memory_priority as *const () as usize,
+        b"vkCreateSwapchainKHR" => create_swapchain as *const () as usize,
         _ => return None,
     };
     Some(f)
@@ -460,6 +461,48 @@ pub(crate) unsafe extern "win64" fn create_win32_surface(
         unsafe { std::mem::transmute(real) };
     unsafe { real(instance, &xlib, allocator, surface) }
 }
+/// VkSwapchainCreateInfoKHR.presentMode is a u32 at offset 88 on x64. PeekGame
+/// forwards it unchanged; PEEKGAME_VULKAN_PRESENT overrides it (fifo = vsync, no
+/// tearing; mailbox = no tearing, low latency; immediate = uncapped/tearing;
+/// relaxed = fifo-relaxed). The requested/applied mode is logged with PEEKGAME_TRACE_GL.
+pub(crate) unsafe extern "win64" fn create_swapchain(
+    device: usize,
+    info: *const c_void,
+    allocator: *const c_void,
+    swapchain: *mut u64,
+) -> i32 {
+    let mut real = written(c"vkCreateSwapchainKHR");
+    if real == 0 {
+        real = host_function(0, device, c"vkCreateSwapchainKHR");
+    }
+    if info.is_null() || real == 0 {
+        return VK_ERROR_INITIALIZATION_FAILED;
+    }
+    const PRESENT_MODE_OFFSET: usize = 88;
+    let slot = unsafe { (info as *const u8).add(PRESENT_MODE_OFFSET) as *mut u32 };
+    let requested = unsafe { slot.read_unaligned() };
+    let override_mode = std::env::var("PEEKGAME_VULKAN_PRESENT").ok().and_then(|v| {
+        Some(match v.trim().to_ascii_lowercase().as_str() {
+            "immediate" => 0u32,
+            "mailbox" => 1,
+            "fifo" | "vsync" => 2,
+            "relaxed" | "fifo_relaxed" => 3,
+            _ => return None,
+        })
+    });
+    if let Some(mode) = override_mode {
+        unsafe { slot.write_unaligned(mode) };
+    }
+    if std::env::var_os("PEEKGAME_TRACE_GL").is_some() {
+        match override_mode {
+            Some(mode) => eprintln!("[gl] vkCreateSwapchainKHR present mode {requested} -> {mode}"),
+            None => eprintln!("[gl] vkCreateSwapchainKHR present mode {requested}"),
+        }
+    }
+    let real: unsafe extern "C" fn(usize, *const c_void, *const c_void, *mut u64) -> i32 =
+        unsafe { std::mem::transmute(real) };
+    unsafe { real(device, info, allocator, swapchain) }
+}
 /// Every queue family that can present to an X window presents to our windows.
 pub(crate) unsafe extern "win64" fn win32_presentation_support(
     _device: usize,
@@ -665,7 +708,6 @@ vk_forward!(get_physical_device_surface_support_khr, "vkGetPhysicalDeviceSurface
 vk_forward!(get_physical_device_surface_capabilities_khr, "vkGetPhysicalDeviceSurfaceCapabilitiesKHR", (device: usize, surface: u64, caps: *mut c_void) -> i32);
 vk_forward!(get_physical_device_surface_formats_khr, "vkGetPhysicalDeviceSurfaceFormatsKHR", (device: usize, surface: u64, count: *mut u32, formats: *mut c_void) -> i32);
 vk_forward!(get_physical_device_surface_present_modes_khr, "vkGetPhysicalDeviceSurfacePresentModesKHR", (device: usize, surface: u64, count: *mut u32, modes: *mut u32) -> i32);
-vk_forward!(create_swapchain_khr, "vkCreateSwapchainKHR", (device: usize, info: *const c_void, allocator: *const c_void, swapchain: *mut u64) -> i32);
 vk_forward!(destroy_swapchain_khr, "vkDestroySwapchainKHR", (device: usize, swapchain: u64, allocator: *const c_void));
 vk_forward!(get_swapchain_images_khr, "vkGetSwapchainImagesKHR", (device: usize, swapchain: u64, count: *mut u32, images: *mut u64) -> i32);
 vk_forward!(acquire_next_image_khr, "vkAcquireNextImageKHR", (device: usize, swapchain: u64, timeout: u64, semaphore: u64, fence: u64, index: *mut u32) -> i32);
