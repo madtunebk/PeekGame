@@ -199,6 +199,7 @@ fn own(name: &[u8]) -> Option<usize> {
         }
         b"vkSetDeviceMemoryPriorityEXT" => set_memory_priority as *const () as usize,
         b"vkCreateSwapchainKHR" => create_swapchain as *const () as usize,
+        b"vkQueuePresentKHR" => queue_present as *const () as usize,
         _ => return None,
     };
     Some(f)
@@ -503,6 +504,53 @@ pub(crate) unsafe extern "win64" fn create_swapchain(
         unsafe { std::mem::transmute(real) };
     unsafe { real(device, info, allocator, swapchain) }
 }
+/// PEEKGAME_VULKAN_FPS caps the present rate: after each vkQueuePresentKHR the
+/// thread sleeps until the next frame boundary, so mailbox/immediate stay tear-free
+/// or smooth without the GPU running flat-out. 0 or unset = no cap (pure passthrough).
+fn frame_interval() -> Option<std::time::Duration> {
+    static INTERVAL: std::sync::OnceLock<Option<std::time::Duration>> = std::sync::OnceLock::new();
+    *INTERVAL.get_or_init(|| {
+        let fps: f64 = std::env::var("PEEKGAME_VULKAN_FPS").ok()?.trim().parse().ok()?;
+        (fps > 0.0).then(|| std::time::Duration::from_secs_f64(1.0 / fps))
+    })
+}
+pub(crate) unsafe extern "win64" fn queue_present(queue: usize, info: *const c_void) -> i32 {
+    // A static import binds here without vkGetDeviceProcAddr filling the cache.
+    let mut real = written(c"vkQueuePresentKHR");
+    if real == 0 {
+        real = host_function(LAST_INSTANCE.load(Ordering::Acquire), 0, c"vkQueuePresentKHR");
+        if real != 0 {
+            FLOATS
+                .lock()
+                .unwrap()
+                .get_or_insert_with(HashMap::new)
+                .insert(c"vkQueuePresentKHR".to_owned(), real);
+        }
+    }
+    if real == 0 {
+        return VK_ERROR_INITIALIZATION_FAILED;
+    }
+    let real: unsafe extern "C" fn(usize, *const c_void) -> i32 = unsafe { std::mem::transmute(real) };
+    let result = unsafe { real(queue, info) };
+    if let Some(interval) = frame_interval() {
+        // One deadline per presenting thread (the render thread), advanced by the
+        // interval; a late frame resets it so we never burst to catch up.
+        thread_local! {
+            static NEXT: std::cell::Cell<Option<std::time::Instant>> = const { std::cell::Cell::new(None) };
+        }
+        NEXT.with(|cell| {
+            let now = std::time::Instant::now();
+            let deadline = cell.get().filter(|&d| d > now);
+            if let Some(deadline) = deadline {
+                std::thread::sleep(deadline - now);
+                cell.set(Some(deadline + interval));
+            } else {
+                cell.set(Some(now + interval));
+            }
+        });
+    }
+    result
+}
 /// Every queue family that can present to an X window presents to our windows.
 pub(crate) unsafe extern "win64" fn win32_presentation_support(
     _device: usize,
@@ -711,7 +759,6 @@ vk_forward!(get_physical_device_surface_present_modes_khr, "vkGetPhysicalDeviceS
 vk_forward!(destroy_swapchain_khr, "vkDestroySwapchainKHR", (device: usize, swapchain: u64, allocator: *const c_void));
 vk_forward!(get_swapchain_images_khr, "vkGetSwapchainImagesKHR", (device: usize, swapchain: u64, count: *mut u32, images: *mut u64) -> i32);
 vk_forward!(acquire_next_image_khr, "vkAcquireNextImageKHR", (device: usize, swapchain: u64, timeout: u64, semaphore: u64, fence: u64, index: *mut u32) -> i32);
-vk_forward!(queue_present_khr, "vkQueuePresentKHR", (queue: usize, info: *const c_void) -> i32);
 vk_forward!(allocate_memory, "vkAllocateMemory", (device: usize, info: *const c_void, allocator: *const c_void, memory: *mut u64) -> i32);
 vk_forward!(free_memory, "vkFreeMemory", (device: usize, memory: u64, allocator: *const c_void));
 vk_forward!(map_memory, "vkMapMemory", (device: usize, memory: u64, offset: u64, size: u64, flags: u32, data: *mut *mut c_void) -> i32);

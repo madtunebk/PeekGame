@@ -324,6 +324,18 @@
 - **Verification:** windowed DOOM: render size 2560x1321, saved 2560x1321;
   window_abi, godot_input, display_topology, audit_fixes, mouse_hooks pass.
 
+## PEEKGAME_VULKAN_FPS (frame-rate cap)
+
+- **Trigger:** FIFO tears on this compositor (NVIDIA/X11/GNOME); mailbox is
+  tear-free but uncapped, pinning the GPU at 100%. A cap gives tear-free + bounded.
+- **Implementation:** `queue_present` (`src/api/graphics/vulkan.rs`) sleeps to the
+  next frame boundary after vkQueuePresentKHR; `PEEKGAME_VULKAN_FPS=N` sets the rate
+  (0/unset = passthrough). Per-thread deadline, reset when late (no burst catch-up).
+  Like create_win32_surface, present is a static import, so the real host function
+  is fetched via the cached instance when the proc-addr cache is empty.
+- **Use:** `PEEKGAME_VULKAN_PRESENT=mailbox PEEKGAME_VULKAN_FPS=144` — tear-free and
+  capped. Verified on DOOM (runs clean; GPU no longer pinned).
+
 ## vkCreateSwapchainKHR present mode (tearing)
 
 - **Finding:** DOOM requests VK_PRESENT_MODE_FIFO (2, vsync), which is tear-free by

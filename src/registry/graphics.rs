@@ -132,7 +132,7 @@ exports! {
     export!("vulkan-1.dll", "vkDestroySwapchainKHR", "graphics/vulkan", "partial", "host", vulkan::destroy_swapchain_khr),
     export!("vulkan-1.dll", "vkGetSwapchainImagesKHR", "graphics/vulkan", "partial", "host", vulkan::get_swapchain_images_khr),
     export!("vulkan-1.dll", "vkAcquireNextImageKHR", "graphics/vulkan", "partial", "host", vulkan::acquire_next_image_khr),
-    export!("vulkan-1.dll", "vkQueuePresentKHR", "graphics/vulkan", "partial", "host", vulkan::queue_present_khr),
+    export!("vulkan-1.dll", "vkQueuePresentKHR", "graphics/vulkan", "partial", "host", vulkan::queue_present),
     export!("vulkan-1.dll", "vkAllocateMemory", "graphics/vulkan", "partial", "host", vulkan::allocate_memory),
     export!("vulkan-1.dll", "vkFreeMemory", "graphics/vulkan", "partial", "host", vulkan::free_memory),
     export!("vulkan-1.dll", "vkMapMemory", "graphics/vulkan", "partial", "host", vulkan::map_memory),
