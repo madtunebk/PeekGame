@@ -1,0 +1,96 @@
+#!/bin/bash
+# Steam compatibility-tool entry point for the peek native PE loader.
+#   peek-launch <verb> <path/to/game.exe> [args...]
+# Supported verbs: run, waitforexitandrun. Every other verb is rejected with exit status 64.
+# Steam's environment and working directory are passed through unchanged; nothing is added.
+#
+# Settings (environment, all optional):
+#   PEEK_BIN       loader binary (default: ../peek next to this tool's real directory)
+#   PEEK_LOG_DIR   log directory (default: ${XDG_STATE_HOME:-~/.local/state}/peek-compat)
+#   PEEK_TIMEOUT   seconds before the run is stopped with SIGTERM (default: no limit)
+set -u
+
+TOOL_DIR=$(dirname "$(readlink -f "$0")")
+# Default loader, in order: peekgame installed beside this tool (the self-contained
+# install, independent of any source checkout); dist/peekgame in a PeekGame checkout
+# (running straight from tools/peek_compat_tool); then PATH. Override with PEEK_BIN.
+if [ -z "${PEEK_BIN:-}" ]; then
+    if [ -x "$TOOL_DIR/peekgame" ]; then
+        PEEK_BIN="$TOOL_DIR/peekgame"
+    elif [ -x "$TOOL_DIR/../../dist/peekgame" ]; then
+        PEEK_BIN=$(readlink -f "$TOOL_DIR/../../dist/peekgame")
+    else
+        PEEK_BIN="peekgame"  # fall back to PATH; peek-launch reports if it is missing
+    fi
+fi
+LOG_DIR=${PEEK_LOG_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/peek-compat}
+EX_USAGE=64 EX_NOINPUT=66 EX_UNAVAILABLE=69 EX_CANTCREAT=73
+
+mkdir -p "$LOG_DIR" || { echo "peek-launch: cannot create log directory $LOG_DIR" >&2; exit $EX_CANTCREAT; }
+LOG=$LOG_DIR/steam-${SteamAppId:-noappid}-$(date +%Y%m%d-%H%M%S)-$$.log
+ln -sfn "$(basename "$LOG")" "$LOG_DIR/latest.log" 2>/dev/null
+# From here on, everything this script and peek print goes to the log. fd 8 keeps Steam's
+# original stderr so that refusals are visible there too.
+exec 8>&2 >>"$LOG" 2>&1
+
+die() { echo "peek-launch: $2"; echo "peek-launch: $2 (log: $LOG)" >&8; exit "$1"; }
+
+{
+    echo "=== peek-launch $(date --iso-8601=seconds)"
+    printf 'argv:'; printf ' %q' "$@"; echo
+    printf 'cwd: %q\n' "$PWD"
+    printf 'tool: %q\npeek: %q\n' "$TOOL_DIR" "$PEEK_BIN"
+    echo "steam environment:"
+    env | LC_ALL=C sort | grep -E '^(Steam|STEAM_|SteamApp|SteamGame|SteamOverlay|SteamClient|SteamEnv|SteamPath|SDL_|DXVK_|VK_|WAYLAND_DISPLAY|DISPLAY|XDG_SESSION_TYPE|LD_PRELOAD|LD_LIBRARY_PATH)' \
+        | sed 's/^/  /'
+}
+
+[ $# -ge 1 ] || die $EX_USAGE "missing verb"
+verb=$1; shift
+
+case "$verb" in
+    run|waitforexitandrun) ;;
+    getcompatpath|getnativepath)
+        # Proton converts paths between Unix and its Wine drive mapping. peek has no drive
+        # mapping (see README), so there is no correct answer to give Steam.
+        die $EX_USAGE "verb '$verb' unsupported: peek has no Windows drive mapping" ;;
+    runinprefix|destroyprefix)
+        die $EX_USAGE "verb '$verb' unsupported: peek uses no Wine prefix" ;;
+    *)
+        die $EX_USAGE "unknown verb '$verb'" ;;
+esac
+
+[ $# -ge 1 ] || die $EX_USAGE "verb '$verb' needs the game executable"
+exe=$1; shift
+
+# If Steam launches launcher/idTechLauncher.exe and DOOMEternalx64vk.exe exists, redirect directly to the game
+if [ "$(basename "$exe")" = "idTechLauncher.exe" ] && [ -f "$(dirname "$exe")/../DOOMEternalx64vk.exe" ]; then
+    exe=$(readlink -f "$(dirname "$exe")/../DOOMEternalx64vk.exe")
+    echo "peek-launch: redirecting idTechLauncher.exe -> $exe"
+fi
+
+[ -f "$exe" ] || die $EX_NOINPUT "game executable not found: $(printf %q "$exe")"
+case "$exe" in
+    *.exe|*.EXE|*.Exe) ;;
+    *) die $EX_USAGE "not a Windows executable path: $(printf %q "$exe")" ;;
+esac
+[ -x "$PEEK_BIN" ] || die $EX_UNAVAILABLE "loader not found or not executable: $(printf %q "$PEEK_BIN")"
+
+# waitforexitandrun: Proton waits for the previous session in the prefix to end. The equivalent
+# here is one lock per app id, held by the running loader via an inherited descriptor.
+# run: take the lock if it is free, but never wait.
+lock=$LOG_DIR/.lock-${SteamAppId:-noappid}
+exec 9>"$lock" || die $EX_CANTCREAT "cannot open lock file $lock"
+if [ "$verb" = waitforexitandrun ]; then
+    flock 9 || die $EX_UNAVAILABLE "cannot take lock $lock"
+else
+    flock -n 9 || echo "peek-launch: note: a previous session for this app id still holds $lock"
+fi
+
+cmd=("$PEEK_BIN" "$exe" --run "$@")
+[ -n "${PEEK_TIMEOUT:-}" ] && cmd=(timeout --foreground "$PEEK_TIMEOUT" "${cmd[@]}")
+printf 'exec:'; printf ' %q' "${cmd[@]}"; echo
+echo "=== loader output"
+exec 8>&-
+# exec keeps the PID Steam started, so Steam's "Stop" and exit tracking reach the loader directly.
+exec "${cmd[@]}"

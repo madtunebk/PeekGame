@@ -1,0 +1,15 @@
+"compatibilitytools"
+{
+  "compat_tools"
+  {
+    "peek_native" // internal name
+    {
+      // "." = this manifest sits inside its own subdirectory of compatibilitytools.d
+      // (same convention as Proton's compatibilitytool.vdf.template).
+      "install_path" "."
+      "display_name" "peek native loader (experimental)"
+      "from_oslist"  "windows"
+      "to_oslist"    "linux"
+    }
+  }
+}

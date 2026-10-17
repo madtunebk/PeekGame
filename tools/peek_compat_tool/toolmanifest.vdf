@@ -1,0 +1,8 @@
+"manifest"
+{
+  // Steam runs: <install_path>/peek-launch <verb> <game command...>
+  "version" "2"
+  "commandline" "/peek-launch %verb%"
+  // No "require_tool_appid": peek runs directly on the host, not inside a Steam Linux Runtime
+  // container (Proton sets 1628350 = Steam Linux Runtime 3.0 "sniper").
+}
