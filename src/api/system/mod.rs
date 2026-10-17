@@ -1,3 +1,4 @@
+pub(crate) mod atoms;
 pub(crate) mod command_line;
 pub(crate) mod compat;
 pub(crate) mod debug;

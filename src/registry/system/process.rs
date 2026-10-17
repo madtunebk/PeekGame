@@ -8,6 +8,8 @@ use crate::api::system::startup;
 use crate::registry::Export;
 
 exports! {
+    implemented!("GetProcessId", "system", "partial", "current-process handle only; others ERROR_INVALID_HANDLE", process::get_process_id),
+
     export!("ntdll.dll", "RtlDllShutdownInProgress", "system", "implemented", "actual process ExitProcess shutdown state", process::dll_shutdown_in_progress),
     export!("ktmw32.dll", "CreateTransaction", "system", "partial", "unsupported transactions: INVALID_HANDLE_VALUE and ERROR_NOT_SUPPORTED", crate::api::system::transactions::create),
     export!("ktmw32.dll", "CommitTransaction", "system", "partial", "no valid transaction handles: ERROR_INVALID_HANDLE", crate::api::system::transactions::commit),

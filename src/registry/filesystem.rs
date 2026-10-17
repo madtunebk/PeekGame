@@ -2,6 +2,16 @@ use super::*;
 use crate::api::filesystem::files;
 use crate::api::filesystem::paths;
 exports! {
+    implemented!("CreateDirectoryA", "filesystem", "partial", "host mkdir; UTF-8 path", files::create_directory_a),
+    implemented!("DeleteFileA", "filesystem", "partial", "host unlink; UTF-8 path", files::delete_a),
+    implemented!("RemoveDirectoryA", "filesystem", "partial", "host rmdir; UTF-8 path", files::remove_directory_a),
+
+    implemented!("GetFileAttributesExA", "filesystem", "partial", "WIN32_FILE_ATTRIBUTE_DATA; UTF-8 path", files::attributes_ex_a),
+    implemented!("CopyFileA", "filesystem", "partial", "host copy; fail-if-exists; UTF-8 paths", files::copy_a),
+    implemented!("GetVolumeInformationA", "filesystem", "partial", "NTFS info for the root volume; ASCII", files::get_volume_information_a),
+    implemented!("SearchPathW", "filesystem", "partial", "EXE dir then current dir (or the given path list); default extension", files::search_path_w),
+    implemented!("SearchPathA", "filesystem", "partial", "EXE dir then current dir (or the given path list); default extension", files::search_path_a),
+
     export!("ntdll.dll", "NtWriteFile", "filesystem", "partial", "synchronous current-position file/pipe/standard stream writes; APC, event and explicit offsets unsupported", crate::api::filesystem::nt_io::write),
     export!("ntdll.dll", "NtReadFile", "filesystem", "partial", "synchronous current-position file/pipe/standard stream reads; APC, event and explicit offsets unsupported", crate::api::filesystem::nt_io::read),
     export!("ntdll.dll", "NtCreateFile", "filesystem", "partial", "NT path and disposition mapping to host files", crate::api::filesystem::nt_io::create),

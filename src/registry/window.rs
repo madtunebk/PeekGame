@@ -1,6 +1,22 @@
 use super::*;
 use crate::api::window::{classes, display, input, misc, queue, windows};
 exports! {
+    export!("kernel32.dll", "GlobalAddAtomW", "system", "partial", "process-local string/integer atom table", crate::api::system::atoms::global_add_w),
+    export!("kernel32.dll", "GlobalAddAtomA", "system", "partial", "process-local string/integer atom table", crate::api::system::atoms::global_add_a),
+    export!("kernel32.dll", "GlobalFindAtomW", "system", "partial", "process-local atom lookup", crate::api::system::atoms::global_find_w),
+    export!("kernel32.dll", "GlobalFindAtomA", "system", "partial", "process-local atom lookup", crate::api::system::atoms::global_find_a),
+    export!("kernel32.dll", "GlobalGetAtomNameW", "system", "partial", "atom to name", crate::api::system::atoms::global_name_w),
+    export!("kernel32.dll", "GlobalGetAtomNameA", "system", "partial", "atom to name", crate::api::system::atoms::global_name_a),
+    export!("kernel32.dll", "GlobalDeleteAtom", "system", "partial", "reference-counted atom delete", crate::api::system::atoms::global_delete),
+    export!("kernel32.dll", "GlobalFlags", "system", "partial", "atom validity (lock count 0)", crate::api::system::atoms::global_flags),
+    export!("kernel32.dll", "AddAtomW", "system", "partial", "shares the process atom table", crate::api::system::atoms::global_add_w),
+    export!("kernel32.dll", "AddAtomA", "system", "partial", "shares the process atom table", crate::api::system::atoms::global_add_a),
+    export!("kernel32.dll", "FindAtomW", "system", "partial", "shares the process atom table", crate::api::system::atoms::global_find_w),
+    export!("kernel32.dll", "FindAtomA", "system", "partial", "shares the process atom table", crate::api::system::atoms::global_find_a),
+    export!("kernel32.dll", "GetAtomNameW", "system", "partial", "atom to name", crate::api::system::atoms::global_name_w),
+    export!("kernel32.dll", "GetAtomNameA", "system", "partial", "atom to name", crate::api::system::atoms::global_name_a),
+    export!("kernel32.dll", "DeleteAtom", "system", "partial", "reference-counted atom delete", crate::api::system::atoms::global_delete),
+
     export!("user32.dll", "GetSystemMenu", "window", "partial", "no native Win32 system menu; NULL/ERROR_NOT_SUPPORTED on valid windows", crate::api::window::menus::system_menu),
     export!("user32.dll", "GetMenu", "window", "partial", "valid windows have no application menu; invalid HWND fails", crate::api::window::menus::menu),
     export!("user32.dll", "EnableMenuItem", "window", "partial", "no allocated menu handles; returns -1/ERROR_INVALID_MENU_HANDLE", crate::api::window::menus::enable),

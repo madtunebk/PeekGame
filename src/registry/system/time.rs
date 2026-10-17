@@ -3,6 +3,9 @@ use crate::api::system::time;
 use crate::registry::Export;
 
 exports! {
+    implemented!("FileTimeToDosDateTime", "system", "partial", "FILETIME to packed MS-DOS date/time (1980-2107)", time::file_time_to_dos_date_time),
+    implemented!("DosDateTimeToFileTime", "system", "partial", "packed MS-DOS date/time to FILETIME", time::dos_date_time_to_file_time),
+
     implemented!("GetSystemTimes", "system", "partial", "host aggregate CPU times in 100 ns units", crate::api::system::cpu_times::get),
     implemented!(
         "GetTimeZoneInformation",

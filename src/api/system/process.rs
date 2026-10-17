@@ -350,3 +350,14 @@ pub unsafe extern "win64" fn create_process_a(
     };
     create_process(narrow(application), narrow(command))
 }
+
+/// GetProcessId: the only process is this one (the current-process pseudo handle
+/// -1, or a handle that duplicates it). Other handles are not processes here.
+pub extern "win64" fn get_process_id(handle: usize) -> u32 {
+    if handle == usize::MAX || handle == crate::api::system::compat::STEAM_PROCESS_HANDLE {
+        crate::api::system::startup::process_id()
+    } else {
+        crate::api::system::error::set(6);
+        0
+    }
+}

@@ -1396,6 +1396,169 @@ pub unsafe extern "win64" fn copy_w(from: *const u16, to: *const u16, fail_if_ex
         (Err(code), _) | (_, Err(code)) => fail(code, 0),
     }
 }
+/// ANSI (code page = UTF-8 here) to a NUL-terminated wide string for the A->W wrappers.
+unsafe fn ansi_to_wide(p: *const c_char) -> Option<Vec<u16>> {
+    if p.is_null() {
+        return None;
+    }
+    let text = unsafe { std::ffi::CStr::from_ptr(p) }.to_str().ok()?;
+    Some(text.encode_utf16().chain([0]).collect())
+}
+pub unsafe extern "win64" fn create_directory_a(name: *const c_char, security: usize) -> i32 {
+    match unsafe { ansi_to_wide(name) } {
+        Some(w) => unsafe { create_directory_w(w.as_ptr(), security) },
+        None => fail(87, 0),
+    }
+}
+pub unsafe extern "win64" fn delete_a(name: *const c_char) -> i32 {
+    match unsafe { ansi_to_wide(name) } {
+        Some(w) => unsafe { delete_w(w.as_ptr()) },
+        None => fail(87, 0),
+    }
+}
+pub unsafe extern "win64" fn remove_directory_a(name: *const c_char) -> i32 {
+    match unsafe { ansi_to_wide(name) } {
+        Some(w) => unsafe { remove_directory_w(w.as_ptr()) },
+        None => fail(87, 0),
+    }
+}
+pub unsafe extern "win64" fn attributes_ex_a(name: *const c_char, level: i32, out: *mut u8) -> i32 {
+    match unsafe { ansi_to_wide(name) } {
+        Some(w) => unsafe { attributes_ex_w(w.as_ptr(), level, out) },
+        None => fail(87, 0),
+    }
+}
+pub unsafe extern "win64" fn copy_a(from: *const c_char, to: *const c_char, fail_if_exists: i32) -> i32 {
+    match (unsafe { ansi_to_wide(from) }, unsafe { ansi_to_wide(to) }) {
+        (Some(a), Some(b)) => unsafe { copy_w(a.as_ptr(), b.as_ptr(), fail_if_exists) },
+        _ => fail(87, 0),
+    }
+}
+pub unsafe extern "win64" fn get_volume_information_a(
+    root: *const c_char,
+    volume_name: *mut u16,
+    volume_name_size: u32,
+    serial_number: *mut u32,
+    max_component_len: *mut u32,
+    flags: *mut u32,
+    fs_name: *mut u16,
+    fs_name_size: u32,
+) -> i32 {
+    // The strings this returns are ASCII (NTFS, the volume label is empty), so the
+    // wide buffers double as narrow output: call W, then pack each down in place.
+    let root_wide = unsafe { ansi_to_wide(root) };
+    let result = unsafe {
+        get_volume_information_w(
+            root_wide.as_ref().map_or(std::ptr::null(), |w| w.as_ptr()),
+            volume_name, volume_name_size, serial_number, max_component_len, flags, fs_name, fs_name_size,
+        )
+    };
+    if result != 0 {
+        for (buffer, size) in [(volume_name, volume_name_size), (fs_name, fs_name_size)] {
+            if !buffer.is_null() && size > 0 {
+                let wide = unsafe { text::units(buffer) }.to_vec();
+                let mut narrow: Vec<u8> = wide.iter().map(|&u| u as u8).collect();
+                narrow.push(0);
+                unsafe { std::ptr::copy_nonoverlapping(narrow.as_ptr(), buffer.cast::<u8>(), narrow.len()) };
+            }
+        }
+    }
+    result
+}
+/// SearchPath: finds `file` (adding `extension` when it has none) in `path`, or, when
+/// `path` is NULL, the EXE directory then the current directory. Returns the length
+/// of the full Windows path (0 on failure), writing it when it fits.
+pub unsafe extern "win64" fn search_path_w(
+    path: *const u16,
+    file: *const u16,
+    extension: *const u16,
+    buffer_len: u32,
+    buffer: *mut u16,
+    file_part: *mut *mut u16,
+) -> u32 {
+    if !file_part.is_null() {
+        unsafe { *file_part = std::ptr::null_mut() };
+    }
+    let Some(mut name) = (unsafe { text::string(file) }) else {
+        return fail(87, 0);
+    };
+    if let Some(ext) = unsafe { extension.as_ref().and_then(|_| text::string(extension)) } {
+        if !name.contains('.') {
+            name.push_str(&ext);
+        }
+    }
+    let dirs: Vec<PathBuf> = match unsafe { text::string(path) }.filter(|p| !p.is_empty()) {
+        Some(p) => p.split(';').filter(|d| !d.is_empty()).filter_map(|d| paths::host(d).ok()).collect(),
+        None => {
+            let mut v = Vec::new();
+            if let Ok(exe) = std::env::current_exe() {
+                if let Some(parent) = exe.parent() {
+                    v.push(parent.to_path_buf());
+                }
+            }
+            v.push(PathBuf::from("."));
+            v
+        }
+    };
+    for dir in dirs {
+        let candidate = crate::host::paths::resolve_case(dir.join(&name));
+        if candidate.is_file() {
+            let text = crate::host::paths::windows(&candidate);
+            let wide: Vec<u16> = text.encode_utf16().collect();
+            if (wide.len() as u32) < buffer_len && !buffer.is_null() {
+                unsafe {
+                    std::ptr::copy_nonoverlapping(wide.as_ptr(), buffer, wide.len());
+                    *buffer.add(wide.len()) = 0;
+                }
+                if !file_part.is_null() {
+                    let slash = text.rfind('\\').map_or(0, |i| text[..i + 1].encode_utf16().count());
+                    unsafe { *file_part = buffer.add(slash) };
+                }
+            }
+            error::set(0);
+            return wide.len() as u32;
+        }
+    }
+    fail(ERROR_FILE_NOT_FOUND, 0)
+}
+pub unsafe extern "win64" fn search_path_a(
+    path: *const c_char,
+    file: *const c_char,
+    extension: *const c_char,
+    buffer_len: u32,
+    buffer: *mut u8,
+    file_part: *mut *mut u8,
+) -> u32 {
+    if !file_part.is_null() {
+        unsafe { *file_part = std::ptr::null_mut() };
+    }
+    let (pw, fw, ew) = (unsafe { ansi_to_wide(path) }, unsafe { ansi_to_wide(file) }, unsafe { ansi_to_wide(extension) });
+    let Some(fw) = fw else { return fail(87, 0) };
+    let mut wide = vec![0u16; buffer_len as usize];
+    let len = unsafe {
+        search_path_w(
+            pw.as_ref().map_or(std::ptr::null(), |w| w.as_ptr()),
+            fw.as_ptr(),
+            ew.as_ref().map_or(std::ptr::null(), |w| w.as_ptr()),
+            buffer_len,
+            wide.as_mut_ptr(),
+            std::ptr::null_mut(),
+        )
+    };
+    if len > 0 && len < buffer_len && !buffer.is_null() {
+        let text = String::from_utf16_lossy(&wide[..len as usize]);
+        let bytes = text.as_bytes();
+        unsafe {
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), buffer, bytes.len());
+            *buffer.add(bytes.len()) = 0;
+            if !file_part.is_null() {
+                let slash = text.rfind('\\').map_or(0, |i| i + 1);
+                *file_part = buffer.add(slash);
+            }
+        }
+    }
+    len
+}
 /// SetFileAttributesW: READONLY clears or restores write permission; ARCHIVE,
 /// NORMAL, TEMPORARY, NOT_CONTENT_INDEXED and DIRECTORY carry no state on Linux.
 pub unsafe extern "win64" fn set_attributes_w(name: *const u16, attributes: u32) -> i32 {

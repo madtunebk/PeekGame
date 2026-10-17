@@ -377,3 +377,54 @@ pub(crate) fn local_now() -> [u16; 8] {
     fill(out.as_mut_ptr(), true);
     out
 }
+
+/// FileTimeToDosDateTime: a FILETIME (UTC here) to the packed MS-DOS date and time.
+/// DOS date: bits 0-4 day, 5-8 month, 9-15 year-1980. DOS time: bits 0-4 2-second
+/// count, 5-10 minute, 11-15 hour. Valid for 1980-2107; else ERROR_INVALID_PARAMETER.
+pub unsafe extern "win64" fn file_time_to_dos_date_time(
+    ft: *const u64,
+    dos_date: *mut u16,
+    dos_time: *mut u16,
+) -> i32 {
+    if ft.is_null() || dos_date.is_null() || dos_time.is_null() {
+        error::set(87);
+        return 0;
+    }
+    let mut st = [0u16; 8];
+    if unsafe { file_time_to_system_time(ft, st.as_mut_ptr()) } == 0 {
+        return 0;
+    }
+    let (year, month, day, hour, minute, second) =
+        (st[0] as i32, st[1], st[3], st[4], st[5], st[6]);
+    if !(1980..=2107).contains(&year) {
+        error::set(87);
+        return 0;
+    }
+    unsafe {
+        *dos_date = (((year - 1980) as u16) << 9) | (month << 5) | day;
+        *dos_time = (hour << 11) | (minute << 5) | (second / 2);
+    }
+    1
+}
+/// DosDateTimeToFileTime: the packed MS-DOS date and time back to a FILETIME.
+pub unsafe extern "win64" fn dos_date_time_to_file_time(
+    dos_date: u16,
+    dos_time: u16,
+    ft: *mut u64,
+) -> i32 {
+    if ft.is_null() {
+        error::set(87);
+        return 0;
+    }
+    let st = [
+        1980 + (dos_date >> 9),
+        (dos_date >> 5) & 0xf,
+        0,
+        dos_date & 0x1f,
+        dos_time >> 11,
+        (dos_time >> 5) & 0x3f,
+        (dos_time & 0x1f) * 2,
+        0,
+    ];
+    unsafe { system_time_to_file_time(st.as_ptr(), ft) }
+}

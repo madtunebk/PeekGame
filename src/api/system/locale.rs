@@ -509,6 +509,33 @@ pub unsafe extern "win64" fn compare_w(
 ) -> i32 {
     unsafe { compare(flags, a, a_count, b, b_count) }
 }
+/// CompareStringA: the ANSI code page is UTF-8, so decode each counted string and
+/// compare as wide. A negative count means NUL-terminated.
+pub unsafe extern "win64" fn compare_a(
+    _lcid: u32,
+    flags: u32,
+    a: *const std::ffi::c_char,
+    a_count: i32,
+    b: *const std::ffi::c_char,
+    b_count: i32,
+) -> i32 {
+    unsafe fn decode(p: *const std::ffi::c_char, count: i32) -> Option<Vec<u16>> {
+        if p.is_null() {
+            return None;
+        }
+        let bytes = if count < 0 {
+            unsafe { std::ffi::CStr::from_ptr(p) }.to_bytes().to_vec()
+        } else {
+            unsafe { std::slice::from_raw_parts(p.cast::<u8>(), count as usize) }.to_vec()
+        };
+        Some(String::from_utf8_lossy(&bytes).encode_utf16().collect())
+    }
+    let (Some(a), Some(b)) = (unsafe { decode(a, a_count) }, unsafe { decode(b, b_count) }) else {
+        error::set(87);
+        return 0;
+    };
+    unsafe { compare(flags, a.as_ptr(), a.len() as i32, b.as_ptr(), b.len() as i32) }
+}
 pub unsafe extern "win64" fn compare_ex(
     _name: *const u16,
     flags: u32,

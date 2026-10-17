@@ -5,6 +5,8 @@ use crate::api::system::locale;
 use crate::registry::Export;
 
 exports! {
+    implemented!("CompareStringA", "system", "partial", "ANSI (UTF-8) decoded to wide; ordinal order, optional case folding", locale::compare_a),
+
     implemented!("GetThreadLocale", "system", "partial", "calling-thread LCID, inherited at CreateThread; host locale default", locale::thread::get),
     implemented!("SetThreadLocale", "system", "partial", "known LCID/invariant thread state and TEB; custom locales unsupported; UTF-8 ACP policy unchanged", locale::thread::set),
     implemented!("GetCPInfoExW", "system", "partial", "UTF-8 and Windows-1252 metadata", locale::cp_info_ex_w),
