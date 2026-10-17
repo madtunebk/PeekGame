@@ -132,12 +132,18 @@ fn host_function(instance: usize, device: usize, name: &CStr) -> usize {
                 return f;
             }
         }
-        let instance = if instance != 0 {
-            instance
-        } else {
-            LAST_INSTANCE.load(Ordering::Acquire)
-        };
-        (h.instance_proc)(instance, name.as_ptr())
+        if instance != 0 {
+            return (h.instance_proc)(instance, name.as_ptr());
+        }
+        let global = (h.instance_proc)(0, name.as_ptr());
+        if global != 0 {
+            return global;
+        }
+        let last = LAST_INSTANCE.load(Ordering::Acquire);
+        if last != 0 {
+            return (h.instance_proc)(last, name.as_ptr());
+        }
+        0
     }
 }
 /// The thunk for a host function (one slot per command name).
@@ -179,7 +185,10 @@ fn own(name: &[u8]) -> Option<usize> {
         b"vkGetPhysicalDeviceWin32PresentationSupportKHR" => {
             win32_presentation_support as *const () as usize
         }
-        b"vkCreateDebugUtilsMessengerEXT" | b"vkCreateDebugReportCallbackEXT" => {
+        b"vkCreateDebugUtilsMessengerEXT" => {
+            create_debug_utils_messenger as *const () as usize
+        }
+        b"vkCreateDebugReportCallbackEXT" => {
             no_callbacks as *const () as usize
         }
         b"vkCmdSetDepthBias" => cmd_set_depth_bias as *const () as usize,
@@ -208,8 +217,8 @@ fn resolve(instance: usize, device: usize, name: *const c_char) -> usize {
             b"vkGetInstanceProcAddr"
             | b"vkGetDeviceProcAddr"
             | b"vkCreateInstance"
-            | b"vkEnumerateInstanceExtensionProperties" => return f,
-            b"vkCreateDebugUtilsMessengerEXT" | b"vkCreateDebugReportCallbackEXT" => return f,
+            | b"vkEnumerateInstanceExtensionProperties"
+            | b"vkCreateDebugReportCallbackEXT" => return f,
             _ => name.to_bytes_with_nul(),
         };
         let host_name = CStr::from_bytes_with_nul(host_name).unwrap();
@@ -368,6 +377,14 @@ pub(crate) unsafe extern "win64" fn create_instance(
     let real: unsafe extern "C" fn(*const InstanceInfo, *const c_void, *mut usize) -> i32 =
         unsafe { std::mem::transmute(real) };
     let mut copy = unsafe { *info };
+    let mut host_messenger: DebugUtilsMessengerCreateInfo;
+    if !copy.next.is_null() && unsafe { *copy.next.cast::<u32>() } == 1_000_128_004 {
+        let win_info = unsafe { &*copy.next.cast::<DebugUtilsMessengerCreateInfo>() };
+        let (hm, _wrap) = wrap_messenger(win_info);
+        host_messenger = hm;
+        host_messenger.next = std::ptr::null_mut();
+        copy.next = &host_messenger as *const _ as *const c_void;
+    }
     let original: &[*const c_char] = if copy.extension_count == 0 {
         &[]
     } else {
@@ -399,7 +416,18 @@ pub(crate) unsafe extern "win64" fn create_win32_surface(
     allocator: *const c_void,
     surface: *mut u64,
 ) -> i32 {
-    let real = written(c"vkCreateWin32SurfaceKHR");
+    // A static import binds here without vkGetInstanceProcAddr filling the cache.
+    let mut real = written(c"vkCreateWin32SurfaceKHR");
+    if real == 0 {
+        real = host_function(instance, 0, c"vkCreateXlibSurfaceKHR");
+        if real != 0 {
+            FLOATS
+                .lock()
+                .unwrap()
+                .get_or_insert_with(HashMap::new)
+                .insert(c"vkCreateWin32SurfaceKHR".to_owned(), real);
+        }
+    }
     if info.is_null() || real == 0 {
         return VK_ERROR_EXTENSION_NOT_PRESENT;
     }
@@ -448,6 +476,72 @@ pub(crate) unsafe extern "win64" fn no_callbacks(
     error::set(50);
     VK_ERROR_EXTENSION_NOT_PRESENT
 }
+
+type WinDebugCallback = unsafe extern "win64" fn(u32, u32, *const c_void, *mut c_void) -> u32;
+
+struct DebugWrap {
+    callback: WinDebugCallback,
+    user: *mut c_void,
+}
+
+unsafe extern "C" fn vk_debug_trampoline(
+    severity: u32,
+    types: u32,
+    data: *const c_void,
+    user: *mut c_void,
+) -> u32 {
+    let wrap = unsafe { &*user.cast::<DebugWrap>() };
+    unsafe { (wrap.callback)(severity, types, data, wrap.user) }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct DebugUtilsMessengerCreateInfo {
+    pub s_type: u32,
+    pub next: *mut c_void,
+    pub flags: u32,
+    pub severity: u32,
+    pub message_type: u32,
+    pub callback: usize,
+    pub user_data: *mut c_void,
+}
+
+fn wrap_messenger(
+    win: &DebugUtilsMessengerCreateInfo,
+) -> (DebugUtilsMessengerCreateInfo, *mut DebugWrap) {
+    let wrap = Box::into_raw(Box::new(DebugWrap {
+        callback: unsafe { std::mem::transmute(win.callback) },
+        user: win.user_data,
+    }));
+    let mut host = *win;
+    host.callback = vk_debug_trampoline as *const () as usize;
+    host.user_data = wrap.cast();
+    (host, wrap)
+}
+
+pub(crate) unsafe extern "win64" fn create_debug_utils_messenger(
+    instance: usize,
+    info: *const DebugUtilsMessengerCreateInfo,
+    allocator: *const c_void,
+    out: *mut u64,
+) -> i32 {
+    if info.is_null() || out.is_null() {
+        return VK_ERROR_INITIALIZATION_FAILED;
+    }
+    let real = written(c"vkCreateDebugUtilsMessengerEXT");
+    if real == 0 {
+        return VK_ERROR_EXTENSION_NOT_PRESENT;
+    }
+    let (host_info, _wrap) = wrap_messenger(unsafe { &*info });
+    let real: unsafe extern "C" fn(
+        usize,
+        *const DebugUtilsMessengerCreateInfo,
+        *const c_void,
+        *mut u64,
+    ) -> i32 = unsafe { std::mem::transmute(real) };
+    unsafe { real(instance, &host_info, allocator, out) }
+}
+
 macro_rules! float_command {
     ($fn:ident, $name:literal, ($($a:ident: $t:ty),*)) => {
         pub(crate) unsafe extern "win64" fn $fn(first: usize, $($a: $t),*) {
@@ -494,6 +588,119 @@ pub(crate) unsafe extern "win64" fn enumerate_instance_layers(
     unsafe { f(count, out) }
 }
 
+pub(crate) unsafe extern "win64" fn destroy_instance(
+    instance: usize,
+    allocator: *const c_void,
+) {
+    let f = resolve(instance, 0, c"vkDestroyInstance".as_ptr());
+    if f != 0 {
+        let f: unsafe extern "win64" fn(usize, *const c_void) = unsafe { std::mem::transmute(f) };
+        unsafe { f(instance, allocator) };
+    }
+    let _ = LAST_INSTANCE.compare_exchange(instance, 0, Ordering::Release, Ordering::Relaxed);
+}
+
+macro_rules! vk_forward {
+    ($fn:ident, $name:literal, ($first:ident: $first_ty:ty $(, $arg:ident: $ty:ty)*) -> $ret:ty) => {
+        pub(crate) unsafe extern "win64" fn $fn($first: $first_ty $(, $arg: $ty)*) -> $ret {
+            static CACHE: AtomicUsize = AtomicUsize::new(0);
+            let mut f_ptr = CACHE.load(Ordering::Relaxed);
+            if f_ptr == 0 {
+                let inst = LAST_INSTANCE.load(Ordering::Acquire);
+                f_ptr = resolve(inst, $first as usize, concat!($name, "\0").as_ptr().cast());
+                if f_ptr == 0 {
+                    f_ptr = resolve(inst, $first as usize, concat!($name, "KHR\0").as_ptr().cast());
+                }
+                if f_ptr != 0 {
+                    CACHE.store(f_ptr, Ordering::Relaxed);
+                }
+            }
+            if f_ptr == 0 {
+                eprintln!("vulkan-1.dll: failed to resolve {}", $name);
+                return VK_ERROR_INITIALIZATION_FAILED as $ret;
+            }
+            let f: unsafe extern "win64" fn($first_ty $(, $ty)*) -> $ret =
+                unsafe { std::mem::transmute(f_ptr) };
+            unsafe { f($first $(, $arg)*) }
+        }
+    };
+    ($fn:ident, $name:literal, ($first:ident: $first_ty:ty $(, $arg:ident: $ty:ty)*)) => {
+        pub(crate) unsafe extern "win64" fn $fn($first: $first_ty $(, $arg: $ty)*) {
+            static CACHE: AtomicUsize = AtomicUsize::new(0);
+            let mut f_ptr = CACHE.load(Ordering::Relaxed);
+            if f_ptr == 0 {
+                let inst = LAST_INSTANCE.load(Ordering::Acquire);
+                f_ptr = resolve(inst, $first as usize, concat!($name, "\0").as_ptr().cast());
+                if f_ptr == 0 {
+                    f_ptr = resolve(inst, $first as usize, concat!($name, "KHR\0").as_ptr().cast());
+                }
+                if f_ptr != 0 {
+                    CACHE.store(f_ptr, Ordering::Relaxed);
+                }
+            }
+            if f_ptr != 0 {
+                let f: unsafe extern "win64" fn($first_ty $(, $ty)*) =
+                    unsafe { std::mem::transmute(f_ptr) };
+                unsafe { f($first $(, $arg)*) };
+            }
+        }
+    };
+}
+
+vk_forward!(enumerate_physical_devices, "vkEnumeratePhysicalDevices", (instance: usize, count: *mut u32, devices: *mut usize) -> i32);
+vk_forward!(get_physical_device_properties, "vkGetPhysicalDeviceProperties", (device: usize, props: *mut c_void));
+vk_forward!(get_physical_device_properties2, "vkGetPhysicalDeviceProperties2", (device: usize, props: *mut c_void));
+vk_forward!(get_physical_device_features2, "vkGetPhysicalDeviceFeatures2", (device: usize, features: *mut c_void));
+vk_forward!(get_physical_device_format_properties, "vkGetPhysicalDeviceFormatProperties", (device: usize, format: u32, props: *mut c_void));
+vk_forward!(get_physical_device_queue_family_properties, "vkGetPhysicalDeviceQueueFamilyProperties", (device: usize, count: *mut u32, props: *mut c_void));
+vk_forward!(get_physical_device_memory_properties, "vkGetPhysicalDeviceMemoryProperties", (device: usize, props: *mut c_void));
+vk_forward!(enumerate_device_extension_properties, "vkEnumerateDeviceExtensionProperties", (device: usize, layer: *const c_char, count: *mut u32, props: *mut c_void) -> i32);
+vk_forward!(create_device, "vkCreateDevice", (device: usize, info: *const c_void, allocator: *const c_void, out: *mut usize) -> i32);
+vk_forward!(destroy_device, "vkDestroyDevice", (device: usize, allocator: *const c_void));
+vk_forward!(get_device_queue, "vkGetDeviceQueue", (device: usize, family: u32, index: u32, out: *mut usize));
+vk_forward!(device_wait_idle, "vkDeviceWaitIdle", (device: usize) -> i32);
+vk_forward!(queue_submit, "vkQueueSubmit", (queue: usize, count: u32, submits: *const c_void, fence: u64) -> i32);
+vk_forward!(queue_bind_sparse, "vkQueueBindSparse", (queue: usize, count: u32, binds: *const c_void, fence: u64) -> i32);
+vk_forward!(get_physical_device_surface_support_khr, "vkGetPhysicalDeviceSurfaceSupportKHR", (device: usize, family: u32, surface: u64, supported: *mut u32) -> i32);
+vk_forward!(get_physical_device_surface_capabilities_khr, "vkGetPhysicalDeviceSurfaceCapabilitiesKHR", (device: usize, surface: u64, caps: *mut c_void) -> i32);
+vk_forward!(get_physical_device_surface_formats_khr, "vkGetPhysicalDeviceSurfaceFormatsKHR", (device: usize, surface: u64, count: *mut u32, formats: *mut c_void) -> i32);
+vk_forward!(get_physical_device_surface_present_modes_khr, "vkGetPhysicalDeviceSurfacePresentModesKHR", (device: usize, surface: u64, count: *mut u32, modes: *mut u32) -> i32);
+vk_forward!(create_swapchain_khr, "vkCreateSwapchainKHR", (device: usize, info: *const c_void, allocator: *const c_void, swapchain: *mut u64) -> i32);
+vk_forward!(destroy_swapchain_khr, "vkDestroySwapchainKHR", (device: usize, swapchain: u64, allocator: *const c_void));
+vk_forward!(get_swapchain_images_khr, "vkGetSwapchainImagesKHR", (device: usize, swapchain: u64, count: *mut u32, images: *mut u64) -> i32);
+vk_forward!(acquire_next_image_khr, "vkAcquireNextImageKHR", (device: usize, swapchain: u64, timeout: u64, semaphore: u64, fence: u64, index: *mut u32) -> i32);
+vk_forward!(queue_present_khr, "vkQueuePresentKHR", (queue: usize, info: *const c_void) -> i32);
+vk_forward!(allocate_memory, "vkAllocateMemory", (device: usize, info: *const c_void, allocator: *const c_void, memory: *mut u64) -> i32);
+vk_forward!(free_memory, "vkFreeMemory", (device: usize, memory: u64, allocator: *const c_void));
+vk_forward!(map_memory, "vkMapMemory", (device: usize, memory: u64, offset: u64, size: u64, flags: u32, data: *mut *mut c_void) -> i32);
+vk_forward!(unmap_memory, "vkUnmapMemory", (device: usize, memory: u64));
+vk_forward!(get_buffer_memory_requirements, "vkGetBufferMemoryRequirements", (device: usize, buffer: u64, reqs: *mut c_void));
+vk_forward!(bind_buffer_memory, "vkBindBufferMemory", (device: usize, buffer: u64, memory: u64, offset: u64) -> i32);
+vk_forward!(reset_fences, "vkResetFences", (device: usize, count: u32, fences: *const u64) -> i32);
+vk_forward!(get_fence_status, "vkGetFenceStatus", (device: usize, fence: u64) -> i32);
+vk_forward!(wait_for_fences, "vkWaitForFences", (device: usize, count: u32, fences: *const u64, wait_all: u32, timeout: u64) -> i32);
+vk_forward!(get_query_pool_results, "vkGetQueryPoolResults", (device: usize, pool: u64, first: u32, count: u32, size: usize, data: *mut c_void, stride: u64, flags: u32) -> i32);
+vk_forward!(update_descriptor_sets, "vkUpdateDescriptorSets", (device: usize, write_count: u32, writes: *const c_void, copy_count: u32, copies: *const c_void));
+vk_forward!(allocate_descriptor_sets, "vkAllocateDescriptorSets", (device: usize, info: *const c_void, sets: *mut u64) -> i32);
+vk_forward!(reset_descriptor_pool, "vkResetDescriptorPool", (device: usize, pool: u64, flags: u32) -> i32);
+vk_forward!(free_descriptor_sets, "vkFreeDescriptorSets", (device: usize, pool: u64, count: u32, sets: *const u64) -> i32);
+vk_forward!(allocate_command_buffers, "vkAllocateCommandBuffers", (device: usize, info: *const c_void, buffers: *mut usize) -> i32);
+vk_forward!(begin_command_buffer, "vkBeginCommandBuffer", (buffer: usize, info: *const c_void) -> i32);
+vk_forward!(end_command_buffer, "vkEndCommandBuffer", (buffer: usize) -> i32);
+vk_forward!(cmd_begin_query, "vkCmdBeginQuery", (buffer: usize, pool: u64, query: u32, flags: u32));
+vk_forward!(cmd_end_query, "vkCmdEndQuery", (buffer: usize, pool: u64, query: u32));
+vk_forward!(cmd_reset_query_pool, "vkCmdResetQueryPool", (buffer: usize, pool: u64, first: u32, count: u32));
+vk_forward!(cmd_copy_query_pool_results, "vkCmdCopyQueryPoolResults", (buffer: usize, pool: u64, first: u32, count: u32, dst: u64, offset: u64, stride: u64, flags: u32));
+vk_forward!(cmd_write_timestamp, "vkCmdWriteTimestamp", (buffer: usize, stage: u32, pool: u64, query: u32));
+vk_forward!(cmd_pipeline_barrier, "vkCmdPipelineBarrier", (buffer: usize, src_stage: u32, dst_stage: u32, dep_flags: u32, mem_barriers: u32, p_mem_barriers: *const c_void, buf_barriers: u32, p_buf_barriers: *const c_void, img_barriers: u32, p_img_barriers: *const c_void));
+vk_forward!(cmd_clear_attachments, "vkCmdClearAttachments", (buffer: usize, count: u32, attachments: *const c_void, rect_count: u32, rects: *const c_void));
+vk_forward!(cmd_clear_color_image, "vkCmdClearColorImage", (buffer: usize, image: u64, layout: u32, color: *const c_void, range_count: u32, ranges: *const c_void));
+vk_forward!(cmd_blit_image, "vkCmdBlitImage", (buffer: usize, src: u64, src_layout: u32, dst: u64, dst_layout: u32, region_count: u32, regions: *const c_void, filter: u32));
+vk_forward!(cmd_copy_buffer, "vkCmdCopyBuffer", (buffer: usize, src: u64, dst: u64, region_count: u32, regions: *const c_void));
+vk_forward!(cmd_copy_image, "vkCmdCopyImage", (buffer: usize, src: u64, src_layout: u32, dst: u64, dst_layout: u32, region_count: u32, regions: *const c_void));
+vk_forward!(cmd_copy_buffer_to_image, "vkCmdCopyBufferToImage", (buffer: usize, src: u64, dst: u64, layout: u32, region_count: u32, regions: *const c_void));
+vk_forward!(cmd_copy_image_to_buffer, "vkCmdCopyImageToBuffer", (buffer: usize, src: u64, layout: u32, dst: u64, region_count: u32, regions: *const c_void));
+
 // ---- d3d12.dll: reported unavailable, so programs choose Direct3D 11 -------------
 const DXGI_ERROR_UNSUPPORTED: i32 = 0x887a_0004u32 as i32;
 const E_NOINTERFACE: i32 = 0x8000_4002u32 as i32;
@@ -508,3 +715,23 @@ pub(crate) extern "win64" fn d3d12_create_device(
 pub(crate) extern "win64" fn d3d12_no_interface(_a: usize, _b: usize, _c: usize, _d: usize) -> i32 {
     E_NOINTERFACE
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_enumerate_extensions() {
+        let mut count = 0u32;
+        let r = unsafe { enumerate_instance_extensions(std::ptr::null(), &mut count, std::ptr::null_mut()) };
+        assert_eq!(r, 0);
+        let mut exts = vec![Extension { name: [0; 256], version: 0 }; count as usize];
+        let r = unsafe { enumerate_instance_extensions(std::ptr::null(), &mut count, exts.as_mut_ptr()) };
+        assert_eq!(r, 0);
+        let names: Vec<String> = exts.iter().map(|e| unsafe { CStr::from_ptr(e.name.as_ptr()) }.to_string_lossy().into_owned()).collect();
+        println!("Available Vulkan extensions ({}): {:?}", names.len(), names);
+        assert!(names.contains(&"VK_KHR_surface".to_string()));
+        assert!(names.contains(&"VK_KHR_win32_surface".to_string()));
+    }
+}
+

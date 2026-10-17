@@ -1,6 +1,56 @@
 use super::*;
 use crate::api::window::{classes, display, input, misc, queue, windows};
 exports! {
+    export!("user32.dll", "GetSystemMenu", "window", "partial", "no native Win32 system menu; NULL/ERROR_NOT_SUPPORTED on valid windows", crate::api::window::menus::system_menu),
+    export!("user32.dll", "GetMenu", "window", "partial", "valid windows have no application menu; invalid HWND fails", crate::api::window::menus::menu),
+    export!("user32.dll", "EnableMenuItem", "window", "partial", "no allocated menu handles; returns -1/ERROR_INVALID_MENU_HANDLE", crate::api::window::menus::enable),
+    window!("RegisterClipboardFormatA", "process-local named formats; shared atom registry with W and window messages", misc::register_clipboard_format_a),
+
+    export!("xinput1_3.dll", "XInputGetState", "input", "partial", "every slot ERROR_DEVICE_NOT_CONNECTED (no controller backend)", crate::api::window::input::xinput::get_state),
+    export!("xinput1_3.dll", "XInputSetState", "input", "partial", "every slot ERROR_DEVICE_NOT_CONNECTED (no controller backend)", crate::api::window::input::xinput::set_state),
+    export!("xinput1_3.dll", "XInputGetCapabilities", "input", "partial", "every slot ERROR_DEVICE_NOT_CONNECTED (no controller backend)", crate::api::window::input::xinput::get_capabilities),
+    export!("xinput1_3.dll", "XInputEnable", "input", "partial", "no-op: no controllers to gate", crate::api::window::input::xinput::enable),
+    export!("xinput1_3.dll", "XInputGetBatteryInformation", "input", "partial", "every slot ERROR_DEVICE_NOT_CONNECTED (no controller backend)", crate::api::window::input::xinput::get_battery_information),
+    export!("xinput1_3.dll", "XInputGetKeystroke", "input", "partial", "every slot ERROR_DEVICE_NOT_CONNECTED (no controller backend)", crate::api::window::input::xinput::get_keystroke),
+    export!("xinput1_4.dll", "XInputGetState", "input", "partial", "every slot ERROR_DEVICE_NOT_CONNECTED (no controller backend)", crate::api::window::input::xinput::get_state),
+    export!("xinput1_4.dll", "XInputSetState", "input", "partial", "every slot ERROR_DEVICE_NOT_CONNECTED (no controller backend)", crate::api::window::input::xinput::set_state),
+    export!("xinput1_4.dll", "XInputGetCapabilities", "input", "partial", "every slot ERROR_DEVICE_NOT_CONNECTED (no controller backend)", crate::api::window::input::xinput::get_capabilities),
+    export!("xinput1_4.dll", "XInputEnable", "input", "partial", "no-op: no controllers to gate", crate::api::window::input::xinput::enable),
+    export!("xinput1_4.dll", "XInputGetBatteryInformation", "input", "partial", "every slot ERROR_DEVICE_NOT_CONNECTED (no controller backend)", crate::api::window::input::xinput::get_battery_information),
+    export!("xinput1_4.dll", "XInputGetKeystroke", "input", "partial", "every slot ERROR_DEVICE_NOT_CONNECTED (no controller backend)", crate::api::window::input::xinput::get_keystroke),
+    export!("xinput9_1_0.dll", "XInputGetState", "input", "partial", "every slot ERROR_DEVICE_NOT_CONNECTED (no controller backend)", crate::api::window::input::xinput::get_state),
+    export!("xinput9_1_0.dll", "XInputSetState", "input", "partial", "every slot ERROR_DEVICE_NOT_CONNECTED (no controller backend)", crate::api::window::input::xinput::set_state),
+    export!("xinput9_1_0.dll", "XInputGetCapabilities", "input", "partial", "every slot ERROR_DEVICE_NOT_CONNECTED (no controller backend)", crate::api::window::input::xinput::get_capabilities),
+    export!("xinput1_3.dll", "XInputGetStateEx", "input", "partial", "every slot ERROR_DEVICE_NOT_CONNECTED (no controller backend)", crate::api::window::input::xinput::get_state),
+    export!("xinput1_4.dll", "XInputGetStateEx", "input", "partial", "every slot ERROR_DEVICE_NOT_CONNECTED (no controller backend)", crate::api::window::input::xinput::get_state),
+    export!("xinput1_3.dll", "XInputGetDSoundAudioDeviceGuids", "input", "partial", "every slot ERROR_DEVICE_NOT_CONNECTED (no controller backend)", crate::api::window::input::xinput::get_dsound_audio_device_guids),
+    export!("xinput9_1_0.dll", "XInputGetDSoundAudioDeviceGuids", "input", "partial", "every slot ERROR_DEVICE_NOT_CONNECTED (no controller backend)", crate::api::window::input::xinput::get_dsound_audio_device_guids),
+    export!("xinput1_4.dll", "XInputGetAudioDeviceIds", "input", "partial", "every slot ERROR_DEVICE_NOT_CONNECTED (no controller backend)", crate::api::window::input::xinput::get_audio_device_ids),
+    export!("user32.dll", "CreateIconFromResourceEx", "window", "partial", "PNG and 32-bit DIB icons; nearest-neighbor size selection; X11 WM_SETICON", crate::api::window::icons::create),
+
+    export!("gdi32.dll", "CreateRectRgn", "graphics/gdi", "partial", "owned rectangular regions", crate::api::window::regions::create),
+    export!("gdi32.dll", "CreateSolidBrush", "graphics/gdi", "partial", "owned solid brush token handle", crate::api::window::regions::create_solid_brush),
+    export!("gdi32.dll", "CreatePen", "graphics/gdi", "partial", "owned pen token handle", crate::api::window::regions::create_pen),
+    export!("gdi32.dll", "CreateFontIndirectA", "graphics/gdi", "partial", "owned font token handle", crate::api::window::regions::create_font_indirect_a),
+    export!("gdi32.dll", "CreateFontA", "graphics/gdi", "partial", "owned font token handle", crate::api::window::regions::create_font_a),
+    export!("gdi32.dll", "GetStockObject", "graphics/gdi", "partial", "stock GDI object token handles (0..=21)", crate::api::window::regions::get_stock_object),
+    export!("gdi32.dll", "GetObjectA", "graphics/gdi", "partial", "LOGFONTA and LOGBRUSH/LOGPEN metadata for font/brush/stock handles", crate::api::window::regions::get_object_a),
+    export!("gdi32.dll", "SelectObject", "graphics/gdi", "partial", "select GDI object into DC; returns previous stock handle or region complexity", crate::api::window::regions::select_object),
+    export!("gdi32.dll", "CombineRgn", "graphics/gdi", "partial", "rectangular RGN_AND and RGN_COPY; other operations unsupported", crate::api::window::regions::combine),
+    export!("gdi32.dll", "GetRgnBox", "graphics/gdi", "partial", "rectangle bounds and region complexity", crate::api::window::regions::bounds),
+    export!("gdi32.dll", "DeleteObject", "graphics/gdi", "partial", "deletes owned rectangular regions and brushes; other GDI object types unavailable", crate::api::window::regions::delete),
+    export!("user32.dll", "SetWindowRgn", "window", "partial", "rectangular full-window regions; shaped windows unsupported; transfers region ownership", crate::api::window::regions::set_window),
+
+    export!("user32.dll", "LogicalToPhysicalPointForPerMonitorDPI", "window", "partial", "identity for current physical-pixel 96-DPI windows; validates HWND and POINT", misc::per_monitor_point),
+    export!("user32.dll", "PhysicalToLogicalPointForPerMonitorDPI", "window", "partial", "identity for current physical-pixel 96-DPI windows; validates HWND and POINT", misc::per_monitor_point),
+
+    export!("user32.dll", "SetWindowsHookExA", "input", "partial", "WH_MOUSE on calling thread; global/other hook types unsupported", crate::api::window::hooks::install),
+    export!("user32.dll", "SetWindowsHookExW", "input", "partial", "WH_MOUSE on calling thread; global/other hook types unsupported", crate::api::window::hooks::install),
+    export!("user32.dll", "UnhookWindowsHookEx", "input", "partial", "remove registered thread mouse hook", crate::api::window::hooks::uninstall),
+    export!("user32.dll", "CallNextHookEx", "input", "partial", "continue current thread hook chain with Windows ABI", crate::api::window::hooks::next),
+    export!("user32.dll", "SetWinEventHook", "input", "stub", "stub win event hook", crate::api::window::hooks::set_win_event_hook),
+    export!("user32.dll", "UnhookWinEvent", "input", "stub", "stub unhook win event", crate::api::window::hooks::unhook_win_event),
+
     export!(
         "user32.dll",
         "MonitorFromWindow",
@@ -75,11 +125,27 @@ exports! {
     ),
     export!(
         "user32.dll",
+        "EnumDisplaySettingsExW",
+        "window",
+        "partial",
+        "current mode only; 32 bpp, 60 Hz",
+        display::enum_display_settings_ex_w
+    ),
+    export!(
+        "user32.dll",
         "EnumDisplaySettingsA",
         "window",
         "partial",
         "current mode only; 32 bpp, 60 Hz",
         display::enum_display_settings_a
+    ),
+    export!(
+        "user32.dll",
+        "EnumDisplaySettingsExA",
+        "window",
+        "partial",
+        "current mode only; 32 bpp, 60 Hz",
+        display::enum_display_settings_ex_a
     ),
     export!(
         "user32.dll",
@@ -135,9 +201,19 @@ exports! {
         classes::register_class_ex_w
     ),
     window!(
+        "RegisterClassExA",
+        "process-wide classes via ANSI name; converts to UTF-16",
+        classes::register_class_ex_a
+    ),
+    window!(
         "RegisterClassW",
         "process-wide classes",
         classes::register_class_w
+    ),
+    window!(
+        "RegisterClassA",
+        "process-wide classes via ANSI name",
+        classes::register_class_a
     ),
     window!(
         "UnregisterClassW",
@@ -163,6 +239,11 @@ exports! {
         "DestroyWindow",
         "children first-notified, X resources freed",
         windows::destroy_window
+    ),
+    window!(
+        "CloseWindow",
+        "minimizes (iconifies) the window, as on Windows",
+        windows::close_window
     ),
     window!(
         "ShowWindow",
@@ -310,6 +391,11 @@ exports! {
         windows::get_window
     ),
     window!(
+        "GetTopWindow",
+        "first child or top-level window",
+        windows::get_top_window
+    ),
+    window!(
         "GetDesktopWindow",
         "the screen",
         windows::get_desktop_window
@@ -393,6 +479,21 @@ exports! {
         "InvalidateRect",
         "whole-window update region",
         windows::invalidate_rect
+    ),
+    window!(
+        "InvalidateRgn",
+        "whole-window update region",
+        windows::invalidate_rgn
+    ),
+    window!(
+        "GetUpdateRect",
+        "retrieves client update rectangle",
+        windows::get_update_rect
+    ),
+    window!(
+        "SetWindowDisplayAffinity",
+        "validates HWND and affinity flags",
+        windows::set_window_display_affinity
     ),
     window!(
         "ValidateRect",
@@ -760,6 +861,11 @@ exports! {
         input::get_cursor_info
     ),
     window!(
+        "CreateCursor",
+        "monochrome AND/XOR planes as an X bitmap cursor; inverted pixels show black",
+        input::create_cursor
+    ),
+    window!(
         "DestroyCursor",
         "complete",
         input::destroy_cursor
@@ -803,6 +909,26 @@ exports! {
         "DefRawInputProc",
         "complete",
         input::define_raw_input_proc
+    ),
+    window!(
+        "SendInput",
+        "synthesizes input events for the calling thread",
+        input::send_input
+    ),
+    window!(
+        "AttachThreadInput",
+        "attaches thread input queues; shared input in process",
+        input::attach_thread_input
+    ),
+    window!(
+        "GetTouchInputInfo",
+        "no touch input hardware/handles",
+        input::get_touch_input_info
+    ),
+    window!(
+        "CloseTouchInputHandle",
+        "no touch input hardware/handles",
+        input::close_touch_input_handle
     ),
     window!(
         "GetDC",
@@ -861,7 +987,7 @@ exports! {
     ),
     window!(
         "RegisterClipboardFormatW",
-        "complete",
+        "process-local named formats; shared atom registry with A and window messages",
         misc::register_clipboard_format_w
     ),
     window!(
@@ -965,6 +1091,71 @@ exports! {
         misc::get_thread_desktop
     ),
     window!(
+        "SetThreadDesktop",
+        "stub",
+        misc::set_thread_desktop
+    ),
+    window!(
+        "CreateDesktopW",
+        "default desktop handle",
+        misc::create_desktop_w
+    ),
+    window!(
+        "CreateDesktopA",
+        "default desktop handle",
+        misc::create_desktop_a
+    ),
+    window!(
+        "OpenDesktopW",
+        "default desktop handle",
+        misc::open_desktop_w
+    ),
+    window!(
+        "OpenDesktopA",
+        "default desktop handle",
+        misc::open_desktop_a
+    ),
+    window!(
+        "CloseDesktop",
+        "stub",
+        misc::close_desktop
+    ),
+    window!(
+        "GetProcessWindowStation",
+        "the interactive window station WinSta0",
+        misc::get_process_window_station
+    ),
+    window!(
+        "SetProcessWindowStation",
+        "stub",
+        misc::set_process_window_station
+    ),
+    window!(
+        "CreateWindowStationW",
+        "interactive window station WinSta0 handle",
+        misc::create_window_station_w
+    ),
+    window!(
+        "CreateWindowStationA",
+        "interactive window station WinSta0 handle",
+        misc::create_window_station_a
+    ),
+    window!(
+        "OpenWindowStationW",
+        "interactive window station WinSta0 handle",
+        misc::open_window_station_w
+    ),
+    window!(
+        "OpenWindowStationA",
+        "interactive window station WinSta0 handle",
+        misc::open_window_station_a
+    ),
+    window!(
+        "CloseWindowStation",
+        "stub",
+        misc::close_window_station
+    ),
+    window!(
         "GetUserObjectInformationA",
         "flags and name",
         misc::get_user_object_information_a
@@ -1000,6 +1191,16 @@ exports! {
         misc::unregister_device_notification
     ),
     window!(
+        "RegisterSuspendResumeNotification",
+        "accepted; power notification handle",
+        misc::register_suspend_resume_notification
+    ),
+    window!(
+        "UnregisterSuspendResumeNotification",
+        "complete",
+        misc::unregister_suspend_resume_notification
+    ),
+    window!(
         "LoadIconW",
         "handles never drawn",
         misc::load_icon
@@ -1017,12 +1218,17 @@ exports! {
     window!(
         "DestroyIcon",
         "complete",
-        misc::destroy_icon
+        crate::api::window::icons::destroy
     ),
     window!(
         "CreateIconIndirect",
         "token handle",
         misc::create_icon_indirect
+    ),
+    window!(
+        "CreateIcon",
+        "1-bpp/32-bpp icon handle",
+        crate::api::window::icons::create_icon
     ),
     window!(
         "CopyRect",
@@ -1094,6 +1300,16 @@ exports! {
         "ERROR_NOT_SUPPORTED",
         misc::display_config_get_device_info
     ),
+    window!(
+        "GetSysColor",
+        "default Windows system colors",
+        misc::get_sys_color
+    ),
+    window!(
+        "GetSysColorBrush",
+        "token brush handle for valid COLOR_* index",
+        misc::get_sys_color_brush
+    ),
     export!(
         "gdi32.dll",
         "GetDeviceCaps",
@@ -1101,6 +1317,30 @@ exports! {
         "partial",
         "screen size, 32 bpp, 96 DPI, 60 Hz",
         misc::get_device_caps
+    ),
+    export!(
+        "gdi32.dll",
+        "GetTextCharsetInfo",
+        "window",
+        "partial",
+        "ANSI_CHARSET with Latin-1 FONTSIGNATURE",
+        misc::get_text_charset_info
+    ),
+    export!(
+        "gdi32.dll",
+        "EnumFontFamiliesA",
+        "window",
+        "partial",
+        "enumerates requested or default TrueType font family",
+        misc::enum_font_families_a
+    ),
+    export!(
+        "gdi32.dll",
+        "GetTextMetricsA",
+        "window",
+        "partial",
+        "default 96-DPI TrueType TEXTMETRICA",
+        misc::get_text_metrics_a
     ),
     export!(
         "imm32.dll",
@@ -1237,6 +1477,14 @@ exports! {
         "partial",
         "no-op",
         misc::dwm_flush
+    ),
+    export!(
+        "dwmapi.dll",
+        "DwmEnableBlurBehindWindow",
+        "window",
+        "partial",
+        "validates HWND and succeeds; blur behind unsupported on X11",
+        misc::dwm_enable_blur_behind_window
     ),
     export!(
         "shcore.dll",

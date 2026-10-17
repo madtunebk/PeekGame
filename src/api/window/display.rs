@@ -1,46 +1,51 @@
 //! Monitors, system metrics and display parameters (after peek's user32_more.inc).
-//! There is one monitor: the default X screen, at the origin, with the whole screen
-//! as its work area. Windows have no non-client area: the compositor draws frames.
+//! RandR monitors are distinct from the virtual desktop; the primary starts at 0,0.
+//! Work areas currently equal each monitor rectangle. Windows have no non-client area: the compositor draws frames.
+use crate::host::x11::monitors::Monitor;
 use crate::{
     api::{system::error, text},
     host::x11,
 };
 use std::sync::Mutex;
-const MONITOR: usize = 0x2_0001;
-const MONITORINFOF_PRIMARY: u32 = 1;
-
+fn handle(m: &Monitor) -> usize {
+    0x20000 + m.id.max(1) as usize
+}
+fn all() -> Vec<Monitor> {
+    x11::monitors()
+}
 fn screen() -> (i32, i32) {
-    x11::screen_size().unwrap_or((0, 0))
+    x11::primary_size().unwrap_or((0, 0))
 }
-fn have_display() -> bool {
-    x11::screen_size().is_some()
+pub(super) fn virtual_rect() -> [i32; 4] {
+    let monitors = all();
+    [
+        monitors.iter().map(|m| m.x).min().unwrap_or(0),
+        monitors.iter().map(|m| m.y).min().unwrap_or(0),
+        monitors.iter().map(|m| m.x + m.width).max().unwrap_or(0),
+        monitors.iter().map(|m| m.y + m.height).max().unwrap_or(0),
+    ]
 }
-
-pub extern "win64" fn monitor_from_window(_hwnd: usize, flags: u32) -> usize {
-    if have_display() || flags != 0 {
-        MONITOR
+pub extern "win64" fn monitor_from_window(hwnd: usize, flags: u32) -> usize {
+    if let Some(r) = super::windows::screen_rect(hwnd) {
+        monitor_for(r.left, r.top, r.right, r.bottom, flags)
+    } else if flags == 1 || flags == 2 {
+        all().first().map(handle).unwrap_or(0)
     } else {
         0
     }
 }
-/// MONITOR_DEFAULTTONULL (0) gives NULL off-screen; PRIMARY (1) and NEAREST (2)
-/// give the one monitor.
 fn monitor_for(x0: i32, y0: i32, x1: i32, y1: i32, flags: u32) -> usize {
     if flags > 2 {
         error::set(87);
         return 0;
     }
-    let (w, h) = screen();
-    let inside = x1 > 0 && y1 > 0 && x0 < w && y0 < h;
-    if inside || flags != 0 {
-        MONITOR
-    } else {
-        0
-    }
+    x11::monitors::select(&all(), [x0, y0, x1, y1], flags)
+        .map(handle)
+        .unwrap_or(0)
 }
 pub extern "win64" fn monitor_from_point(point: i64, flags: u32) -> usize {
     let (x, y) = (point as i32, (point >> 32) as i32);
-    monitor_for(x, y, x + 1, y + 1, flags)
+    monitor_for(x, y, x.saturating_add(1), y.saturating_add(1), flags)
 }
 pub unsafe extern "win64" fn monitor_from_rect(rect: *const i32, flags: u32) -> usize {
     if rect.is_null() {
@@ -48,47 +53,87 @@ pub unsafe extern "win64" fn monitor_from_rect(rect: *const i32, flags: u32) -> 
         return 0;
     }
     let r = unsafe { std::slice::from_raw_parts(rect, 4) };
-    monitor_for(r[0], r[1], r[2].max(r[0] + 1), r[3].max(r[1] + 1), flags)
+    monitor_for(
+        r[0],
+        r[1],
+        r[2].max(r[0].saturating_add(1)),
+        r[3].max(r[1].saturating_add(1)),
+        flags,
+    )
 }
-/// MONITORINFO (40 bytes) or MONITORINFOEX (W 104, A 72): rcMonitor, rcWork,
-/// dwFlags, szDevice "\\.\DISPLAY1".
+fn name(index: usize) -> String {
+    format!("\\\\.\\DISPLAY{}", index + 1)
+}
+fn named(device: Option<&str>) -> Option<(usize, Monitor)> {
+    let monitors = all();
+    match device {
+        None | Some("") => monitors.into_iter().enumerate().next(),
+        Some(device) => monitors
+            .into_iter()
+            .enumerate()
+            .find(|(i, _)| name(*i).eq_ignore_ascii_case(device)),
+    }
+}
+/// The size of a display device ("\\.\DISPLAYn", or the primary for none).
+pub(crate) fn device_size(device: Option<&str>) -> Option<(i32, i32)> {
+    named(device).map(|(_, m)| (m.width, m.height))
+}
 unsafe fn monitor_info(monitor: usize, out: *mut u8, wide: bool) -> i32 {
-    if monitor != MONITOR || out.is_null() {
+    if out.is_null() {
         error::set(87);
         return 0;
     }
-    let size = unsafe { (out as *const u32).read_unaligned() };
+    let Some((index, m)) = all()
+        .into_iter()
+        .enumerate()
+        .find(|(_, m)| handle(m) == monitor)
+    else {
+        error::set(87);
+        return 0;
+    };
+    let size = unsafe { out.cast::<u32>().read_unaligned() };
     if size != 40 && size != if wide { 104 } else { 72 } {
         error::set(87);
         return 0;
     }
-    let (w, h) = screen();
     unsafe {
-        let r = out.add(4).cast::<i32>();
-        for (i, v) in [0, 0, w, h, 0, 0, w, h].into_iter().enumerate() {
-            r.add(i).write_unaligned(v);
+        for (i, v) in [
+            m.x,
+            m.y,
+            m.x + m.width,
+            m.y + m.height,
+            m.x,
+            m.y,
+            m.x + m.width,
+            m.y + m.height,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            out.add(4 + i * 4).cast::<i32>().write_unaligned(v);
         }
-        (out.add(36) as *mut u32).write_unaligned(MONITORINFOF_PRIMARY);
+        out.add(36).cast::<u32>().write_unaligned(m.primary as u32);
         if size > 40 {
-            let name = "\\\\.\\DISPLAY1";
-            if wide {
-                out.add(40).write_bytes(0, 64);
-                for (i, u) in name.encode_utf16().enumerate() {
-                    (out.add(40 + i * 2) as *mut u16).write_unaligned(u);
-                }
-            } else {
-                out.add(40).write_bytes(0, 32);
-                std::ptr::copy_nonoverlapping(name.as_ptr(), out.add(40), name.len());
-            }
+            out.add(40).write_bytes(0, size as usize - 40);
+            put(out.add(40), &name(index), wide);
         }
     }
     1
 }
-pub unsafe extern "win64" fn monitor_info_w(monitor: usize, out: *mut u8) -> i32 {
-    unsafe { monitor_info(monitor, out, true) }
+unsafe fn put(out: *mut u8, text: &str, wide: bool) {
+    if wide {
+        for (i, u) in text.encode_utf16().enumerate() {
+            unsafe { out.add(i * 2).cast::<u16>().write_unaligned(u) };
+        }
+    } else {
+        unsafe { std::ptr::copy_nonoverlapping(text.as_ptr(), out, text.len()) };
+    }
 }
-pub unsafe extern "win64" fn monitor_info_a(monitor: usize, out: *mut u8) -> i32 {
-    unsafe { monitor_info(monitor, out, false) }
+pub unsafe extern "win64" fn monitor_info_w(m: usize, out: *mut u8) -> i32 {
+    unsafe { monitor_info(m, out, true) }
+}
+pub unsafe extern "win64" fn monitor_info_a(m: usize, out: *mut u8) -> i32 {
+    unsafe { monitor_info(m, out, false) }
 }
 type MonitorEnum = extern "win64" fn(usize, usize, *mut i32, isize) -> i32;
 pub unsafe extern "win64" fn enum_display_monitors(
@@ -98,7 +143,6 @@ pub unsafe extern "win64" fn enum_display_monitors(
     data: isize,
 ) -> i32 {
     if hdc != 0 || !clip.is_null() {
-        eprintln!("EnumDisplayMonitors with an HDC or clip rectangle is not supported");
         error::set(50);
         return 0;
     }
@@ -106,52 +150,46 @@ pub unsafe extern "win64" fn enum_display_monitors(
         error::set(87);
         return 0;
     };
-    if have_display() {
-        let (w, h) = screen();
-        let mut rect = [0, 0, w, h];
-        proc(MONITOR, 0, rect.as_mut_ptr(), data);
+    for m in all() {
+        let mut r = [m.x, m.y, m.x + m.width, m.y + m.height];
+        if proc(handle(&m), 0, r.as_mut_ptr(), data) == 0 {
+            return 0;
+        }
     }
     1
 }
-/// DISPLAY_DEVICEW (840 bytes) / DISPLAY_DEVICEA (424): one adapter "\\.\DISPLAY1"
-/// (ATTACHED_TO_DESKTOP | PRIMARY_DEVICE), and its monitor "\\.\DISPLAY1\Monitor0".
 unsafe fn display_device(device: Option<String>, index: u32, out: *mut u8, wide: bool) -> i32 {
     let needed = if wide { 840 } else { 424 };
-    if out.is_null() || unsafe { (out as *const u32).read_unaligned() } < needed {
+    if out.is_null() || unsafe { out.cast::<u32>().read_unaligned() } < needed {
         error::set(87);
         return 0;
     }
-    let (name, description, flags) = match device.as_deref() {
-        None | Some("") if index == 0 && have_display() => {
-            ("\\\\.\\DISPLAY1".to_owned(), "X11 display adapter", 1 | 4)
+    let (id, description, flags) = if device.as_deref().is_none_or(|s| s.is_empty()) {
+        let monitors = all();
+        let Some(m) = monitors.get(index as usize) else {
+            return 0;
+        };
+        (
+            name(index as usize),
+            "X11 RandR display adapter",
+            1 | if m.primary { 4 } else { 0 },
+        )
+    } else {
+        let Some((i, _)) = named(device.as_deref()) else {
+            return 0;
+        };
+        if index != 0 {
+            return 0;
         }
-        Some("\\\\.\\DISPLAY1") if index == 0 => (
-            "\\\\.\\DISPLAY1\\Monitor0".to_owned(),
-            "Generic monitor",
-            1 | 2,
-        ),
-        _ => return 0, // end of the list, no error code, as on Windows
+        (format!("{}\\Monitor0", name(i)), "X11 RandR monitor", 1 | 2)
     };
     unsafe {
         out.add(4).write_bytes(0, needed as usize - 4);
-        let put = |at: usize, text: &str| {
-            if wide {
-                for (i, u) in text.encode_utf16().enumerate() {
-                    (out.add(at + i * 2) as *mut u16).write_unaligned(u);
-                }
-            } else {
-                std::ptr::copy_nonoverlapping(text.as_ptr(), out.add(at), text.len());
-            }
-        };
-        if wide {
-            put(4, &name);
-            put(68, description);
-            (out.add(324) as *mut u32).write_unaligned(flags);
-        } else {
-            put(4, &name);
-            put(36, description);
-            (out.add(164) as *mut u32).write_unaligned(flags);
-        }
+        put(out.add(4), &id, wide);
+        put(out.add(if wide { 68 } else { 36 }), description, wide);
+        out.add(if wide { 324 } else { 164 })
+            .cast::<u32>()
+            .write_unaligned(flags);
     }
     1
 }
@@ -169,31 +207,44 @@ pub unsafe extern "win64" fn enum_display_devices_a(
     out: *mut u8,
     _flags: u32,
 ) -> i32 {
-    let device = (!device.is_null()).then(|| {
+    let name = (!device.is_null()).then(|| {
         unsafe { std::ffi::CStr::from_ptr(device) }
             .to_string_lossy()
             .into_owned()
     });
-    unsafe { display_device(device, index, out, false) }
+    unsafe { display_device(name, index, out, false) }
 }
-/// DEVMODEW (220 bytes): the current mode of the X screen only (ENUM_CURRENT_SETTINGS
-/// -1, ENUM_REGISTRY_SETTINGS -2, or mode 0); 32 bpp, 60 Hz.
-unsafe fn display_settings_w(out: *mut u8, mode: u32) -> i32 {
-    if !(mode == 0 || mode == u32::MAX || mode == u32::MAX - 1) || !have_display() {
+/// EnumDisplaySettings: each monitor lists only the mode it is in. There is no
+/// mode switching (ChangeDisplaySettingsEx accepts only the current size), so a
+/// listed mode the program could not select would make it wait for a switch that
+/// never happens (DOOM Eternal kept a 32x32 window).
+unsafe fn display_settings_w(out: *mut u8, mode: u32, monitor: &Monitor) -> i32 {
+    let (_, current) = x11::modes::list(monitor);
+    let selected = if mode == u32::MAX || mode == u32::MAX - 1 || mode == 0 {
+        current
+    } else {
         return 0;
-    }
-    let (w, h) = screen();
+    };
     unsafe {
-        let extra = (out.add(70) as *const u16).read_unaligned();
+        let extra = out.add(70).cast::<u16>().read_unaligned();
         out.write_bytes(0, 220);
-        for (i, u) in "\\\\.\\DISPLAY1".encode_utf16().enumerate() {
-            (out.add(i * 2) as *mut u16).write_unaligned(u);
-        }
-        (out.add(68) as *mut u16).write_unaligned(220);
-        (out.add(70) as *mut u16).write_unaligned(extra);
-        (out.add(72) as *mut u32).write_unaligned(0x20 | 0x40000 | 0x80000 | 0x100000 | 0x400000);
-        for (at, v) in [(168, 32u32), (172, w as u32), (176, h as u32), (184, 60)] {
-            (out.add(at) as *mut u32).write_unaligned(v);
+        let index = all().iter().position(|m| m.id == monitor.id).unwrap_or(0);
+        put(out, &name(index), true);
+        out.add(68).cast::<u16>().write_unaligned(220);
+        out.add(70).cast::<u16>().write_unaligned(extra);
+        out.add(72)
+            .cast::<u32>()
+            .write_unaligned(0x20 | 0x40000 | 0x80000 | 0x100000 | 0x400000);
+        out.add(76).cast::<i32>().write_unaligned(monitor.x);
+        out.add(80).cast::<i32>().write_unaligned(monitor.y);
+        for (at, v) in [
+            (168, 32u32),
+            (172, selected.width),
+            (176, selected.height),
+            (180, selected.flags),
+            (184, selected.hz),
+        ] {
+            out.add(at).cast::<u32>().write_unaligned(v);
         }
     }
     1
@@ -207,16 +258,21 @@ pub unsafe extern "win64" fn enum_display_settings_w(
         error::set(87);
         return 0;
     }
-    if let Some(name) = unsafe { text::string(device) } {
-        if name != "\\\\.\\DISPLAY1" {
-            error::set(87);
-            return 0;
-        }
-    }
-    unsafe { display_settings_w(out, mode) }
+    let device = unsafe { text::string(device) };
+    let Some((_, m)) = named(device.as_deref()) else {
+        error::set(87);
+        return 0;
+    };
+    unsafe { display_settings_w(out, mode, &m) }
 }
-/// DEVMODEA (156 bytes): DEVMODEW with 32-byte names; dmSpecVersion..dmCollate move
-/// from 64 to 32 and dmLogPixels..dmPanningHeight from 166 to 102.
+pub unsafe extern "win64" fn enum_display_settings_ex_w(
+    device: *const u16,
+    mode: u32,
+    out: *mut u8,
+    _flags: u32,
+) -> i32 {
+    unsafe { enum_display_settings_w(device, mode, out) }
+}
 pub unsafe extern "win64" fn enum_display_settings_a(
     device: *const std::ffi::c_char,
     mode: u32,
@@ -226,40 +282,72 @@ pub unsafe extern "win64" fn enum_display_settings_a(
         error::set(87);
         return 0;
     }
-    if !device.is_null()
-        && unsafe { std::ffi::CStr::from_ptr(device) }.to_bytes() != b"\\\\.\\DISPLAY1"
-    {
+    let name = (!device.is_null()).then(|| {
+        unsafe { std::ffi::CStr::from_ptr(device) }
+            .to_string_lossy()
+            .into_owned()
+    });
+    let Some((_, m)) = named(name.as_deref()) else {
         error::set(87);
         return 0;
-    }
+    };
     let mut w = [0u8; 220];
-    if unsafe { display_settings_w(w.as_mut_ptr(), mode) } == 0 {
+    if unsafe { display_settings_w(w.as_mut_ptr(), mode, &m) } == 0 {
         return 0;
     }
     unsafe {
-        let extra = (out.add(38) as *const u16).read_unaligned();
+        let extra = out.add(38).cast::<u16>().read_unaligned();
         out.write_bytes(0, 156);
         for i in 0..31 {
             *out.add(i) = w[i * 2];
         }
         std::ptr::copy_nonoverlapping(w.as_ptr().add(64), out.add(32), 38);
         std::ptr::copy_nonoverlapping(w.as_ptr().add(166), out.add(102), 54);
-        (out.add(36) as *mut u16).write_unaligned(156);
-        (out.add(38) as *mut u16).write_unaligned(extra);
+        out.add(36).cast::<u16>().write_unaligned(156);
+        out.add(38).cast::<u16>().write_unaligned(extra);
     }
     1
+}
+pub unsafe extern "win64" fn enum_display_settings_ex_a(
+    device: *const std::ffi::c_char,
+    mode: u32,
+    out: *mut u8,
+    _flags: u32,
+) -> i32 {
+    unsafe { enum_display_settings_a(device, mode, out) }
 }
 pub extern "win64" fn system_metrics(index: i32) -> i32 {
     let (w, h) = screen();
     match index {
-        0 | 78 => w,                     // SM_CXSCREEN, SM_CXVIRTUALSCREEN
-        1 | 79 => h,                     // SM_CYSCREEN, SM_CYVIRTUALSCREEN
-        76 | 77 => 0,                    // virtual screen origin
-        80 => have_display() as i32,     // SM_CMONITORS
+        0 | 16 | 61 => w, // SM_CXSCREEN, SM_CXFULLSCREEN, SM_CXMAXIMIZED
+        1 | 17 | 62 => h, // SM_CYSCREEN, SM_CYFULLSCREEN, SM_CYMAXIMIZED
+        59 => w + 16,     // SM_CXMAXTRACK
+        60 => h + 16,     // SM_CYMAXTRACK
+        11..=14 => 32,    // SM_CXICON, SM_CYICON, SM_CXCURSOR, SM_CYCURSOR
+        49 | 50 => 16,    // SM_CXSMICON, SM_CYSMICON
+        28 | 34 => 112,   // SM_CXMIN, SM_CXMINTRACK
+        29 | 35 => 27,    // SM_CYMIN, SM_CYMINTRACK
+        36 | 37 | 68 | 69 => 4, // SM_CXDOUBLECLK, SM_CYDOUBLECLK, SM_CXDRAG, SM_CYDRAG
+        38 | 39 => 75,    // SM_CXICONSPACING, SM_CYICONSPACING
+        47 | 57 => 160,   // SM_CXMINSPACING, SM_CXMINIMIZED
+        48 | 58 => 24,    // SM_CYMINSPACING, SM_CYMINIMIZED
+        71 | 72 => 15,    // SM_CXMENUCHECK, SM_CYMENUCHECK
+        83 | 84 => 1,     // SM_CXFOCUSBORDER, SM_CYFOCUSBORDER
+        76 => virtual_rect()[0],
+        77 => virtual_rect()[1],
+        78 => {
+            let r = virtual_rect();
+            r[2] - r[0]
+        }
+        79 => {
+            let r = virtual_rect();
+            r[3] - r[1]
+        } // virtual screen origin
+        80 => all().len() as i32,        // SM_CMONITORS
         81 | 82 | 75 | 19 => 1,          // same format, IMM, wheel, mouse present
         43 => 5,                         // SM_CMOUSEBUTTONS
-        23 | 86 | 94 | 95 | 0x1000 => 0, // swap buttons, tablet, digitizer, touches, remote
-        4..=8 | 32 | 33 | 92 => 0,       // caption/borders/frame/padding: no non-client area
+        18 | 22..=27 | 40..=42 | 44 | 56 | 63..=67 | 70 | 73 | 74 | 85..=91 | 93..=95 | 0x1000 | 0x2000 | 0x2001 => 0,
+        2..=10 | 15 | 20 | 21 | 30..=33 | 45 | 46 | 51..=55 | 92 => 0, // caption/borders/frame/padding: no non-client area
         _ => {
             eprintln!("STOP: GetSystemMetrics({index}) is not mapped");
             std::process::exit(78)
@@ -305,6 +393,49 @@ pub unsafe extern "win64" fn system_parameters_info(
         return 1;
     }
     match action {
+        0x29 => {
+            // SPI_GETNONCLIENTMETRICS: NONCLIENTMETRICSA (340/344 bytes) or NONCLIENTMETRICSW (500/504 bytes).
+            let cb = unsafe { (out as *const u32).read_unaligned() }.max(param) as usize;
+            if !(340..=504).contains(&cb) {
+                error::set(87);
+                return 0;
+            }
+            let wide = cb >= 500;
+            unsafe {
+                out.write_bytes(0, cb);
+                (out as *mut u32).write_unaligned(cb as u32);
+                for (off, val) in [(4, 1i32), (8, 17), (12, 17), (16, 22), (20, 22)] {
+                    out.add(off).cast::<i32>().write_unaligned(val);
+                }
+                let fill_logfont = |base: usize| {
+                    out.add(base).cast::<i32>().write_unaligned(-12); // lfHeight
+                    out.add(base + 16).cast::<i32>().write_unaligned(400); // lfWeight = FW_NORMAL
+                    *out.add(base + 23) = 1; // DEFAULT_CHARSET
+                    self::put(out.add(base + 28), "Segoe UI", wide);
+                };
+                if wide {
+                    fill_logfont(24);
+                    out.add(116).cast::<i32>().write_unaligned(17);
+                    out.add(120).cast::<i32>().write_unaligned(17);
+                    fill_logfont(124);
+                    out.add(216).cast::<i32>().write_unaligned(19);
+                    out.add(220).cast::<i32>().write_unaligned(19);
+                    fill_logfont(224);
+                    fill_logfont(316);
+                    fill_logfont(408);
+                } else {
+                    fill_logfont(24);
+                    out.add(84).cast::<i32>().write_unaligned(17);
+                    out.add(88).cast::<i32>().write_unaligned(17);
+                    fill_logfont(92);
+                    out.add(152).cast::<i32>().write_unaligned(19);
+                    out.add(156).cast::<i32>().write_unaligned(19);
+                    fill_logfont(160);
+                    fill_logfont(220);
+                    fill_logfont(280);
+                }
+            }
+        }
         0x30 => {
             // SPI_GETWORKAREA: the whole screen.
             let (w, h) = screen();
@@ -312,9 +443,11 @@ pub unsafe extern "win64" fn system_parameters_info(
                 unsafe { (out as *mut i32).add(i).write_unaligned(v) };
             }
         }
-        0x5E | 0x46 => put(0), // mouse trails off; no screen reader
-        0x66 => put(400),      // hover time (Windows default)
-        0x68 | 0x6C => put(3), // wheel scroll lines/chars
+        0x5E | 0x46 | 0x1A | 0x4A | 0x1000 | 0x1002 | 0x1004 | 0x1006 | 0x1008 | 0x100A
+        | 0x100C | 0x100E | 0x1012 | 0x1014 | 0x1016 | 0x1018 | 0x101A | 0x1020 | 0x1022
+        | 0x1024 | 0x1042 => put(0), // mouse trails off; no screen reader; UI animation/fade flags off
+        0x66 | 0x6A => put(400), // hover time / menu show delay (Windows default)
+        0x68 | 0x6C => put(3),   // wheel scroll lines/chars
         _ => {
             eprintln!("STOP: SystemParametersInfo({action:#x}) is not mapped");
             std::process::exit(78)

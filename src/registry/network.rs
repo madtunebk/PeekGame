@@ -3,6 +3,11 @@ use super::*;
 use crate::api::network::{self, events, resolve, sockets, sspi, winhttp};
 use crate::api::threading::events as win_events;
 exports! {
+    export!("crypt32.dll", "CryptBinaryToStringA", "network", "partial", "Base64 and PEM certificate headers, CRLF/NOCR/NOCRLF, character-count buffers", network::crypt_strings::binary_to_string_a),
+    export!("crypt32.dll", "CryptBinaryToStringW", "network", "partial", "UTF-16 Base64/PEM certificate output with character-count buffers", network::crypt_strings::binary_to_string_w),
+
+    export!("crypt32.dll", "CertGetCertificateContextProperty", "network", "partial", "real SHA1/MD5/SHA256 certificate hashes; unattached extended properties: CRYPT_E_NOT_FOUND", network::certificates::properties::get),
+
     export!("crypt32.dll", "CertGetCertificateChain", "network", "partial", "OpenSSL verification against host trust, no online revocation", network::certificates::chain::get),
     export!("crypt32.dll", "CertFreeCertificateChain", "network", "partial", "owned Windows chain contexts", network::certificates::chain::free),
     export!("crypt32.dll", "CertDuplicateCertificateChain", "network", "partial", "reference-counted chain contexts", network::certificates::chain::duplicate),
@@ -24,22 +29,20 @@ exports! {
         "no proxy",
         winhttp::ie_proxy_config
     ),
-    export!(
-        "winhttp.dll",
-        "WinHttpOpen",
-        "network",
-        "partial",
-        "session token",
-        winhttp::open
-    ),
-    export!(
-        "winhttp.dll",
-        "WinHttpCloseHandle",
-        "network",
-        "partial",
-        "complete",
-        winhttp::close_handle
-    ),
+    export!("winhttp.dll", "WinHttpOpen", "network", "partial", "sync/async sessions; no network transport", winhttp::open),
+    export!("winhttp.dll", "WinHttpCloseHandle", "network", "partial", "HANDLE_CLOSING notification", winhttp::close_handle),
+    export!("winhttp.dll", "WinHttpConnect", "network", "partial", "connection handles; inherits mode and callback", winhttp::connect),
+    export!("winhttp.dll", "WinHttpOpenRequest", "network", "partial", "request handles; HANDLE_CREATED notification", winhttp::open_request),
+    export!("winhttp.dll", "WinHttpSetStatusCallback", "network", "partial", "per-handle callback and notification mask, inherited by new children", winhttp::set_status_callback),
+    export!("winhttp.dll", "WinHttpSetOption", "network", "partial", "context value and connection options kept per handle; others ERROR_WINHTTP_INVALID_OPTION", winhttp::set_option),
+    export!("winhttp.dll", "WinHttpSetTimeouts", "network", "partial", "kept per handle", winhttp::set_timeouts),
+    export!("winhttp.dll", "WinHttpAddRequestHeaders", "network", "partial", "accepted onto the request", winhttp::add_request_headers),
+    export!("winhttp.dll", "WinHttpSendRequest", "network", "partial", "no transport: ERROR_WINHTTP_CANNOT_CONNECT (async: REQUEST_ERROR callback)", winhttp::send_request),
+    export!("winhttp.dll", "WinHttpReceiveResponse", "network", "partial", "no response ever exists: ERROR_WINHTTP_INCORRECT_HANDLE_STATE", winhttp::receive_response),
+    export!("winhttp.dll", "WinHttpQueryHeaders", "network", "partial", "no response ever exists: ERROR_WINHTTP_INCORRECT_HANDLE_STATE", winhttp::query_headers),
+    export!("winhttp.dll", "WinHttpQueryDataAvailable", "network", "partial", "no response ever exists: ERROR_WINHTTP_INCORRECT_HANDLE_STATE", winhttp::query_data_available),
+    export!("winhttp.dll", "WinHttpReadData", "network", "partial", "no response ever exists: ERROR_WINHTTP_INCORRECT_HANDLE_STATE", winhttp::read_data),
+    export!("winhttp.dll", "WinHttpWriteData", "network", "partial", "no sent request: ERROR_WINHTTP_INCORRECT_HANDLE_STATE", winhttp::write_data),
     export!(
         "winhttp.dll",
         "WinHttpGetProxyForUrl",
@@ -47,6 +50,14 @@ exports! {
         "partial",
         "no proxy auto-configuration",
         winhttp::proxy_for_url
+    ),
+    export!(
+        "winhttp.dll",
+        "WinHttpCheckPlatform",
+        "network",
+        "implemented",
+        "returns TRUE",
+        winhttp::check_platform
     ),
     export!(
         "secur32.dll",
@@ -79,6 +90,30 @@ exports! {
         "partial",
         "no security packages: SEC_E_UNSUPPORTED_FUNCTION",
         sspi::unsupported
+    ),
+    export!(
+        "secur32.dll",
+        "LsaEnumerateLogonSessions",
+        "network",
+        "partial",
+        "single interactive logon session LUID",
+        sspi::lsa_enumerate_logon_sessions
+    ),
+    export!(
+        "secur32.dll",
+        "LsaFreeReturnBuffer",
+        "network",
+        "partial",
+        "frees allocated LSA query buffer",
+        sspi::lsa_free_return_buffer
+    ),
+    export!(
+        "secur32.dll",
+        "LsaGetLogonSessionData",
+        "network",
+        "partial",
+        "interactive logon session data",
+        sspi::lsa_get_logon_session_data
     ),
     export!(
         "secur32.dll",
@@ -663,5 +698,21 @@ exports! {
         "partial",
         "WaitForMultipleObjectsEx",
         events::wait_for_multiple_events
+    ),
+    export!(
+        "iphlpapi.dll",
+        "GetAdaptersInfo",
+        "network",
+        "partial",
+        "single Ethernet IP_ADAPTER_INFO with host MAC address",
+        network::get_adapters_info
+    ),
+    export!(
+        "iphlpapi.dll",
+        "GetBestInterface",
+        "network",
+        "partial",
+        "returns adapter index 1 matching GetAdaptersInfo",
+        network::get_best_interface
     ),
 }

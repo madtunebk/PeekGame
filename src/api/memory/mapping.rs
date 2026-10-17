@@ -111,6 +111,9 @@ fn create(file: usize, protection: u32, high: u32, low: u32, name: Option<String
         file
     };
     error::set(0);
+    if files::tracing() {
+        eprintln!("[files] CreateFileMapping fd={} protection={protection:#x} size={size:#x}", file.as_raw_fd());
+    }
     insert(Arc::new(Mapping {
         file,
         size,
@@ -216,6 +219,9 @@ pub extern "win64" fn map_view_ex(
     if base < 0 || (address != 0 && base as usize != address) {
         error::set(if address != 0 { 487 } else { 8 });
         return 0;
+    }
+    if files::tracing() {
+        eprintln!("[files] MapViewOfFile fd={} access={access:#x} offset={offset:#x} length={length:#x} -> {base:#x}", mapping.file.as_raw_fd());
     }
     with(|s| s.views.insert(base as usize, length));
     base as usize

@@ -121,11 +121,26 @@ unsafe fn create(
     parameter: *mut c_void,
 ) -> usize {
     let result = (|| {
-        let class_record = unsafe { classes::find(class, instance) }?;
+        let class_record = match unsafe { classes::find(class, instance) } {
+            Ok(c) => c,
+            Err(e) => {
+                let class_name = if (class as usize) < 65536 {
+                    format!("#{}", class as usize)
+                } else {
+                    unsafe { strings::wide(class) }.unwrap_or_else(|_| "invalid".into())
+                };
+                eprintln!("CreateWindowEx: classes::find failed for '{class_name}', instance={instance:#x}: err {e}");
+                return Err(e);
+            }
+        };
+        if trace_window() {
+            eprintln!("[window] CreateWindowEx ({x},{y}) {width}x{height} style={style:#x} ex={ex_style:#x} parent={parent:#x}");
+        }
         let message_only = parent == HWND_MESSAGE;
         let child = style & WS_CHILD != 0 && !message_only;
         let parent = if message_only { 0 } else { parent };
         if child && !state::exists(parent) {
+            eprintln!("CreateWindowEx: child window but parent {parent:#x} does not exist");
             return Err(1406); // ERROR_TLW_WITH_WSCHILD
         }
         let parent_native = if child {
@@ -133,7 +148,7 @@ unsafe fn create(
         } else {
             0
         };
-        let (screen_w, screen_h) = crate::host::x11::screen_size().unwrap_or((1920, 1080));
+        let (screen_w, screen_h) = crate::host::x11::primary_size().unwrap_or((1920, 1080));
         let (mut w, mut h) = (width, height);
         if w == CW_USEDEFAULT {
             w = screen_w * 3 / 4;
@@ -152,9 +167,15 @@ unsafe fn create(
         let (native, surface) = if message_only {
             (0, None)
         } else {
-            let c = connection()?;
+            let c = match connection() {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("CreateWindowEx: connection() failed: err {e}");
+                    return Err(e);
+                }
+            };
             let cursor = input::x_cursor_for(class_record.cursor);
-            let native = c.create(
+            let native = match c.create(
                 parent_native,
                 title,
                 x,
@@ -162,7 +183,13 @@ unsafe fn create(
                 w.max(1) as u32,
                 h.max(1) as u32,
                 cursor,
-            )?;
+            ) {
+                Ok(n) => n,
+                Err(e) => {
+                    eprintln!("CreateWindowEx: c.create failed: err {e}");
+                    return Err(e);
+                }
+            };
             if !child {
                 if style & WS_CAPTION != WS_CAPTION {
                     c.set_decorated(native, false);
@@ -203,8 +230,10 @@ unsafe fn create(
                 visible: false,
                 minimized: false,
                 maximized: false,
+                fullscreen_monitor:None,
                 destroying: false,
                 paint: false,
+                icons: [0; 2],
                 track_leave: false,
                 expected: None,
                 own_unmaps: 0,
@@ -227,24 +256,31 @@ unsafe fn create(
         let lparam = &create as *const _ as isize;
         // No lock is held while Windows code runs.
         if queue::call(hwnd, WM_NCCREATE, 0, lparam) == 0 {
+            eprintln!("CreateWindowEx: WM_NCCREATE returned 0 (refused creation)");
             destroy(hwnd, false);
             return Err(31); // the window procedure refused creation
         }
         if !state::exists(hwnd) {
+            eprintln!("CreateWindowEx: window destroyed during WM_NCCREATE");
             return Err(ERROR_WINDOW);
         }
         if queue::call(hwnd, WM_CREATE, 0, lparam) == -1 {
+            eprintln!("CreateWindowEx: WM_CREATE returned -1 (refused creation)");
             destroy(hwnd, true);
             return Err(31);
         }
         if !state::exists(hwnd) {
+            eprintln!("CreateWindowEx: window destroyed during WM_CREATE");
             return Err(ERROR_WINDOW);
         }
-        queue::call(hwnd, WM_SIZE, 0, pack(w, h));
-        queue::call(hwnd, WM_MOVE, 0, pack(x, y));
+        let (cw, ch, cx, cy) = state::with_window(hwnd, |w| (w.width, w.height, w.x, w.y))
+            .unwrap_or((w, h, x, y));
+        queue::call(hwnd, WM_SIZE, 0, pack(cw, ch));
+        queue::call(hwnd, WM_MOVE, 0, pack(cx, cy));
         if !state::exists(hwnd) {
             return Err(ERROR_WINDOW);
         }
+        update_fullscreen(hwnd);
         if style & WS_VISIBLE != 0 {
             show_window(
                 hwnd,
@@ -289,6 +325,7 @@ fn destroy(hwnd: usize, notify: bool) -> bool {
     if notify {
         queue::call(hwnd, WM_NCDESTROY, 0, 0);
     }
+    super::ole_drop::forget(hwnd);
     input::forget_window(hwnd);
     queue::drop_window(hwnd);
     let removed = {
@@ -346,6 +383,9 @@ fn set_visible(hwnd: usize, visible: bool) -> Option<bool> {
 /// ShowWindow: hide, show (with or without activation), minimize, maximize and
 /// restore. Returns whether the window was visible.
 pub(crate) extern "win64" fn show_window(hwnd: usize, command: i32) -> i32 {
+    if trace_window() {
+        eprintln!("[window] ShowWindow {hwnd:#x} command={command}");
+    }
     let Ok((native, minimized, maximized)) =
         state::with_window(hwnd, |w| (w.native, w.minimized, w.maximized))
     else {
@@ -400,6 +440,18 @@ pub(crate) extern "win64" fn show_window(hwnd: usize, command: i32) -> i32 {
     };
     old.unwrap_or(false) as i32
 }
+/// CloseWindow minimizes (it does not destroy): ShowWindow(SW_MINIMIZE) with a
+/// success result instead of the previous visibility.
+pub(crate) extern "win64" fn close_window(hwnd: usize) -> i32 {
+    if trace_window() {
+        eprintln!("[window] CloseWindow {hwnd:#x}");
+    }
+    if state::with_window(hwnd, |_| ()).is_err() {
+        return fail(ERROR_WINDOW, 0);
+    }
+    show_window(hwnd, 6);
+    1
+}
 pub(crate) unsafe extern "win64" fn adjust_window_rect_ex(
     rect: *mut Rect,
     _style: u32,
@@ -432,6 +484,11 @@ pub(crate) unsafe extern "win64" fn adjust_window_rect(
 }
 
 /// Applies a position/size change and tells the window (WM_WINDOWPOSCHANGING/CHANGED).
+/// `PEEKGAME_TRACE_WINDOW`: log ShowWindow, CloseWindow and SetWindowPos calls.
+fn trace_window() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("PEEKGAME_TRACE_WINDOW").is_some())
+}
 pub(crate) extern "win64" fn set_window_pos(
     hwnd: usize,
     after: usize,
@@ -441,6 +498,9 @@ pub(crate) extern "win64" fn set_window_pos(
     cy: i32,
     flags: u32,
 ) -> i32 {
+    if trace_window() {
+        eprintln!("[window] SetWindowPos {hwnd:#x} after={after:#x} ({x},{y}) {cx}x{cy} flags={flags:#x}");
+    }
     let Ok((native, parent, style, ox, oy, ow, oh)) = state::with_window(hwnd, |w| {
         (w.native, w.parent, w.style, w.x, w.y, w.width, w.height)
     }) else {
@@ -486,26 +546,24 @@ pub(crate) extern "win64" fn set_window_pos(
     if native != 0 {
         if let Ok(c) = connection() {
             if flags & 3 != 3 {
-                c.move_resize(native, nx, ny, nw.max(1) as u32, nh.max(1) as u32);
+                c.move_resize(
+                    native,
+                    nx,
+                    ny,
+                    nw.max(1) as u32,
+                    nh.max(1) as u32,
+                    parent == 0,
+                );
                 if parent == 0 && style & WS_THICKFRAME == 0 {
                     c.set_resizable(native, false, nw, nh);
                 }
-            }
-            if parent == 0 && flags & 1 == 0 {
-                // A caption-less window covering the screen is a fullscreen window.
-                let (sw, sh) = crate::host::x11::screen_size().unwrap_or((0, 0));
-                let full = style & WS_CAPTION != WS_CAPTION
-                    && nx <= 0
-                    && ny <= 0
-                    && nx + nw >= sw
-                    && ny + nh >= sh;
-                c.set_state(native, full, c"_NET_WM_STATE_FULLSCREEN", None);
             }
             if flags & 4 == 0 && (after == 0 || after == usize::MAX) && flags & 0x10 == 0 {
                 c.raise_and_focus(native);
             }
         }
     }
+    update_fullscreen(hwnd);
     if flags & 0x40 != 0 {
         show_window(hwnd, if flags & 0x10 != 0 { 8 } else { 5 });
     } else if flags & 0x80 != 0 {
@@ -614,6 +672,7 @@ fn set_long(hwnd: usize, index: i32, value: isize, bytes: usize) -> isize {
             }
         }
     }
+    if index==-16 {update_fullscreen(hwnd);}
     error::set(0);
     old
 }
@@ -634,8 +693,9 @@ pub(crate) unsafe extern "win64" fn get_client_rect(hwnd: usize, rect: *mut Rect
     if rect.is_null() {
         return fail(87, 0);
     }
+    // The desktop window is the primary monitor, as on Windows (not the virtual screen).
     let size = if hwnd == DESKTOP {
-        crate::host::x11::screen_size()
+        crate::host::x11::primary_size()
     } else {
         state::with_window(hwnd, |w| {
             if w.minimized {
@@ -664,12 +724,12 @@ pub(crate) unsafe extern "win64" fn get_client_rect(hwnd: usize, rect: *mut Rect
 /// Screen rectangle of a window (its client area: the frame is the compositor's).
 pub(crate) fn screen_rect(hwnd: usize) -> Option<Rect> {
     if hwnd == DESKTOP {
-        let (w, h) = crate::host::x11::screen_size().unwrap_or((0, 0));
+        let (right, bottom) = crate::host::x11::primary_size()?;
         return Some(Rect {
             left: 0,
             top: 0,
-            right: w,
-            bottom: h,
+            right,
+            bottom,
         });
     }
     let (width, height, native, x, y) =
@@ -719,8 +779,20 @@ pub(crate) unsafe extern "win64" fn screen_to_client(hwnd: usize, point: *mut Po
         return fail(87, 0);
     }
     unsafe {
+        let before = (*point).clone();
         (*point).x -= r.left;
         (*point).y -= r.top;
+        static LAST: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(i64::MIN);
+        let packed = (before.x as u32 as u64 | ((before.y as u32 as u64) << 32)) as i64;
+        if LAST.swap(packed, Ordering::Relaxed) != packed {
+            input::trace_input(format_args!(
+                "ScreenToClient hwnd={hwnd:#x} {},{} -> {},{} rect={r:?}",
+                before.x,
+                before.y,
+                (*point).x,
+                (*point).y
+            ));
+        }
     }
     1
 }
@@ -842,6 +914,16 @@ pub(crate) extern "win64" fn get_window(hwnd: usize, command: u32) -> usize {
             .unwrap_or(0),
         _ => 0,
     }
+}
+pub(crate) extern "win64" fn get_top_window(hwnd: usize) -> usize {
+    if hwnd == 0 || hwnd == DESKTOP {
+        return windows()
+            .iter()
+            .find(|(_, w)| w.parent == 0 && w.native != 0)
+            .map(|(&h, _)| h)
+            .unwrap_or(0);
+    }
+    get_window(hwnd, 5)
 }
 type EnumProc = unsafe extern "win64" fn(usize, isize) -> i32;
 fn enumerate(list: Vec<usize>, callback: Option<EnumProc>, parameter: isize) -> i32 {
@@ -1052,11 +1134,10 @@ pub(crate) unsafe extern "win64" fn set_window_placement(
     1
 }
 pub(crate) extern "win64" fn update_window(hwnd: usize) -> i32 {
-    let pending = state::with_window(hwnd, |w| w.paint && w.visible);
+    let pending = state::with_window(hwnd, |w| w.paint);
     match pending {
         Ok(true) => {
             queue::call(hwnd, WM_PAINT, 0, 0);
-            let _ = state::with_window(hwnd, |w| w.paint = false);
             1
         }
         Ok(false) => 1,
@@ -1076,6 +1157,42 @@ pub(crate) extern "win64" fn invalidate_rect(hwnd: usize, _rect: *const Rect, _e
     })
     .unwrap_or_else(|e| fail(e, 0))
 }
+pub(crate) extern "win64" fn invalidate_rgn(hwnd: usize, _hrgn: usize, erase: i32) -> i32 {
+    invalidate_rect(hwnd, std::ptr::null(), erase)
+}
+pub(crate) unsafe extern "win64" fn get_update_rect(
+    hwnd: usize,
+    rect: *mut Rect,
+    _erase: i32,
+) -> i32 {
+    state::with_window(hwnd, |w| {
+        if w.paint {
+            if !rect.is_null() {
+                unsafe {
+                    *rect = Rect {
+                        left: 0,
+                        top: 0,
+                        right: w.width,
+                        bottom: w.height,
+                    };
+                }
+            }
+            1
+        } else {
+            0
+        }
+    })
+    .unwrap_or_else(|e| fail(e, 0))
+}
+pub(crate) extern "win64" fn set_window_display_affinity(hwnd: usize, affinity: u32) -> i32 {
+    if !state::exists(hwnd) {
+        return fail(1400, 0);
+    }
+    if affinity != 0 && affinity != 1 && affinity != 0x11 {
+        return fail(87, 0);
+    }
+    1
+}
 pub(crate) extern "win64" fn validate_rect(hwnd: usize, _rect: *const Rect) -> i32 {
     if hwnd == 0 {
         return 1;
@@ -1094,14 +1211,21 @@ pub(crate) extern "win64" fn redraw_window(
     _region: usize,
     flags: u32,
 ) -> i32 {
-    if flags & 1 != 0 {
+    if flags & 3 != 0 {
         invalidate_rect(hwnd, std::ptr::null(), 0);
     }
-    if flags & 8 != 0 {
+    if flags & 8 != 0 && _region == 0 {
         validate_rect(hwnd, std::ptr::null());
     }
-    if flags & 0x100 != 0 && hwnd != 0 {
-        update_window(hwnd);
+    if flags & 0x100 != 0 {
+        if hwnd != 0 {
+            update_window(hwnd);
+        } else {
+            let hwnds: Vec<usize> = state::windows().keys().copied().collect();
+            for h in hwnds {
+                update_window(h);
+            }
+        }
     }
     1
 }
@@ -1143,6 +1267,9 @@ pub(crate) extern "win64" fn def_window_proc_w(
     lparam: isize,
 ) -> isize {
     match message {
+        0x80 => super::icons::set(hwnd, wparam, lparam as usize), // WM_SETICON
+        0x7f => state::with_window(hwnd, |w| w.icons.get(wparam).copied().unwrap_or(0) as isize)
+            .unwrap_or(0), // WM_GETICON
         WM_NCCREATE => 1,
         WM_CLOSE => {
             destroy_window(hwnd);
@@ -1241,3 +1368,19 @@ pub(crate) extern "win64" fn call_window_proc_w(
         None => 0,
     }
 }
+
+/// Borderless windows covering a monitor use EWMH fullscreen on that monitor.
+/// This applies to every engine and uses the actual monitor layout, never a
+/// fixed resolution. Keep fixed-size hints out of the WM's fullscreen resize.
+pub(super) fn update_fullscreen(hwnd:usize){
+ let Ok((native,parent,style,x,y,w,h,old))=state::with_window(hwnd,|v|(v.native,v.parent,v.style,v.x,v.y,v.width,v.height,v.fullscreen_monitor)) else{return};
+ if native==0||parent!=0{return}
+ let all=crate::host::x11::monitors();
+ let monitor=crate::host::x11::monitors::select(&all,[x,y,x+w,y+h],0).filter(|m|style&WS_CAPTION!=WS_CAPTION&&x<=m.x&&y<=m.y&&x+w>=m.x+m.width&&y+h>=m.y+m.height);
+ if let Ok(c)=connection(){
+  c.set_resizable(native,monitor.is_some()||style&WS_THICKFRAME!=0,w,h);
+  let chosen=monitor.map(|m|m.id);
+  if chosen!=old{let _=state::with_window(hwnd,|v|v.fullscreen_monitor=chosen);c.fullscreen(native,monitor);}
+ }
+}
+
