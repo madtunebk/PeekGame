@@ -244,7 +244,9 @@ cargo build --release --offline
 
 `--relink` writes one non-PIE Linux executable named after the EXE (default
 directory `relinked/<exe-stem>/`, or `--output DIRECTORY`, which may already exist;
-an existing executable is never replaced). For a game that ships its own DLLs,
+an existing executable is never replaced). `--strip` links it with no symbol
+table (a few percent smaller; the import bindings and SEH data are already in the
+image, so nothing load-bearing is removed). For a game that ships its own DLLs,
 write it into the game's directory (`--output "$GAME_DIR"`), since it looks for
 them, and for its data, beside itself. The EXE itself needs no PE loader:
 

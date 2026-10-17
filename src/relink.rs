@@ -34,7 +34,7 @@ const HOST_LIBS: &[&str] = &[
     "-lc",
 ];
 
-pub fn build(exe: &Path, output: &Path) -> Result<()> {
+pub fn build(exe: &Path, output: &Path, strip: bool) -> Result<()> {
     let bytes = fs::read(exe).map_err(|e| e.to_string())?;
     let image = pe::parse(&bytes)?;
     image.check_layout(Some(bytes.len()))?;
@@ -118,6 +118,12 @@ pub fn build(exe: &Path, output: &Path) -> Result<()> {
         .arg(&assembly)
         .arg(&library)
         .arg("-Wl,-z,noexecstack");
+    if strip {
+        // Strip the ELF's symbol/debug tables at link time. The import bindings
+        // (peekgame.<dll>.<name>) and SEH data (the PE's own .pdata) are already
+        // baked into the image, so nothing load-bearing is removed.
+        link.arg("-s");
+    }
     for (index, section) in sections(&image) {
         link.arg(format!(
             "-Wl,--section-start={}={:#x}",

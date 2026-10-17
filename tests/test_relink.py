@@ -11,9 +11,10 @@ work.mkdir(parents=True)
 def mingw(source,output,*libs):
     subprocess.run(['x86_64-w64-mingw32-gcc','-nostdlib','-nostartfiles','-Wl,-e,entry','-Wl,--disable-dynamicbase',
         str(source),*libs,'-o',str(output)],check=True)
-def relink(exe,name):
+def relink(exe,name,strip=False):
     out=work/name
-    subprocess.run([str(runner),str(exe),'--relink','--output',str(out)],check=True,timeout=120,stdout=subprocess.DEVNULL)
+    cmd=[str(runner),str(exe),'--relink','--output',str(out)]+(['--strip'] if strip else [])
+    subprocess.run(cmd,check=True,timeout=120,stdout=subprocess.DEVNULL)
     return out/exe.stem
 try:
     # Dynamic lookups still go through the runtime registry; static imports are link-time.
@@ -32,6 +33,13 @@ try:
     symbols=subprocess.run(['nm',str(elf)],check=True,capture_output=True,text=True).stdout
     assert 'peekgame.kernel32.dll.GetProcAddress' in symbols,'IAT not bound through the linker'
     print('PASS: relinked ELF, PE at preferred base, link-time IAT, runtime dynamic lookup')
+    # --strip: no symbol table, but the link-time IAT and the program still work.
+    stripped=relink(exe,'stripped',strip=True)
+    assert stripped.read_bytes()[:4]==b'\x7fELF'
+    nm=subprocess.run(['nm',str(stripped)],capture_output=True,text=True)
+    assert 'no symbols' in (nm.stdout+nm.stderr).lower(),'stripped ELF still has a symbol table'
+    subprocess.run([str(stripped)],check=True,timeout=10,env=dict(os.environ,PEEKGAME_IMPORT_TRACE=str(work/'stripped.tsv')))
+    print('PASS: --strip relinked ELF has no symbols and still runs')
     # An import without an implementation links to a stop stub that names it.
     source=work/'missing.c'
     source.write_text('#include <windows.h>\nvoid entry(void){Beep(440,1);ExitProcess(0);}\n')

@@ -11,16 +11,18 @@ pub struct Options {
     pub args: Vec<String>,
     pub output: PathBuf,
     pub dll_dirs: Vec<PathBuf>,
+    pub strip: bool,
 }
 pub fn parse() -> Result<Option<Options>> {
     let args: Vec<_> = env::args_os().skip(1).collect();
     if args.is_empty() || args[0] == "--help" || args[0] == "-h" {
-        println!("Usage: peekgame --analyze GAME.exe [--output DIRECTORY] [--dll-dir DIRECTORY]...\nAlso accepts: peekgame GAME.exe --analyze\nPackage: peekgame GAME.exe --package --output NEW_DIRECTORY\nNative ELF: peekgame GAME.exe --relink [--output NEW_DIRECTORY]\nRun prototype: peekgame GAME.exe [--output DIRECTORY] --run [GAME ARGS]\nDefault: reports/GAME/imports.json and imports.txt. Analysis does not execute the PE. --run executes supported PE images.");
+        println!("Usage: peekgame --analyze GAME.exe [--output DIRECTORY] [--dll-dir DIRECTORY]...\nAlso accepts: peekgame GAME.exe --analyze\nPackage: peekgame GAME.exe --package --output NEW_DIRECTORY\nNative ELF: peekgame GAME.exe --relink [--strip] [--output NEW_DIRECTORY]\nRun prototype: peekgame GAME.exe [--output DIRECTORY] --run [GAME ARGS]\nDefault: reports/GAME/imports.json and imports.txt. Analysis does not execute the PE. --run executes supported PE images.");
         return Ok(None);
     }
     let mut run = false;
     let mut package = false;
     let mut relink = false;
+    let mut strip = false;
     let mut program_args = Vec::new();
     let (mut exe, mut output, mut dirs, mut flag, mut i) = (None, None, Vec::new(), false, 0);
     while i < args.len() {
@@ -37,6 +39,8 @@ pub fn parse() -> Result<Option<Options>> {
             relink = true;
         } else if args[i] == "--analyze" {
             flag = true;
+        } else if args[i] == "--strip" {
+            strip = true;
         } else if args[i] == "--output" || args[i] == "--dll-dir" {
             let option = args[i].clone();
             i += 1;
@@ -55,6 +59,9 @@ pub fn parse() -> Result<Option<Options>> {
     }
     if [flag, run, package, relink].iter().filter(|v| **v).count() != 1 {
         return Err("choose exactly one of --analyze, --run, --package, --relink".into());
+    }
+    if strip && !relink {
+        return Err("--strip is only valid with --relink".into());
     }
     let exe = fs::canonicalize(exe.ok_or("provide an EXE")?).map_err(|e| e.to_string())?;
     let dirs = dirs
@@ -82,5 +89,6 @@ pub fn parse() -> Result<Option<Options>> {
         args: program_args,
         output,
         dll_dirs: dirs,
+        strip,
     }))
 }

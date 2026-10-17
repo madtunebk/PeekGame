@@ -13,7 +13,7 @@ cargo build --release --offline        # builds target/release/peekgame + libgam
 python3 tools/stage_dist.py            # copy runner, Windows DLLs (DXVK) and libs into dist/
 ./dist/peekgame GAME.exe --run [ARGS]  # execute; args after --run go to the game
 ./dist/peekgame --analyze GAME.exe     # static import report -> reports/<stem>/imports.{json,txt}
-./dist/peekgame GAME.exe --relink [--output DIR]   # native ELF
+./dist/peekgame GAME.exe --relink [--strip] [--output DIR]  # native ELF (--strip: no symbols)
 ./dist/peekgame GAME.exe --package --output DIR
 
 cargo test --offline                   # Rust unit tests
