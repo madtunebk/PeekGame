@@ -65,26 +65,25 @@ pub(super) fn pump() {
         };
         let now = time::milliseconds();
         match event {
-            NativeEvent::Configure { width, height, .. } => {
-                let changed = state::with_window(hwnd, |w| {
-                    let expected = w.expected.take();
-                    if (w.width, w.height) == (width, height) || expected == Some((width, height)) {
-                        return None;
-                    }
-                    w.width = width;
-                    w.height = height;
-                    w.paint = true;
-                    if let Some(s) = &w.surface {
-                        s.raw.width.store(width.max(1) as u32, Ordering::Release);
-                        s.raw.height.store(height.max(1) as u32, Ordering::Release);
-                    }
-                    Some(if w.maximized { 2 } else { 0 })
+            NativeEvent::Xdnd {event,..} => super::ole_drop::enqueue(hwnd,event),
+            NativeEvent::Configure {width,height,x,y,..}=>{
+                let (x,y)=if state::with_window(hwnd,|w|w.parent==0).unwrap_or(false){state::client_origin(hwnd).unwrap_or((x,y))}else{(x,y)};
+                let changed=state::with_window(hwnd,|w|{
+                    let moved=(w.x,w.y)!=(x,y);w.x=x;w.y=y;
+                    let resized=(w.width,w.height)!=(width,height);w.expected=None;
+                    w.width=width;w.height=height;
+                    if resized{w.paint=true;if let Some(s)=&w.surface{s.raw.width.store(width.max(1) as u32,Ordering::Release);s.raw.height.store(height.max(1) as u32,Ordering::Release);}}
+                    (moved,resized,if w.maximized{2}else{0})
                 });
-                if let Ok(Some(kind)) = changed {
-                    post(
-                        hwnd,
-                        queue::message(hwnd, WM_SIZE, kind, pack(width, height)),
-                    );
+                if let Ok((moved,resized,_kind))=changed{
+                    if moved || resized {
+                        queue::notify_position(hwnd, WindowPos {
+                            window: hwnd, after: 0, x, y, width, height,
+                            // SWP_NOZORDER | SWP_NOACTIVATE, plus unchanged fields.
+                            flags: 4 | 0x10 | if moved { 0 } else { 2 } | if resized { 0 } else { 1 },
+                        });
+                    }
+                    if moved{super::windows::update_fullscreen(hwnd);}
                 }
             }
             NativeEvent::Close { .. } => post(hwnd, queue::message(hwnd, WM_CLOSE, 0, 0)),
@@ -311,6 +310,7 @@ pub(super) fn pump() {
                 let _ = state::with_window(hwnd, |w| w.paint = true);
             }
             NativeEvent::Map { mapped, .. } => {
+                super::input::trace_map(hwnd, mapped);
                 if mapped {
                     let restored = state::with_window(hwnd, |w| {
                         let was = w.minimized;

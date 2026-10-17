@@ -13,6 +13,7 @@ pub type Start = extern "win64" fn(usize) -> u32;
 struct Thread {
     id: u32,
     exit: Mutex<Option<u32>>,
+    times: Mutex<Option<[u64; 4]>>,
     changed: Condvar,
     /// CREATE_SUSPENDED: the start routine waits until ResumeThread clears this.
     suspended: Mutex<bool>,
@@ -45,6 +46,7 @@ fn record(id: u32) -> Arc<Thread> {
     Arc::new(Thread {
         id,
         exit: Mutex::new(None),
+        times: Mutex::new(None),
         changed: Condvar::new(),
         suspended: Mutex::new(false),
     })
@@ -107,15 +109,18 @@ pub unsafe extern "win64" fn create(
         error::set(87);
         return 0;
     };
+    let inherited_locale = crate::api::system::locale::thread::get();
     let (send, receive) = std::sync::mpsc::sync_channel(1);
     let mut builder = std::thread::Builder::new();
     if stack > 0 {
         builder = builder.stack_size(stack);
     }
     let spawned = builder.spawn(move || {
+        crate::api::system::locale::thread::inherit(inherited_locale);
         let thread = Arc::new(Thread {
             id: startup::thread_id(),
             exit: Mutex::new(None),
+            times: Mutex::new(None),
             changed: Condvar::new(),
             suspended: Mutex::new(suspended),
         });
@@ -135,8 +140,11 @@ pub unsafe extern "win64" fn create(
             }
         }
         let result = crate::host::thread_entry::run(start, parameter);
+        super::objects::thread_exited(std::thread::current().id());
+        crate::api::graphics::opengl::release_thread();
         super::iocp::release_worker();
         crate::host::thread_template::detach();
+        *thread.times.lock().unwrap() = super::thread_times::snapshot(thread.id);
         *thread.exit.lock().unwrap() = Some(result);
         thread.changed.notify_all();
         super::objects::changed();
@@ -299,4 +307,90 @@ pub extern "win64" fn resume(handle: usize) -> u32 {
     } else {
         0
     }
+}
+
+/// Saved exit accounting remains available through duplicated/open thread handles.
+pub(super) fn accounting(handle: usize) -> Option<[u64; 4]> {
+    let thread = if handle == usize::MAX - 1 {
+        current_thread()
+    } else {
+        threads().lock().unwrap().get(&handle).cloned()?
+    };
+    let saved = thread.times.lock().unwrap();
+    if let Some(times) = *saved {
+        return Some(times);
+    }
+    let mut times = super::thread_times::snapshot(thread.id)?;
+    times[1] = 0; // the exit FILETIME is undefined while running; choose zero.
+    Some(times)
+}
+
+pub unsafe extern "win64" fn convert_thread_to_fiber(param: usize) -> usize {
+    unsafe { convert_thread_to_fiber_ex(param, 0) }
+}
+
+pub unsafe extern "win64" fn convert_thread_to_fiber_ex(param: usize, _flags: u32) -> usize {
+    let existing = crate::host::teb::get_fiber_data();
+    if existing != 0 {
+        crate::api::system::error::set(0x5002); // ERROR_ALREADY_FIBER
+        return 0;
+    }
+    let fiber = Box::into_raw(Box::new(param)) as usize;
+    crate::host::teb::set_fiber_data(fiber);
+    fiber
+}
+
+pub unsafe extern "win64" fn convert_fiber_to_thread() -> i32 {
+    let existing = crate::host::teb::get_fiber_data();
+    if existing == 0 {
+        crate::api::system::error::set(0x5003); // ERROR_NOT_FIBER
+        return 0;
+    }
+    drop(unsafe { Box::from_raw(existing as *mut usize) });
+    crate::host::teb::set_fiber_data(0);
+    1
+}
+
+/// FlushProcessWriteBuffers: every CPU running this process passes a full barrier
+/// (Windows uses an IPI; .NET/Mono GCs and asymmetric locks rely on it). Linux
+/// membarrier(PRIVATE_EXPEDITED) is the same operation; GLOBAL is the slower fallback,
+/// and a local fence is all that is left without membarrier.
+pub extern "win64" fn flush_process_write_buffers() {
+    unsafe extern "C" {
+        fn syscall(number: i64, ...) -> i64;
+    }
+    const SYS_MEMBARRIER: i64 = 324;
+    const QUERY: i64 = 0;
+    const GLOBAL: i64 = 1;
+    const PRIVATE_EXPEDITED: i64 = 8;
+    const REGISTER_PRIVATE_EXPEDITED: i64 = 16;
+    static MODE: std::sync::OnceLock<i64> = std::sync::OnceLock::new();
+    let mode = *MODE.get_or_init(|| unsafe {
+        let supported = syscall(SYS_MEMBARRIER, QUERY, 0, 0);
+        if supported > 0
+            && supported & PRIVATE_EXPEDITED != 0
+            && syscall(SYS_MEMBARRIER, REGISTER_PRIVATE_EXPEDITED, 0, 0) == 0
+        {
+            PRIVATE_EXPEDITED
+        } else if supported > 0 && supported & GLOBAL != 0 {
+            GLOBAL
+        } else {
+            0
+        }
+    });
+    std::sync::atomic::fence(Ordering::SeqCst);
+    if mode != 0 {
+        unsafe { syscall(SYS_MEMBARRIER, mode, 0, 0) };
+    }
+}
+
+pub extern "win64" fn current_processor_number() -> u32 {
+    unsafe extern "C" {
+        fn syscall(number: i64, ...) -> i64;
+    }
+    let mut cpu: u32 = 0;
+    unsafe {
+        syscall(309, &mut cpu as *mut u32, std::ptr::null_mut::<c_void>(), std::ptr::null_mut::<c_void>());
+    }
+    cpu
 }

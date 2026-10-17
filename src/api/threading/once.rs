@@ -60,6 +60,11 @@ pub unsafe extern "win64" fn begin(
     let mut guard = RECORDS.lock().unwrap();
     loop {
         let records = guard.get_or_insert_with(HashMap::new);
+        // The INIT_ONCE word is the truth: a zeroed one at an address whose record says
+        // Complete is new memory (a stack INIT_ONCE, or freed and reused), not done.
+        if unsafe { *once } == 0 && records.get(&key).is_some_and(|r| r.state == State::Complete) {
+            records.remove(&key);
+        }
         let state = records.get(&key).map_or(State::Uninitialized, |r| r.state);
         match state {
             State::Complete => {

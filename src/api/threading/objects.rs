@@ -14,6 +14,7 @@ use std::{
     time::{Duration, Instant},
 };
 const WAIT_OBJECT_0: u32 = 0;
+const WAIT_ABANDONED_0: u32 = 0x80;
 const WAIT_TIMEOUT: u32 = 258;
 const WAIT_FAILED: u32 = u32::MAX;
 const ERROR_ALREADY_EXISTS: u32 = 183;
@@ -22,7 +23,9 @@ const ERROR_NOT_OWNER: u32 = 288;
 
 enum Object {
     Semaphore { count: i32, maximum: i32 },
-    Mutex { owner: Option<ThreadId>, depth: u32 },
+    /// `abandoned`: the owner ended without releasing it; the next acquirer is told
+    /// with WAIT_ABANDONED.
+    Mutex { owner: Option<ThreadId>, depth: u32, abandoned: bool },
 }
 struct Named {
     name: Option<String>,
@@ -45,8 +48,14 @@ fn create(name: Option<String>, object: Object) -> usize {
     with(|table| {
         if let Some(name) = &name {
             if let Some((&handle, _)) = table.iter().find(|(_, o)| o.name.as_ref() == Some(name)) {
+                let alias = NEXT.fetch_add(16, Ordering::Relaxed);
+                ALIASES
+                    .lock()
+                    .unwrap()
+                    .get_or_insert_with(HashMap::new)
+                    .insert(alias, handle);
                 error::set(ERROR_ALREADY_EXISTS);
-                return handle;
+                return alias;
             }
         }
         error::set(0);
@@ -66,29 +75,84 @@ fn resolve(handle: usize) -> usize {
         .unwrap_or(handle)
 }
 pub fn duplicate(handle: usize) -> Option<usize> {
-    let original = resolve(handle);
-    if !with(|t| t.contains_key(&original)) {
-        return None;
-    }
-    let alias = NEXT.fetch_add(16, Ordering::Relaxed);
-    ALIASES
-        .lock()
-        .unwrap()
-        .get_or_insert_with(HashMap::new)
-        .insert(alias, original);
-    Some(alias)
+    with(|table| {
+        let mut aliases = ALIASES.lock().unwrap();
+        let aliases = aliases.get_or_insert_with(HashMap::new);
+        let original = aliases.get(&handle).copied().unwrap_or(handle);
+        if !table.contains_key(&original) {
+            return None;
+        }
+        let alias = NEXT.fetch_add(16, Ordering::Relaxed);
+        aliases.insert(alias, original);
+        Some(alias)
+    })
 }
+
 pub fn close(handle: usize) -> bool {
-    if ALIASES
-        .lock()
-        .unwrap()
-        .as_mut()
-        .and_then(|a| a.remove(&handle))
-        .is_some()
-    {
-        return true;
-    }
-    with(|t| t.remove(&handle)).is_some()
+    with(|table| {
+        let mut aliases = ALIASES.lock().unwrap();
+        let aliases = aliases.get_or_insert_with(HashMap::new);
+        if let Some(&original) = aliases.get(&handle) {
+            if original == 0 {
+                return false;
+            }
+            aliases.remove(&handle);
+            if !aliases.values().any(|&value| value == original)
+                && aliases.get(&original) == Some(&0)
+            {
+                aliases.remove(&original);
+                table.remove(&original);
+            }
+            return true;
+        }
+        if !table.contains_key(&handle) {
+            return false;
+        }
+        if aliases.values().any(|&value| value == handle) {
+            aliases.insert(handle, 0);
+        } else {
+            table.remove(&handle);
+        }
+        true
+    })
+}
+/// Names are process-local, shared with CreateMutex. Open returns an independent
+/// handle: closing the creating handle must not destroy an opened mutex.
+pub unsafe extern "win64" fn open_mutex_w(_access: u32, _inherit: i32, name: *const u16) -> usize {
+    let Some(name) = (unsafe { text::string(name) }) else {
+        error::set(87);
+        return 0;
+    };
+    with(|table| {
+        let found = table
+            .iter()
+            .find(|(_, entry)| entry.name.as_deref() == Some(name.as_str()));
+        match found {
+            Some((
+                &original,
+                Named {
+                    object: Object::Mutex { .. },
+                    ..
+                },
+            )) => {
+                let handle = NEXT.fetch_add(16, Ordering::Relaxed);
+                ALIASES
+                    .lock()
+                    .unwrap()
+                    .get_or_insert_with(HashMap::new)
+                    .insert(handle, original);
+                handle
+            }
+            Some(_) => {
+                error::set(6);
+                0
+            }
+            None => {
+                error::set(2);
+                0
+            }
+        }
+    })
 }
 
 pub unsafe extern "win64" fn create_semaphore_ex_w(
@@ -161,6 +225,7 @@ fn create_mutex(owned: bool, name: Option<String>) -> usize {
         Object::Mutex {
             owner,
             depth: owned as u32,
+            abandoned: false,
         },
     )
 }
@@ -187,7 +252,7 @@ pub extern "win64" fn release_mutex(handle: usize) -> i32 {
     let me = std::thread::current().id();
     let result = with(
         |t| match t.get_mut(&resolve(handle)).map(|n| &mut n.object) {
-            Some(Object::Mutex { owner, depth }) if *owner == Some(me) => {
+            Some(Object::Mutex { owner, depth, .. }) if *owner == Some(me) => {
                 *depth -= 1;
                 if *depth == 0 {
                     *owner = None;
@@ -250,16 +315,52 @@ fn check(handle: usize, take: bool) -> Option<bool> {
                 }
                 free
             }
-            Object::Mutex { owner, depth } => {
+            Object::Mutex { owner, depth, abandoned } => {
                 let free = owner.is_none_or(|o| o == me);
                 if free && take {
                     *owner = Some(me);
                     *depth += 1;
+                    if std::mem::take(abandoned) {
+                        TOOK_ABANDONED.with(|t| t.set(true));
+                    }
                 }
                 free
             }
         })
     })
+}
+thread_local! {
+    /// Set when this thread's last acquisition took an abandoned mutex.
+    static TOOK_ABANDONED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+/// WAIT_OBJECT_0 + i becomes WAIT_ABANDONED_0 + i when the acquisition took an
+/// abandoned mutex.
+fn abandoned_result(result: u32) -> u32 {
+    if result < 64 && TOOK_ABANDONED.with(|t| t.replace(false)) {
+        WAIT_ABANDONED_0 + result
+    } else {
+        result
+    }
+}
+/// A Windows thread ended: every mutex it still owns is released as abandoned.
+pub fn thread_exited(thread: ThreadId) {
+    let released = with(|table| {
+        let mut any = false;
+        for named in table.values_mut() {
+            if let Object::Mutex { owner, depth, abandoned } = &mut named.object {
+                if *owner == Some(thread) {
+                    *owner = None;
+                    *depth = 0;
+                    *abandoned = true;
+                    any = true;
+                }
+            }
+        }
+        any
+    });
+    if released {
+        changed();
+    }
 }
 /// Waits until `ready` (re-evaluated after every change) or the timeout.
 fn wait_until(ms: u32, mut ready: impl FnMut() -> Option<u32>) -> u32 {
@@ -312,12 +413,15 @@ pub fn wait_single_alertable(handle: usize, ms: u32) -> u32 {
         error::set(6);
         return WAIT_FAILED;
     }
-    wait_alertable(ms, || check(handle, true)?.then_some(WAIT_OBJECT_0))
+    TOOK_ABANDONED.with(|t| t.set(false));
+    abandoned_result(wait_alertable(ms, || check(handle, true)?.then_some(WAIT_OBJECT_0)))
 }
 /// WaitForSingleObject for semaphores and mutexes; None if not one.
 pub fn wait_single(handle: usize, ms: u32) -> Option<u32> {
-    with(|t| t.contains_key(&resolve(handle)))
-        .then(|| wait_until(ms, || check(handle, true)?.then_some(WAIT_OBJECT_0)))
+    with(|t| t.contains_key(&resolve(handle))).then(|| {
+        TOOK_ABANDONED.with(|t| t.set(false));
+        abandoned_result(wait_until(ms, || check(handle, true)?.then_some(WAIT_OBJECT_0)))
+    })
 }
 pub unsafe extern "win64" fn wait_multiple(
     count: u32,
@@ -359,9 +463,10 @@ pub unsafe extern "win64" fn wait_multiple_ex(
                 .map(|i| WAIT_OBJECT_0 + i as u32)
         }
     };
-    if alertable != 0 {
+    TOOK_ABANDONED.with(|t| t.set(false));
+    abandoned_result(if alertable != 0 {
         wait_alertable(ms, ready)
     } else {
         wait_until(ms, ready)
-    }
+    })
 }

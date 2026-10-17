@@ -87,9 +87,10 @@ pub(crate) extern "win64" fn window_from_dc(dc: usize) -> usize {
 }
 /// GetDeviceCaps for the screen: sizes, 32 bits per pixel, 96 DPI, 60 Hz.
 pub(crate) extern "win64" fn get_device_caps(_dc: usize, index: i32) -> i32 {
-    let (w, h) = crate::host::x11::screen_size().unwrap_or((1920, 1080));
+    let (w, h) = crate::host::x11::primary_size().unwrap_or((1920, 1080));
     match index {
-        2 => 0x0100,        // TECHNOLOGY: DT_RASDISPLAY 1... DRIVERVERSION 0
+        0 => 0x0100,        // DRIVERVERSION
+        2 => 1,             // TECHNOLOGY: DT_RASDISPLAY
         4 => w * 254 / 960, // HORZSIZE (mm at 96 DPI)
         6 => h * 254 / 960, // VERTSIZE
         8 | 118 => w,       // HORZRES, DESKTOPHORZRES
@@ -101,6 +102,85 @@ pub(crate) extern "win64" fn get_device_caps(_dc: usize, index: i32) -> i32 {
         116 => 60,          // VREFRESH
         _ => 0,
     }
+}
+pub(crate) unsafe extern "win64" fn get_text_charset_info(
+    _dc: usize,
+    sig: *mut u32,
+    _flags: u32,
+) -> i32 {
+    if !sig.is_null() {
+        unsafe {
+            sig.write_bytes(0, 6);
+            sig.write_unaligned(1);
+            sig.add(4).write_unaligned(1);
+        }
+    }
+    0 // ANSI_CHARSET
+}
+type FontEnumProcA = unsafe extern "win64" fn(*const u8, *const u8, u32, isize) -> i32;
+pub(crate) unsafe extern "win64" fn enum_font_families_a(
+    _dc: usize,
+    family: *const i8,
+    proc: Option<FontEnumProcA>,
+    lparam: isize,
+) -> i32 {
+    let Some(proc) = proc else {
+        return 1;
+    };
+    let mut elf = [0u8; 348]; // ENUMLOGFONTEXA (LOGFONTA 60 + FullName 64 + Style 32 + Script 32 + ...)
+    let mut tm = [0u8; 76];   // NEWTEXTMETRICA
+    let name = if family.is_null() {
+        "Segoe UI".to_owned()
+    } else {
+        unsafe { strings::narrow(family) }
+            .ok()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "Segoe UI".to_owned())
+    };
+    let bytes = name.as_bytes();
+    let n = bytes.len().min(31);
+    unsafe {
+        elf.as_mut_ptr().cast::<i32>().write_unaligned(16); // lfHeight
+        elf.as_mut_ptr().add(16).cast::<i32>().write_unaligned(400); // lfWeight
+        elf[23] = 0; // ANSI_CHARSET
+        elf[28..28 + n].copy_from_slice(&bytes[..n]);
+        elf[60..60 + n].copy_from_slice(&bytes[..n]);
+        elf[124..124 + 7].copy_from_slice(b"Regular");
+        tm.as_mut_ptr().cast::<i32>().write_unaligned(16); // tmHeight
+        tm.as_mut_ptr().add(4).cast::<i32>().write_unaligned(13); // tmAscent
+        tm.as_mut_ptr().add(8).cast::<i32>().write_unaligned(3); // tmDescent
+        tm.as_mut_ptr().add(20).cast::<i32>().write_unaligned(8); // tmAveCharWidth
+        tm.as_mut_ptr().add(24).cast::<i32>().write_unaligned(16); // tmMaxCharWidth
+        tm.as_mut_ptr().add(28).cast::<i32>().write_unaligned(400); // tmWeight
+        tm[44] = 0x20; // tmFirstChar
+        tm[45] = 0x7e; // tmLastChar
+        tm[46] = 0x20; // tmDefaultChar
+        tm[47] = 0x20; // tmBreakChar
+        proc(elf.as_ptr(), tm.as_ptr(), 4, lparam) // 4 = TRUETYPE_FONTTYPE
+    }
+}
+pub(crate) unsafe extern "win64" fn get_text_metrics_a(_dc: usize, out: *mut u8) -> i32 {
+    if out.is_null() {
+        return 0;
+    }
+    unsafe {
+        out.write_bytes(0, 56);
+        out.cast::<i32>().write_unaligned(16); // tmHeight
+        out.add(4).cast::<i32>().write_unaligned(13); // tmAscent
+        out.add(8).cast::<i32>().write_unaligned(3); // tmDescent
+        out.add(12).cast::<i32>().write_unaligned(3); // tmInternalLeading
+        out.add(20).cast::<i32>().write_unaligned(7); // tmAveCharWidth
+        out.add(24).cast::<i32>().write_unaligned(14); // tmMaxCharWidth
+        out.add(28).cast::<i32>().write_unaligned(400); // tmWeight
+        out.add(36).cast::<i32>().write_unaligned(96); // tmDigitizedAspectX
+        out.add(40).cast::<i32>().write_unaligned(96); // tmDigitizedAspectY
+        *out.add(44) = 0x20; // tmFirstChar
+        *out.add(45) = 0x7e; // tmLastChar
+        *out.add(46) = 0x20; // tmDefaultChar
+        *out.add(47) = 0x20; // tmBreakChar
+        *out.add(51) = 0x04; // TMPF_TRUETYPE
+    }
+    1
 }
 
 // ---- clipboard (this process) ---------------------------------------------------------
@@ -149,7 +229,10 @@ pub(crate) extern "win64" fn is_clipboard_format_available(format: u32) -> i32 {
     clipboard(|c| c.data.contains_key(&format) as i32)
 }
 pub(crate) unsafe extern "win64" fn register_clipboard_format_w(name: *const u16) -> u32 {
-    queue::register_message(&unsafe { strings::wide(name) }.unwrap_or_default())
+    unsafe { register_window_message_w(name) }
+}
+pub(crate) unsafe extern "win64" fn register_clipboard_format_a(name: *const i8) -> u32 {
+    unsafe { register_window_message_a(name) }
 }
 pub(crate) unsafe extern "win64" fn register_window_message_w(name: *const u16) -> u32 {
     match unsafe { strings::wide(name) } {
@@ -165,16 +248,69 @@ pub(crate) unsafe extern "win64" fn register_window_message_a(name: *const i8) -
 }
 
 // ---- message boxes and dialogs ------------------------------------------------------------
-/// MessageBox: the text goes to stderr and the default button answers (IDOK, or
-/// IDYES/IDRETRY for those button sets).
+/// MessageBox: a real modal dialog through zenity, returning the button the user
+/// pressed (closing the dialog is Cancel, or the last button). The text is also
+/// logged. Without zenity or a display the call fails: 0 with ERROR_NOT_SUPPORTED.
 fn message_box(caption: &str, text: &str, kind: u32) -> i32 {
+    const IDOK: i32 = 1;
+    const IDCANCEL: i32 = 2;
+    const IDABORT: i32 = 3;
+    const IDRETRY: i32 = 4;
+    const IDIGNORE: i32 = 5;
+    const IDYES: i32 = 6;
+    const IDNO: i32 = 7;
+    const IDTRYAGAIN: i32 = 10;
+    const IDCONTINUE: i32 = 11;
     eprintln!("MessageBox [{caption}]: {text}");
-    match kind & 0xf {
-        2 => 4,     // MB_ABORTRETRYIGNORE: IDRETRY
-        3 | 4 => 6, // YESNO(CANCEL): IDYES
-        5 => 4,     // RETRYCANCEL: IDRETRY
-        6 => 10,    // CANCELTRYCONTINUE: IDTRYAGAIN
-        _ => 1,     // IDOK
+    // (first button, middle button, last button); a closed dialog answers with the last.
+    let buttons: &[(&str, i32)] = match kind & 0xf {
+        0 => &[("OK", IDOK)],
+        1 => &[("OK", IDOK), ("Cancel", IDCANCEL)],
+        2 => &[("Abort", IDABORT), ("Retry", IDRETRY), ("Ignore", IDIGNORE)],
+        3 => &[("Yes", IDYES), ("No", IDNO), ("Cancel", IDCANCEL)],
+        4 => &[("Yes", IDYES), ("No", IDNO)],
+        5 => &[("Retry", IDRETRY), ("Cancel", IDCANCEL)],
+        6 => &[("Continue", IDCONTINUE), ("Try Again", IDTRYAGAIN), ("Cancel", IDCANCEL)],
+        _ => return fail(87, 0),
+    };
+    if std::env::var_os("DISPLAY").is_none() && std::env::var_os("WAYLAND_DISPLAY").is_none() {
+        return fail(50, 0);
+    }
+    let mut command = std::process::Command::new("zenity");
+    command.arg(format!("--title={caption}")).arg(format!("--text={text}")).arg("--no-markup");
+    if buttons.len() == 1 {
+        command.arg(match kind & 0xf0 {
+            0x10 => "--error",
+            0x30 => "--warning",
+            _ => "--info",
+        });
+    } else {
+        let last = buttons[buttons.len() - 1].0;
+        command.arg("--question").arg(format!("--ok-label={}", buttons[0].0)).arg(format!("--cancel-label={last}"));
+        if buttons.len() == 3 {
+            command.arg(format!("--extra-button={}", buttons[1].0));
+        }
+    }
+    let output = match command.output() {
+        Ok(output) => output,
+        Err(_) => return fail(50, 0),
+    };
+    // GTK reports a display it cannot open on stderr and exits 1, like "Cancel".
+    if String::from_utf8_lossy(&output.stderr).contains("cannot open display") {
+        return fail(50, 0);
+    }
+    if buttons.len() == 1 {
+        return IDOK;
+    }
+    let pressed = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if output.status.code() == Some(0) {
+        buttons[0].1
+    } else if buttons.len() == 3 && pressed == buttons[1].0 {
+        buttons[1].1
+    } else if output.status.code() == Some(1) {
+        buttons[buttons.len() - 1].1
+    } else {
+        fail(50, 0) // zenity could not show the dialog (no display)
     }
 }
 pub(crate) unsafe extern "win64" fn message_box_w(
@@ -354,6 +490,12 @@ pub(crate) unsafe extern "win64" fn dwm_is_composition_enabled(enabled: *mut i32
 pub(crate) extern "win64" fn dwm_flush() -> i32 {
     0
 }
+pub(crate) unsafe extern "win64" fn dwm_enable_blur_behind_window(hwnd: usize, _blur: *const std::ffi::c_void) -> i32 {
+    if !state::exists(hwnd) {
+        return 0x8007_0578u32 as i32; // HRESULT_FROM_WIN32(ERROR_INVALID_WINDOW_HANDLE)
+    }
+    0
+}
 
 // ---- DPI: physical pixels at 96 DPI ---------------------------------------------------------
 pub(crate) extern "win64" fn get_dpi_for_window(hwnd: usize) -> u32 {
@@ -432,9 +574,99 @@ pub(crate) extern "win64" fn unregister_touch_window(_hwnd: usize) -> i32 {
 pub(crate) extern "win64" fn get_thread_desktop(_thread: u32) -> usize {
     0x000a_0010
 }
+pub(crate) unsafe extern "win64" fn create_desktop_w(
+    _desktop: *const u16,
+    _device: *const u16,
+    _devmode: *const std::ffi::c_void,
+    _flags: u32,
+    _access: u32,
+    _sa: *const std::ffi::c_void,
+) -> usize {
+    0x000a_0010
+}
+pub(crate) unsafe extern "win64" fn create_desktop_a(
+    _desktop: *const std::ffi::c_char,
+    _device: *const std::ffi::c_char,
+    _devmode: *const std::ffi::c_void,
+    _flags: u32,
+    _access: u32,
+    _sa: *const std::ffi::c_void,
+) -> usize {
+    0x000a_0010
+}
+pub(crate) unsafe extern "win64" fn open_desktop_w(
+    _desktop: *const u16,
+    _flags: u32,
+    _inherit: i32,
+    _access: u32,
+) -> usize {
+    0x000a_0010
+}
+pub(crate) unsafe extern "win64" fn open_desktop_a(
+    _desktop: *const std::ffi::c_char,
+    _flags: u32,
+    _inherit: i32,
+    _access: u32,
+) -> usize {
+    0x000a_0010
+}
+pub(crate) extern "win64" fn set_thread_desktop(_desktop: usize) -> i32 {
+    1
+}
+pub(crate) extern "win64" fn close_desktop(_desktop: usize) -> i32 {
+    1
+}
+/// GetProcessWindowStation: the interactive window station, WinSta0.
+const WINDOW_STATION: usize = 0x000a_0020;
+pub(crate) extern "win64" fn get_process_window_station() -> usize {
+    WINDOW_STATION
+}
+pub(crate) unsafe extern "win64" fn create_window_station_w(
+    _winsta: *const u16,
+    _flags: u32,
+    _access: u32,
+    _sa: *const std::ffi::c_void,
+) -> usize {
+    WINDOW_STATION
+}
+pub(crate) unsafe extern "win64" fn create_window_station_a(
+    _winsta: *const std::ffi::c_char,
+    _flags: u32,
+    _access: u32,
+    _sa: *const std::ffi::c_void,
+) -> usize {
+    WINDOW_STATION
+}
+pub(crate) unsafe extern "win64" fn open_window_station_w(
+    _winsta: *const u16,
+    _inherit: i32,
+    _access: u32,
+) -> usize {
+    WINDOW_STATION
+}
+pub(crate) unsafe extern "win64" fn open_window_station_a(
+    _winsta: *const std::ffi::c_char,
+    _inherit: i32,
+    _access: u32,
+) -> usize {
+    WINDOW_STATION
+}
+pub(crate) extern "win64" fn set_process_window_station(_winsta: usize) -> i32 {
+    1
+}
+pub(crate) extern "win64" fn close_window_station(_winsta: usize) -> i32 {
+    1
+}
+fn object_name(object: usize) -> &'static str {
+    if object == WINDOW_STATION {
+        "WinSta0"
+    } else {
+        "Default"
+    }
+}
 /// GetUserObjectInformationA: UOI_FLAGS (1: visible window station), UOI_NAME (2).
 pub(crate) unsafe extern "win64" fn get_user_object_information_a(
-    _object: usize,
+    object: usize,
     index: i32,
     out: *mut u8,
     size: u32,
@@ -442,7 +674,7 @@ pub(crate) unsafe extern "win64" fn get_user_object_information_a(
 ) -> i32 {
     let value: Vec<u8> = match index {
         1 => [0u32, 0, 1].iter().flat_map(|v| v.to_le_bytes()).collect(),
-        2 => b"Default\0".to_vec(),
+        2 => format!("{}\0", object_name(object)).into_bytes(),
         _ => return fail(87, 0),
     };
     if !needed.is_null() {
@@ -464,7 +696,7 @@ pub(crate) unsafe extern "win64" fn get_user_object_information_w(
     if index != 2 {
         return unsafe { get_user_object_information_a(object, index, out, size, needed) };
     }
-    let value: Vec<u8> = "Default\0"
+    let value: Vec<u8> = format!("{}\0", object_name(object))
         .encode_utf16()
         .flat_map(|u| u.to_le_bytes())
         .collect();
@@ -493,10 +725,26 @@ pub(crate) extern "win64" fn register_device_notification_w(
 pub(crate) extern "win64" fn unregister_device_notification(_handle: usize) -> i32 {
     1
 }
+pub(crate) extern "win64" fn register_suspend_resume_notification(
+    _recipient: usize,
+    _flags: u32,
+) -> usize {
+    static NEXT: AtomicUsize = AtomicUsize::new(0x000b_8000);
+    NEXT.fetch_add(4, Ordering::Relaxed)
+}
+pub(crate) extern "win64" fn unregister_suspend_resume_notification(_handle: usize) -> i32 {
+    1
+}
 /// Icons: handles that are never drawn (the compositor shows the program's icon
 /// from its desktop entry, if any).
-pub(crate) extern "win64" fn load_icon(_instance: usize, _name: usize) -> usize {
+/// LoadIcon: the system icons (no module, IDI_APPLICATION..IDI_SHIELD) and icons
+/// named in a program module are icon tokens; any other system name is
+/// ERROR_RESOURCE_NAME_NOT_FOUND. Program icon resources are not checked or decoded.
+pub(crate) extern "win64" fn load_icon(instance: usize, name: usize) -> usize {
     static NEXT: AtomicUsize = AtomicUsize::new(0x000c_0000);
+    if name == 0 || (instance == 0 && !(32512..=32518).contains(&name)) {
+        return fail(1814, 0);
+    }
     NEXT.fetch_add(4, Ordering::Relaxed)
 }
 /// LoadImageW: system cursors (IMAGE_CURSOR 2 with OIC/OCR ids and no module) are
@@ -516,9 +764,6 @@ pub(crate) extern "win64" fn load_image_w(
         return 0x000d_0000; // a bitmap handle nothing draws
     }
     load_icon(instance, name as usize)
-}
-pub(crate) extern "win64" fn destroy_icon(_icon: usize) -> i32 {
-    1
 }
 pub(crate) extern "win64" fn create_icon_indirect(_info: usize) -> usize {
     load_icon(0, 0)
@@ -675,3 +920,62 @@ pub(crate) extern "win64" fn query_display_config(
 pub(crate) extern "win64" fn display_config_get_device_info(_packet: usize) -> i32 {
     50
 }
+
+/// All current runtime windows use physical pixels at 96 DPI: both directions
+/// are identity transforms, with the Windows HWND/POINT validity checks.
+pub(crate) extern "win64" fn per_monitor_point(
+    hwnd: usize,
+    point: *mut super::types::Point,
+) -> i32 {
+    if point.is_null() {
+        return fail(87, 0);
+    }
+    if !state::exists(hwnd) {
+        return fail(1400, 0);
+    }
+    1
+}
+/// Standard Windows 10/11 default system colors (0x00bbggrr) for COLOR_* indices 0..=30.
+pub(crate) extern "win64" fn get_sys_color(index: i32) -> u32 {
+    match index {
+        0 => 0x00c8c8c8,  // COLOR_SCROLLBAR
+        1 => 0x00000000,  // COLOR_BACKGROUND
+        2 => 0x00d1b499,  // COLOR_ACTIVECAPTION
+        3 => 0x00dbcdbf,  // COLOR_INACTIVECAPTION
+        4 => 0x00f0f0f0,  // COLOR_MENU
+        5 => 0x00ffffff,  // COLOR_WINDOW
+        6 => 0x00646464,  // COLOR_WINDOWFRAME
+        7 => 0x00000000,  // COLOR_MENUTEXT
+        8 => 0x00000000,  // COLOR_WINDOWTEXT
+        9 => 0x00000000,  // COLOR_CAPTIONTEXT
+        10 => 0x00b4b4b4, // COLOR_ACTIVEBORDER
+        11 => 0x00fcf7f4, // COLOR_INACTIVEBORDER
+        12 => 0x00abaaab, // COLOR_APPWORKSPACE
+        13 => 0x00d77800, // COLOR_HIGHLIGHT
+        14 => 0x00ffffff, // COLOR_HIGHLIGHTTEXT
+        15 => 0x00f0f0f0, // COLOR_BTNFACE
+        16 => 0x00a0a0a0, // COLOR_BTNSHADOW
+        17 => 0x006d6d6d, // COLOR_GRAYTEXT
+        18 => 0x00000000, // COLOR_BTNTEXT
+        19 => 0x00000000, // COLOR_INACTIVECAPTIONTEXT
+        20 => 0x00ffffff, // COLOR_BTNHIGHLIGHT
+        21 => 0x00696969, // COLOR_3DDKSHADOW
+        22 => 0x00e3e3e3, // COLOR_3DLIGHT
+        23 => 0x00000000, // COLOR_INFOTEXT
+        24 => 0x00e1ffff, // COLOR_INFOBK
+        26 => 0x00cc6600, // COLOR_HOTLIGHT
+        27 => 0x00ead1b9, // COLOR_GRADIENTACTIVECAPTION
+        28 => 0x00f2e4d7, // COLOR_GRADIENTINACTIVECAPTION
+        29 => 0x00d77800, // COLOR_MENUHILIGHT
+        30 => 0x00f0f0f0, // COLOR_MENUBAR
+        _ => 0,
+    }
+}
+pub(crate) extern "win64" fn get_sys_color_brush(index: i32) -> usize {
+    if (0..=30).contains(&index) {
+        0x000e_0000 + index as usize
+    } else {
+        0
+    }
+}
+

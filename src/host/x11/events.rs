@@ -2,8 +2,14 @@ use super::{ffi, keyboard, types, Connection};
 /// What the X server reported, in the terms USER32 needs.
 #[derive(Clone, Copy)]
 pub(crate) enum NativeEvent {
+    Xdnd {
+        window: u64,
+        event: super::xdnd::Event,
+    },
     Configure {
         window: u64,
+        x: i32,
+        y: i32,
         width: i32,
         height: i32,
     },
@@ -65,7 +71,8 @@ pub(crate) enum NativeEvent {
 impl NativeEvent {
     pub(crate) fn window(&self) -> u64 {
         match *self {
-            NativeEvent::Configure { window, .. }
+            NativeEvent::Xdnd { window, .. }
+            | NativeEvent::Configure { window, .. }
             | NativeEvent::Close { window }
             | NativeEvent::Key { window, .. }
             | NativeEvent::Button { window, .. }
@@ -83,6 +90,7 @@ impl Connection {
     /// Drains the events the server has sent.
     pub(crate) fn events(&self) -> Vec<NativeEvent> {
         let mut result = Vec::new();
+        let (ox, oy) = super::monitors::origin(self);
         unsafe {
             while ffi::XPending(self.display) > 0 {
                 let mut event = types::Event { pad: [0; 24] };
@@ -92,12 +100,21 @@ impl Connection {
                         let e = event.configure;
                         result.push(NativeEvent::Configure {
                             window: e.window,
+                            x: e.x,
+                            y: e.y,
                             width: e.width,
                             height: e.height,
                         });
                     }
                     33 => {
                         let e = event.client;
+                        if let Some(event) = self.xdnd_client(e) {
+                            result.push(NativeEvent::Xdnd {
+                                window: e.base.window,
+                                event,
+                            });
+                            continue;
+                        }
                         if e.message_type == self.protocols
                             && e.format == 32
                             && e.data[0] as u64 == self.delete
@@ -133,11 +150,11 @@ impl Connection {
                             down: e.base.kind == 4,
                             button: e.keycode,
                             state: e.state,
-                            time: e.time as u32,
+                            time: crate::host::time::x11_timestamp(e.time as u32),
                             x: e.x,
                             y: e.y,
-                            x_root: e.x_root,
-                            y_root: e.y_root,
+                            x_root: e.x_root - ox,
+                            y_root: e.y_root - oy,
                         });
                     }
                     6 => {
@@ -145,11 +162,11 @@ impl Connection {
                         result.push(NativeEvent::Motion {
                             window: e.base.window,
                             state: e.state,
-                            time: e.time as u32,
+                            time: crate::host::time::x11_timestamp(e.time as u32),
                             x: e.x,
                             y: e.y,
-                            x_root: e.x_root,
-                            y_root: e.y_root,
+                            x_root: e.x_root - ox,
+                            y_root: e.y_root - oy,
                         });
                     }
                     7 | 8 => {
@@ -164,6 +181,15 @@ impl Connection {
                     }
                     9 | 10 => {
                         let e = event.focus;
+                        if std::env::var_os("PEEKGAME_TRACE_INPUT").is_some() {
+                            eprintln!(
+                                "INPUT: X {} window={:#x} mode={} detail={}",
+                                if e.base.kind == 9 { "FocusIn" } else { "FocusOut" },
+                                e.base.window,
+                                e.mode,
+                                e.detail
+                            );
+                        }
                         // NotifyPointer details are not focus changes of the window.
                         if e.detail != 5 && e.mode != 1 && e.mode != 2 {
                             result.push(NativeEvent::Focus {
@@ -171,6 +197,18 @@ impl Connection {
                                 gained: e.base.kind == 9,
                             });
                         }
+                    }
+                    31 => {
+                        let e = event.selection;
+                        result.push(NativeEvent::Xdnd {
+                            window: e.requestor,
+                            event: super::xdnd::Event::Selection {
+                                selection: e.selection,
+                                target: e.target,
+                                property: e.property,
+                                time: e.time,
+                            },
+                        });
                     }
                     12 => result.push(NativeEvent::Expose {
                         window: event.any.window,
@@ -210,7 +248,7 @@ impl Connection {
             base,
             character,
             state: e.state,
-            time: e.time as u32,
+            time: crate::host::time::x11_timestamp(e.time as u32),
             x: e.x,
             y: e.y,
         }
