@@ -82,6 +82,29 @@ fn release(r: &mut Registry, pointer: usize) -> bool {
     }
     true
 }
+/// Diagnostic boundary for CryptEncodeObjectEx. Encoding is format-specific;
+/// unsupported structures must fail instead of returning fabricated DER.
+pub unsafe extern "win64" fn encode_object_ex(
+    encoding: u32, struct_type: *const c_char, _info: *const c_void,
+    flags: u32, _params: *const c_void, _encoded: *mut c_void, size: *mut u32,
+) -> i32 {
+    let name = if (struct_type as usize) < 65536 {
+        format!("#{:#x}", struct_type as usize)
+    } else {
+        let mut bytes = Vec::new();
+        for i in 0..128 {
+            let byte = unsafe { *struct_type.add(i) as u8 };
+            if byte == 0 { break; }
+            bytes.push(byte);
+        }
+        String::from_utf8_lossy(&bytes).into_owned()
+    };
+    eprintln!("crypt32: CryptEncodeObjectEx encoding={encoding:#x} type={name:?} flags={flags:#x}: unsupported");
+    if size.is_null() { return fail(87, 0); }
+    unsafe { *size = 0 };
+    fail(50, 0)
+}
+
 pub unsafe extern "win64" fn open(
     provider: *const c_char,
     _encoding: u32,

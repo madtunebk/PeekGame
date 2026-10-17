@@ -58,7 +58,7 @@ pub(crate) fn builtin_handle(name: &str) -> usize {
     };
     BUILTIN_HANDLES + index * 16
 }
-fn builtin_name(handle: usize) -> Option<String> {
+pub(crate) fn builtin_name(handle: usize) -> Option<String> {
     let list = modules().lock().unwrap();
     handle
         .checked_sub(BUILTIN_HANDLES)
@@ -92,7 +92,7 @@ fn load(name: &str, flags: u32) -> usize {
     if crate::api::steam::recognizes(name) {
         if crate::api::steam::open() {
             record("<LoadLibrary>", "steam_bridge");
-            return builtin_handle("steamclient64.dll");
+            return crate::api::steam::base_address();
         }
         record("<LoadLibrary>", "module_not_found");
         error::set(images::ERROR_MOD_NOT_FOUND);
@@ -179,7 +179,10 @@ pub unsafe extern "win64" fn get_proc_address(module: usize, name: *const c_char
             }
         },
     };
-    let (dll, address) = if let Some(dll) = builtin_name(module) {
+    let (dll, address) = if crate::api::steam::loaded() && module == crate::api::steam::base_address() {
+        let address = ordinal.is_none().then(|| crate::api::steam::export(&text)).flatten();
+        ("steamclient64.dll".into(), address)
+    } else if let Some(dll) = builtin_name(module) {
         let address = if crate::api::steam::recognizes(&dll) {
             ordinal.is_none().then(|| crate::api::steam::export(&text)).flatten()
         } else { registry::find_import(
@@ -207,6 +210,9 @@ pub unsafe extern "win64" fn get_proc_address(module: usize, name: *const c_char
             "not_found"
         },
     );
+    if address.is_none() {
+        eprintln!("GetProcAddress({dll}, {text}) -> None");
+    }
     match address {
         Some(address) => address as *const c_void,
         None => {

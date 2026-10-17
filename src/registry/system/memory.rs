@@ -31,6 +31,20 @@ exports! {
         mapping::open_w
     ),
     implemented!(
+        "OpenFileMappingA",
+        "memory",
+        "partial",
+        "names created by this process",
+        mapping::open_a
+    ),
+    implemented!(
+        "IsBadReadPtr",
+        "memory",
+        "implemented",
+        "0 if readable, 1 if invalid pointer or overflow",
+        virtual_memory::is_bad_read_ptr
+    ),
+    implemented!(
         "MapViewOfFile",
         "memory",
         "partial",

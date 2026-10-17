@@ -27,6 +27,7 @@ const FOLDERS: &[(&str, i32, &str)] = &[
     ("4BD8D571-6D19-48D3-BE97-422220080E43", 0x0d, "Music"),
     ("18989B1D-99B5-455B-841C-AB7C74E4DDFC", 0x0e, "Videos"),
     ("374DE290-123F-4565-9164-39C4925E467B", -1, "Downloads"),
+    ("62AB5D82-FDC1-4DC3-A9DD-070D1D495D97", 0x23, "ProgramData"),
 ];
 /// The AppData root on the host (created) and its Windows path.
 pub(crate) fn appdata() -> Option<PathBuf> {

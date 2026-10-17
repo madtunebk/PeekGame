@@ -21,7 +21,7 @@ fn main_image() -> Handle {
 /// image. GetModuleHandle never loads anything.
 fn named(name: &str) -> Option<(Handle, Option<std::sync::Arc<images::Module>>)> {
     if crate::api::steam::recognizes(name) && crate::api::steam::loaded() {
-        return Some((builtin_handle("steamclient64.dll"), None));
+        return Some((crate::api::steam::base_address(), None));
     }
     if registry::provides(name) {
         return Some((builtin_handle(name), None));
@@ -63,13 +63,22 @@ fn module_handle_ex(flags: u32, name: Option<String>, address: usize, out: *mut 
         return 0;
     }
     let found = if flags & FROM_ADDRESS != 0 {
-        images::by_address(address).map(|m| (m.base, Some(m)))
+        if let Some(m) = images::by_address(address) {
+            Some((m.base, Some(m)))
+        } else if crate::api::steam::recognizes_address(address) {
+            Some((crate::api::steam::base_address(), None))
+        } else if let Some(dll) = registry::by_address(address) {
+            Some((builtin_handle(dll), None))
+        } else {
+            None
+        }
     } else if address == 0 {
         let base = main_image();
         (base != 0).then(|| (base, images::by_handle(base)))
     } else {
         name.as_deref().and_then(named)
     };
+    eprintln!("[modules] module_handle_ex flags={flags:#x} addr={address:#x} name={name:?} -> found={}", found.is_some());
     let Some((handle, module)) = found else {
         error::set(126);
         return 0;

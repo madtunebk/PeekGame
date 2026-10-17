@@ -89,7 +89,16 @@ fn replacement_dir() -> Option<PathBuf> {
     DIR.get_or_init(|| {
         let dir = match std::env::var_os("PEEKGAME_WINDOWS_DLLS") {
             Some(d) => PathBuf::from(d),
-            None => std::env::current_exe().ok()?.parent()?.join("windows-dlls"),
+            None => {
+                let candidate = std::env::current_exe().ok()?.parent()?.join("windows-dlls");
+                if candidate.is_dir() {
+                    candidate
+                } else if std::path::Path::new("dist/windows-dlls").is_dir() {
+                    PathBuf::from("dist/windows-dlls")
+                } else {
+                    candidate
+                }
+            }
         };
         dir.is_dir().then_some(dir)
     })

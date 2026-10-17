@@ -152,3 +152,25 @@ pub unsafe extern "win64" fn query_system_information(
         _ => STATUS_INVALID_INFO_CLASS,
     }
 }
+
+pub unsafe extern "win64" fn set_information_thread(
+    _handle: usize,
+    _class: u32,
+    _info: *const c_void,
+    _length: u32,
+) -> i32 {
+    STATUS_SUCCESS
+}
+
+pub unsafe extern "win64" fn query_information_thread(
+    _handle: usize,
+    _class: u32,
+    _info: *mut c_void,
+    _length: u32,
+    ret_len: *mut u32,
+) -> i32 {
+    if !ret_len.is_null() {
+        unsafe { *ret_len = 0 };
+    }
+    STATUS_SUCCESS
+}

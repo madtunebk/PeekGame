@@ -18,6 +18,7 @@ mod system_info;
 mod time;
 mod version;
 mod pdh;
+mod rpc;
 
 pub(super) fn entries() -> impl Iterator<Item = &'static Export> {
     [
@@ -38,6 +39,7 @@ pub(super) fn entries() -> impl Iterator<Item = &'static Export> {
         time::EXPORTS,
         version::EXPORTS,
         pdh::EXPORTS,
+        rpc::EXPORTS,
     ]
     .into_iter()
     .flatten()

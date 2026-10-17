@@ -150,3 +150,84 @@ pub unsafe extern "win64" fn execute_w(
         },
     )
 }
+
+#[repr(C)]
+pub struct ShellExecuteInfoW {
+    pub cb_size: u32,
+    pub f_mask: u32,
+    pub hwnd: usize,
+    pub lp_verb: *const u16,
+    pub lp_file: *const u16,
+    pub lp_parameters: *const u16,
+    pub lp_directory: *const u16,
+    pub n_show: i32,
+    pub h_inst_app: usize,
+    pub lp_id_list: *mut c_void,
+    pub lp_class: *const u16,
+    pub hkey_class: usize,
+    pub dw_hot_key: u32,
+    pub h_icon_or_monitor: usize,
+    pub h_process: usize,
+}
+
+pub unsafe extern "win64" fn execute_ex_w(info: *mut ShellExecuteInfoW) -> i32 {
+    if info.is_null() {
+        error::set(87);
+        return 0;
+    }
+    let p = unsafe { &mut *info };
+    if p.cb_size < std::mem::size_of::<ShellExecuteInfoW>() as u32 {
+        error::set(87);
+        return 0;
+    }
+    let ret = unsafe {
+        execute_w(
+            p.hwnd,
+            p.lp_verb,
+            p.lp_file,
+            p.lp_parameters,
+            p.lp_directory,
+            p.n_show,
+        )
+    };
+    p.h_inst_app = ret;
+    if ret > 32 {
+        1
+    } else {
+        0
+    }
+}
+
+pub unsafe extern "win64" fn execute_a(
+    window: usize,
+    operation: *const std::ffi::c_char,
+    file: *const std::ffi::c_char,
+    parameters: *const std::ffi::c_char,
+    directory: *const std::ffi::c_char,
+    show: i32,
+) -> usize {
+    let to_u16 = |p: *const std::ffi::c_char| -> Option<Vec<u16>> {
+        if p.is_null() {
+            None
+        } else {
+            let s = unsafe { std::ffi::CStr::from_ptr(p) }.to_str().ok()?;
+            Some(s.encode_utf16().chain(std::iter::once(0)).collect())
+        }
+    };
+    let op_w = to_u16(operation);
+    let file_w = to_u16(file);
+    let param_w = to_u16(parameters);
+    let dir_w = to_u16(directory);
+
+    let op_ptr = op_w.as_ref().map(|v| v.as_ptr()).unwrap_or(std::ptr::null());
+    let file_ptr = file_w.as_ref().map(|v| v.as_ptr()).unwrap_or(std::ptr::null());
+    let param_ptr = param_w.as_ref().map(|v| v.as_ptr()).unwrap_or(std::ptr::null());
+    let dir_ptr = dir_w.as_ref().map(|v| v.as_ptr()).unwrap_or(std::ptr::null());
+
+    let op_str = (!operation.is_null()).then(|| unsafe { std::ffi::CStr::from_ptr(operation) }.to_string_lossy());
+    let file_str = (!file.is_null()).then(|| unsafe { std::ffi::CStr::from_ptr(file) }.to_string_lossy());
+    let param_str = (!parameters.is_null()).then(|| unsafe { std::ffi::CStr::from_ptr(parameters) }.to_string_lossy());
+    eprintln!("ShellExecuteA: op={op_str:?} file={file_str:?} param={param_str:?}");
+
+    unsafe { execute_w(window, op_ptr, file_ptr, param_ptr, dir_ptr, show) }
+}

@@ -435,21 +435,29 @@ pub unsafe extern "win64" fn read(
     if entry.overlapped {
         return fail(87, 0);
     }
-    let result = (&entry.file).read(unsafe { std::slice::from_raw_parts_mut(out, n as usize) });
-    if tracing() {
-        let position = (&entry.file).stream_position().unwrap_or(u64::MAX);
-        let fd = std::os::fd::AsRawFd::as_raw_fd(&entry.file);
-        eprintln!("[files] read fd={fd} n={n:#x} -> {result:?} (now at {position:#x})");
-    }
-    match result {
-        Ok(done) => {
-            if !count.is_null() {
-                unsafe { *count = done as u32 };
+    let slice = unsafe { std::slice::from_raw_parts_mut(out, n as usize) };
+    let mut total = 0;
+    let mut err = None;
+    while total < slice.len() {
+        match (&entry.file).read(&mut slice[total..]) {
+            Ok(0) => break,
+            Ok(done) => total += done,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => {
+                err = Some(e);
+                break;
             }
-            1
         }
-        Err(e) => fail(paths::error(&e), 0),
     }
+    if let Some(e) = err {
+        if total == 0 {
+            return fail(paths::error(&e), 0);
+        }
+    }
+    if !count.is_null() {
+        unsafe { *count = total as u32 };
+    }
+    1
 }
 /// ReadFileScatter: one overlapped read at the OVERLAPPED offset into page-sized
 /// buffers (FILE_SEGMENT_ELEMENT, a 64-bit pointer each), done now with preadv.

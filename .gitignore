@@ -61,3 +61,6 @@ __pycache__/
 /logscrash.txt
 /doom_eternal_missing_imports.txt
 /steam_appid.txt
+
+# Local progress scratch; reviewed reports live under docs/progress/
+/progress/

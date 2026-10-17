@@ -1,4 +1,66 @@
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::{
+    collections::HashMap,
+    path::PathBuf,
+    sync::{
+        atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering},
+        Arc, Mutex, OnceLock,
+    },
+};
+
+pub struct ChildProcess {
+    pub child: Mutex<std::process::Child>,
+    #[allow(dead_code)]
+    pub pid: u32,
+    pub exit_code: AtomicU32,
+}
+
+static CHILD_PROCESSES: OnceLock<Mutex<HashMap<usize, Arc<ChildProcess>>>> = OnceLock::new();
+static THREAD_TO_PROCESS: OnceLock<Mutex<HashMap<usize, usize>>> = OnceLock::new();
+static NEXT_PROC_HANDLE: AtomicUsize = AtomicUsize::new(0x7100_0000);
+
+fn child_processes() -> &'static Mutex<HashMap<usize, Arc<ChildProcess>>> {
+    CHILD_PROCESSES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn thread_handles() -> &'static Mutex<HashMap<usize, usize>> {
+    THREAD_TO_PROCESS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+pub fn close_child_handle(handle: usize) -> bool {
+    if child_processes().lock().unwrap().remove(&handle).is_some() {
+        return true;
+    }
+    if thread_handles().lock().unwrap().remove(&handle).is_some() {
+        return true;
+    }
+    false
+}
+
+pub fn wait_child_process(handle: usize, milliseconds: u32) -> Option<u32> {
+    let proc = child_processes().lock().unwrap().get(&handle).cloned()?;
+    let mut child = proc.child.lock().unwrap();
+    if milliseconds == u32::MAX {
+        match child.wait() {
+            Ok(status) => {
+                let code = status.code().unwrap_or(0) as u32;
+                proc.exit_code.store(code, Ordering::SeqCst);
+                Some(0) // WAIT_OBJECT_0
+            }
+            Err(_) => Some(u32::MAX), // WAIT_FAILED
+        }
+    } else {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let code = status.code().unwrap_or(0) as u32;
+                proc.exit_code.store(code, Ordering::SeqCst);
+                Some(0)
+            }
+            Ok(None) => Some(258), // WAIT_TIMEOUT
+            Err(_) => Some(u32::MAX),
+        }
+    }
+}
+
 static EXITING: AtomicBool = AtomicBool::new(false);
 /// Real loader shutdown state, queried by DXVK during ordinary device cleanup.
 pub(crate) extern "win64" fn dll_shutdown_in_progress() -> u8 {
@@ -7,6 +69,18 @@ pub(crate) extern "win64" fn dll_shutdown_in_progress() -> u8 {
 // DLL_PROCESS_DETACH notifications require the future PE loader.
 // For now this implements host process termination, including all host threads.
 pub(crate) extern "win64" fn exit_process(code: u32) -> ! {
+    eprintln!("ExitProcess called with code {code}");
+    let rsp_val: usize;
+    unsafe { std::arch::asm!("mov {}, rsp", out(reg) rsp_val); }
+    let ptr = rsp_val as *const usize;
+    for i in 0..48 {
+        let val = unsafe { ptr.add(i).read() };
+        if let Some(m) = crate::images::try_by_address(val) {
+            eprintln!("  stack[{i}] = {val:#x} ({}+{:#x})", m.name, val - m.base);
+        } else if val >= 0x140000000 && val < 0x150000000 {
+            eprintln!("  stack[{i}] = {val:#x} (Palworld+{:#x})", val - 0x140000000);
+        }
+    }
     EXITING.store(true, Ordering::Release);
     crate::api::crt::startup::cexit();
     std::process::exit((code & 0xff) as i32)
@@ -15,6 +89,35 @@ pub(crate) extern "win64" fn exit_process(code: u32) -> ! {
 /// Only the current process is exposed by OpenProcess in this backend.
 /// _exit deliberately skips CRT cleanup, DLL detach and Rust destructors.
 pub(crate) extern "win64" fn terminate_process(handle: usize, code: u32) -> i32 {
+    eprintln!("TerminateProcess called with code {code}");
+    if let Ok(maps) = std::fs::read_to_string("/proc/self/maps") {
+        for line in maps.lines() {
+            if let Some(range) = line.split_whitespace().next() {
+                if let Some((start_str, end_str)) = range.split_once('-') {
+                    if let (Ok(start), Ok(end)) = (usize::from_str_radix(start_str, 16), usize::from_str_radix(end_str, 16)) {
+                        if line.contains("r-xp") || line.contains("rwxp") {
+                            let magic = unsafe { (start as *const u16).read_unaligned() };
+                            if magic == 0x5a4d && start != 0x140000000 {
+                                eprintln!("Found embedded PE at {start:#x}-{end:#x}: {line}");
+                                let slice = unsafe { std::slice::from_raw_parts(start as *const u8, (end - start).min(0x200000)) };
+                                let _ = std::fs::write("/tmp/steamstub_payload.dll", slice);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let rsp_val: usize;
+    unsafe { std::arch::asm!("mov {}, rsp", out(reg) rsp_val); }
+    let ptr = rsp_val as *const usize;
+    for i in 0..48 {
+        let val = unsafe { ptr.add(i).read() };
+        let desc = crate::images::try_by_address(val)
+            .map(|m| format!("({}+{:#x})", m.name, val - m.base))
+            .unwrap_or_default();
+        eprintln!("  stack[{i}] = {val:#x} {desc}");
+    }
     if handle != usize::MAX {
         super::error::set(6);
         return 0;
@@ -120,6 +223,17 @@ pub unsafe extern "win64" fn get_exit_code_process(handle: usize, code: *mut u32
     if code.is_null() {
         super::error::set(87);
         return 0;
+    }
+    if let Some(proc) = child_processes().lock().unwrap().get(&handle).cloned() {
+        let mut child = proc.child.lock().unwrap();
+        if let Ok(Some(status)) = child.try_wait() {
+            let exit = status.code().unwrap_or(0) as u32;
+            proc.exit_code.store(exit, Ordering::SeqCst);
+            unsafe { *code = exit };
+        } else {
+            unsafe { *code = proc.exit_code.load(Ordering::SeqCst) };
+        }
+        return 1;
     }
     if handle != !0
         && handle != 1
@@ -305,18 +419,110 @@ pub unsafe extern "win64" fn update_proc_thread_attribute(
 }
 pub extern "win64" fn delete_proc_thread_attribute_list(_list: *mut u8) {}
 
-/// CreateProcess: Windows child processes cannot be started yet, so the call fails
-/// with ERROR_NOT_SUPPORTED (a crash handler or launcher is simply not started),
-/// and the requested command line is logged.
-fn create_process(application: Option<String>, command: Option<String>) -> i32 {
-    eprintln!(
-        "CreateProcess: {} {}: child processes are not supported",
-        application.as_deref().unwrap_or("-"),
-        command.as_deref().unwrap_or("")
-    );
-    crate::api::system::error::set(50);
-    0
+#[repr(C)]
+pub struct ProcessInformation {
+    pub h_process: usize,
+    pub h_thread: usize,
+    pub dw_process_id: u32,
+    pub dw_thread_id: u32,
 }
+
+fn spawn_child_process(
+    app: Option<String>,
+    cmd: Option<String>,
+    dir: Option<String>,
+    information: usize,
+) -> i32 {
+    let mut target_exe = None;
+    let mut args = Vec::new();
+
+    if let Some(app) = app {
+        target_exe = Some(app);
+        if let Some(cmd) = cmd {
+            let u16_cmd: Vec<u16> = cmd.encode_utf16().collect();
+            let tokens = crate::host::arguments::split(&u16_cmd);
+            for t in tokens.into_iter().skip(1) {
+                args.push(String::from_utf16_lossy(&t));
+            }
+        }
+    } else if let Some(cmd) = cmd {
+        let u16_cmd: Vec<u16> = cmd.encode_utf16().collect();
+        let tokens = crate::host::arguments::split(&u16_cmd);
+        if let Some(first) = tokens.first() {
+            target_exe = Some(String::from_utf16_lossy(first));
+            for t in tokens.into_iter().skip(1) {
+                args.push(String::from_utf16_lossy(&t));
+            }
+        }
+    }
+
+    let Some(target) = target_exe else {
+        super::error::set(87);
+        return 0;
+    };
+
+    let host_exe = match crate::host::paths::host(&target) {
+        Ok(p) => p,
+        Err(e) => {
+            super::error::set(e);
+            return 0;
+        }
+    };
+
+    let self_exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("./dist/peekgame"));
+
+    let mut command = std::process::Command::new(self_exe);
+    command.arg(&host_exe);
+    command.arg("--run");
+    for a in &args {
+        command.arg(a);
+    }
+
+    if let Some(d) = dir {
+        if let Ok(dir_path) = crate::host::paths::host(&d) {
+            command.current_dir(dir_path);
+        }
+    } else if let Some(parent) = host_exe.parent() {
+        command.current_dir(parent);
+    }
+
+    eprintln!(
+        "CreateProcess: spawning {:?} with args {:?}",
+        host_exe, args
+    );
+
+    match command.spawn() {
+        Ok(child) => {
+            let pid = child.id();
+            let h_process = NEXT_PROC_HANDLE.fetch_add(16, Ordering::Relaxed);
+            let h_thread = NEXT_PROC_HANDLE.fetch_add(16, Ordering::Relaxed);
+            let proc_info = Arc::new(ChildProcess {
+                child: Mutex::new(child),
+                pid,
+                exit_code: AtomicU32::new(259), // STILL_ACTIVE
+            });
+            child_processes().lock().unwrap().insert(h_process, proc_info);
+            thread_handles().lock().unwrap().insert(h_thread, h_process);
+
+            if information != 0 {
+                unsafe {
+                    let out = &mut *(information as *mut ProcessInformation);
+                    out.h_process = h_process;
+                    out.h_thread = h_thread;
+                    out.dw_process_id = pid;
+                    out.dw_thread_id = pid;
+                }
+            }
+            1
+        }
+        Err(e) => {
+            eprintln!("CreateProcess spawn failed: {e}");
+            super::error::set(crate::host::paths::error(&e));
+            0
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub unsafe extern "win64" fn create_process_w(
     application: *const u16,
@@ -326,12 +532,18 @@ pub unsafe extern "win64" fn create_process_w(
     _inherit: i32,
     _flags: u32,
     _environment: usize,
-    _directory: *const u16,
+    directory: *const u16,
     _startup: usize,
-    _information: usize,
+    information: usize,
 ) -> i32 {
-    unsafe { create_process(crate::api::text::string(application), crate::api::text::string(command)) }
+    spawn_child_process(
+        unsafe { crate::api::text::string(application) },
+        unsafe { crate::api::text::string(command) },
+        unsafe { crate::api::text::string(directory) },
+        information,
+    )
 }
+
 #[allow(clippy::too_many_arguments)]
 pub unsafe extern "win64" fn create_process_a(
     application: *const std::ffi::c_char,
@@ -341,14 +553,14 @@ pub unsafe extern "win64" fn create_process_a(
     _inherit: i32,
     _flags: u32,
     _environment: usize,
-    _directory: *const std::ffi::c_char,
+    directory: *const std::ffi::c_char,
     _startup: usize,
-    _information: usize,
+    information: usize,
 ) -> i32 {
     let narrow = |p: *const std::ffi::c_char| {
         (!p.is_null()).then(|| unsafe { std::ffi::CStr::from_ptr(p) }.to_string_lossy().into_owned())
     };
-    create_process(narrow(application), narrow(command))
+    spawn_child_process(narrow(application), narrow(command), narrow(directory), information)
 }
 
 /// GetProcessId: the only process is this one (the current-process pseudo handle
@@ -360,4 +572,8 @@ pub extern "win64" fn get_process_id(handle: usize) -> u32 {
         crate::api::system::error::set(6);
         0
     }
+}
+
+pub extern "win64" fn flush_instruction_cache(_process: usize, _base: usize, _size: usize) -> i32 {
+    1
 }

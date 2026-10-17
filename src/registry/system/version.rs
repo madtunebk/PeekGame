@@ -76,6 +76,8 @@ exports! {
         "complete",
         version::ver_set_condition_mask
     ),
+    export!("version.dll", "GetFileVersionInfoSizeExW", "system", "partial", "version resource extraction unsupported: ERROR_NOT_SUPPORTED", version::get_file_version_info_size_ex_w),
+    export!("version.dll", "GetFileVersionInfoExW", "system", "partial", "version resource extraction unsupported: ERROR_NOT_SUPPORTED", version::get_file_version_info_ex_w),
     export!(
         "version.dll",
         "GetFileVersionInfoSizeW",

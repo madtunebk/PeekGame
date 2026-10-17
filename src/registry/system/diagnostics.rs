@@ -61,6 +61,12 @@ exports! {
         "never enabled",
         etw::provider_enabled
     ),
+    export!("advapi32.dll", "RegisterTraceGuidsW", "diagnostics", "partial", "no ETW: ERROR_NOT_SUPPORTED, null trace handle", etw::register_trace_guids_w),
+    export!("advapi32.dll", "UnregisterTraceGuids", "diagnostics", "partial", "no ETW registration: ERROR_INVALID_HANDLE", etw::unregister_trace_guids),
+    export!("advapi32.dll", "GetTraceLoggerHandle", "diagnostics", "partial", "no ETW logger: invalid handle", etw::get_trace_logger_handle),
+    export!("advapi32.dll", "GetTraceEnableLevel", "diagnostics", "partial", "no ETW logger: level 0 and ERROR_INVALID_HANDLE", etw::get_trace_enable_level),
+    export!("advapi32.dll", "GetTraceEnableFlags", "diagnostics", "partial", "no ETW logger: flags 0 and ERROR_INVALID_HANDLE", etw::get_trace_enable_flags),
+    export!("advapi32.dll", "TraceMessage", "diagnostics", "partial", "no ETW logger: ERROR_INVALID_HANDLE", etw::trace_message),
     implemented!(
         "AreFileApisANSI",
         "system",

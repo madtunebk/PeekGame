@@ -24,6 +24,18 @@ pub extern "win64" fn isspace(c: i32) -> i32 {
 pub extern "win64" fn isxdigit(c: i32) -> i32 {
     ascii(c).is_some_and(|c| c.is_ascii_hexdigit()) as i32
 }
+pub extern "win64" fn iswalnum(c: u16) -> i32 {
+    isalnum(c as i32)
+}
+pub extern "win64" fn iswalpha(c: u16) -> i32 {
+    isalpha(c as i32)
+}
+pub extern "win64" fn iswdigit(c: u16) -> i32 {
+    isdigit(c as i32)
+}
+pub extern "win64" fn iswxdigit(c: u16) -> i32 {
+    isxdigit(c as i32)
+}
 pub extern "win64" fn iswspace(c: u16) -> i32 {
     isspace(c as i32)
 }

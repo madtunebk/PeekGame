@@ -19,6 +19,7 @@ exports! {
     export!("crypt32.dll", "CertDuplicateCertificateContext", "network", "partial", "reference-counted contexts", network::certificates::duplicate),
     export!("crypt32.dll", "CertFreeCertificateContext", "network", "partial", "releases a context reference", network::certificates::free),
     export!("crypt32.dll", "CertCloseStore", "network", "partial", "normal/check close; external contexts survive", network::certificates::close),
+    export!("crypt32.dll", "CryptEncodeObjectEx", "network", "partial", "reports requested structure and returns ERROR_NOT_SUPPORTED", network::certificates::encode_object_ex),
     export!("crypt32.dll", "CertCreateCertificateContext", "network", "partial", "bounds-checked X.509 metadata", network::certificates::create_context),
     export!("crypt32.dll", "CertAddEncodedCertificateToStore", "network", "partial", "memory stores: new/use-existing/replace/always", network::certificates::add),
     export!(
@@ -29,20 +30,21 @@ exports! {
         "no proxy",
         winhttp::ie_proxy_config
     ),
-    export!("winhttp.dll", "WinHttpOpen", "network", "partial", "sync/async sessions; no network transport", winhttp::open),
+    export!("winhttp.dll", "WinHttpCrackUrl", "network", "partial", "HTTP(S) URL components; caller buffers or input slices", winhttp::crack_url),
+    export!("winhttp.dll", "WinHttpOpen", "network", "partial", "sync/async GET/HEAD through host libcurl; TLS verified", winhttp::open),
     export!("winhttp.dll", "WinHttpCloseHandle", "network", "partial", "HANDLE_CLOSING notification", winhttp::close_handle),
     export!("winhttp.dll", "WinHttpConnect", "network", "partial", "connection handles; inherits mode and callback", winhttp::connect),
     export!("winhttp.dll", "WinHttpOpenRequest", "network", "partial", "request handles; HANDLE_CREATED notification", winhttp::open_request),
     export!("winhttp.dll", "WinHttpSetStatusCallback", "network", "partial", "per-handle callback and notification mask, inherited by new children", winhttp::set_status_callback),
     export!("winhttp.dll", "WinHttpSetOption", "network", "partial", "context value and connection options kept per handle; others ERROR_WINHTTP_INVALID_OPTION", winhttp::set_option),
     export!("winhttp.dll", "WinHttpSetTimeouts", "network", "partial", "kept per handle", winhttp::set_timeouts),
-    export!("winhttp.dll", "WinHttpAddRequestHeaders", "network", "partial", "accepted onto the request", winhttp::add_request_headers),
-    export!("winhttp.dll", "WinHttpSendRequest", "network", "partial", "no transport: ERROR_WINHTTP_CANNOT_CONNECT (async: REQUEST_ERROR callback)", winhttp::send_request),
-    export!("winhttp.dll", "WinHttpReceiveResponse", "network", "partial", "no response ever exists: ERROR_WINHTTP_INCORRECT_HANDLE_STATE", winhttp::receive_response),
-    export!("winhttp.dll", "WinHttpQueryHeaders", "network", "partial", "no response ever exists: ERROR_WINHTTP_INCORRECT_HANDLE_STATE", winhttp::query_headers),
-    export!("winhttp.dll", "WinHttpQueryDataAvailable", "network", "partial", "no response ever exists: ERROR_WINHTTP_INCORRECT_HANDLE_STATE", winhttp::query_data_available),
-    export!("winhttp.dll", "WinHttpReadData", "network", "partial", "no response ever exists: ERROR_WINHTTP_INCORRECT_HANDLE_STATE", winhttp::read_data),
-    export!("winhttp.dll", "WinHttpWriteData", "network", "partial", "no sent request: ERROR_WINHTTP_INCORRECT_HANDLE_STATE", winhttp::write_data),
+    export!("winhttp.dll", "WinHttpAddRequestHeaders", "network", "partial", "stores ADD, ADD_IF_NEW, REPLACE and coalesced headers", winhttp::add_request_headers),
+    export!("winhttp.dll", "WinHttpSendRequest", "network", "partial", "GET/HEAD and inline-body POST over libcurl; async completion/error", winhttp::send_request),
+    export!("winhttp.dll", "WinHttpReceiveResponse", "network", "partial", "sync response or async HEADERS_AVAILABLE callback", winhttp::receive_response),
+    export!("winhttp.dll", "WinHttpQueryHeaders", "network", "partial", "status, common response headers and raw headers", winhttp::query_headers),
+    export!("winhttp.dll", "WinHttpQueryDataAvailable", "network", "partial", "buffered bytes; async DATA_AVAILABLE callback", winhttp::query_data_available),
+    export!("winhttp.dll", "WinHttpReadData", "network", "partial", "buffered sync read or async READ_COMPLETE callback", winhttp::read_data),
+    export!("winhttp.dll", "WinHttpWriteData", "network", "partial", "buffers bounded streaming POST body; sync count or async WRITE_COMPLETE", winhttp::write_data),
     export!(
         "winhttp.dll",
         "WinHttpGetProxyForUrl",
@@ -698,6 +700,14 @@ exports! {
         "partial",
         "WaitForMultipleObjectsEx",
         events::wait_for_multiple_events
+    ),
+    export!(
+        "iphlpapi.dll",
+        "GetAdaptersAddresses",
+        "network",
+        "partial",
+        "real host interfaces, first unicast address per adapter; buffer overflow sizing",
+        network::adapters::get_adapters_addresses
     ),
     export!(
         "iphlpapi.dll",

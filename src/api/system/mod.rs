@@ -38,3 +38,5 @@ pub(crate) mod power;
 pub(crate) mod priority;
 pub(crate) mod nt_info;
 pub(crate) mod pdh;
+pub(crate) mod resources;
+pub(crate) mod rpc;

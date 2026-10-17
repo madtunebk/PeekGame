@@ -1,5 +1,5 @@
 use super::*;
-use crate::api::shell::folders;
+use crate::api::shell::{folders, paths};
 use crate::api::{memory::local, shell::arguments};
 exports! {
  export!("shell32.dll","DragQueryFileW","shell","partial","UTF-16 CF_HDROP count, length and file names",crate::api::window::drop_data::query_file),
@@ -10,6 +10,8 @@ exports! {
 
     export!("shell32.dll", "SetCurrentProcessExplicitAppUserModelID", "shell", "partial", "process application ID becomes WM_CLASS for subsequent top-level X11 windows", crate::api::shell::identity::set),
     export!("shell32.dll", "ShellExecuteW", "shell", "partial", "open/explore URI and files through host GIO applications; no Windows process execution", crate::api::shell::execute::execute_w),
+    export!("shell32.dll", "ShellExecuteA", "shell", "partial", "open/explore URI and files through host GIO applications; no Windows process execution", crate::api::shell::execute::execute_a),
+    export!("shell32.dll", "ShellExecuteExW", "shell", "partial", "open/explore URI and files through host GIO applications", crate::api::shell::execute::execute_ex_w),
     export!(
         "shell32.dll",
         "SHGetKnownFolderPath",
@@ -61,5 +63,29 @@ exports! {
         "partial",
         "registered LocalAlloc sizes",
         local::size
+    ),
+    export!(
+        "shlwapi.dll",
+        "PathCanonicalizeW",
+        "shell",
+        "implemented",
+        "canonicalizes path, collapses . and .. components",
+        paths::canonicalize_w
+    ),
+    export!(
+        "shlwapi.dll",
+        "PathCombineW",
+        "shell",
+        "implemented",
+        "concatenates dir and file and canonicalizes",
+        paths::combine_w
+    ),
+    export!(
+        "shlwapi.dll",
+        "PathRemoveFileSpecW",
+        "shell",
+        "implemented",
+        "removes trailing file name component",
+        paths::remove_file_spec_w
     ),
 }

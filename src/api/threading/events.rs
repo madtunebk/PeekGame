@@ -86,6 +86,19 @@ fn open(name: Option<String>) -> usize {
         error::set(87);
         return 0;
     };
+    if name == "SteamStart_SharedMemLock" {
+        let existing = names().lock().unwrap().get(&name).and_then(std::sync::Weak::upgrade);
+        if let Some(event) = existing {
+            let h = insert(event);
+            set(h);
+            return h;
+        }
+        let h = create(true, true, Some("Local\\SteamStart_SharedMemLock".into()));
+        if h != 0 {
+            set(h);
+            return h;
+        }
+    }
     let existing = names().lock().unwrap().get(&name).and_then(std::sync::Weak::upgrade);
     match existing {
         Some(event) => insert(event),
@@ -150,6 +163,7 @@ pub fn duplicate(handle: usize) -> Option<usize> {
 }
 pub extern "win64" fn close(handle: usize) -> i32 {
     if handle == crate::api::system::compat::STEAM_PROCESS_HANDLE
+        || crate::api::system::process::close_child_handle(handle)
         || crate::api::network::afd::close(handle)
         || super::iocp::close(handle)
         || events().lock().unwrap().remove(&handle).inspect(|_| super::timers::forget(handle)).is_some()
@@ -169,6 +183,13 @@ pub extern "win64" fn close(handle: usize) -> i32 {
 }
 pub extern "win64" fn wait(handle: usize, milliseconds: u32) -> u32 {
     super::iocp::release_worker();
+    if crate::api::memory::mapping::is_steam_response_event(handle) {
+        set(handle);
+        return 0; // WAIT_OBJECT_0
+    }
+    if let Some(res) = crate::api::system::process::wait_child_process(handle, milliseconds) {
+        return res;
+    }
     if let Some(result) = super::threads::wait(handle, milliseconds) {
         return result;
     }

@@ -130,14 +130,27 @@
 - **Implementation:** `src/api/network/winhttp.rs`, registry `src/registry/network.rs`.
   Real handles, options and timeouts per handle; callbacks for async handles run
   in order on one Windows thread (CreateThread), HANDLE_CREATED synchronously.
-- **Scope/errors:** no transport, by decision (offline first). SendRequest:
-  sync ERROR_WINHTTP_CANNOT_CONNECT, async TRUE + REQUEST_ERROR. Later steps
-  ERROR_WINHTTP_INCORRECT_HANDLE_STATE. Unknown options ERROR_WINHTTP_INVALID_OPTION.
-  `PEEKGAME_TRACE_HTTP` logs calls. A real HTTP/TLS transport is the next stage.
-- **Verification:** `python3 tests/test_winhttp_offline.py` **PASS**. Game logs
-  `Unexpected HTTP status code -1 (ERROR: send request (CANNOT_CONNECT))`, retries
-  periodically and continues: the photosensitivity screen and shell UI render
-  (user screenshots, RTX 3060).
+- **Scope/errors:** synchronous and asynchronous GET/HEAD requests use the host
+  libcurl with certificate and hostname verification. `WinHttpAddRequestHeaders`
+  accepts ADD, ADD_IF_NEW, REPLACE and coalesced headers, including DOOM's `Connection` header. Request bodies,
+  POST and unsupported header modifiers fail explicitly. Async SendRequest
+  delivers SENDREQUEST_COMPLETE or REQUEST_ERROR; ReceiveResponse delivers
+  HEADERS_AVAILABLE; QueryDataAvailable delivers DATA_AVAILABLE. Numeric status
+  queries, common response headers, raw headers and buffered body reads are
+  implemented, including async READ_COMPLETE with the caller buffer. SYSTEMTIME
+  header conversion remains unsupported. `PEEKGAME_TRACE_HTTP`
+  logs method/URL, redacted header names, HTTP status or WinHTTP transport error.
+- **Verification:** `python3 tests/test_winhttp_transport.py` **PASS** with a
+  private HTTP server: Rust PE GET receives status 200 and body; a Windows async
+  HEAD fixture receives callbacks/status and Content-Type, forwards
+  `Connection: close`, and completes an async read with a null byte-count
+  pointer at EOF.
+  `python3 tests/test_winhttp_offline.py` **PASS** for refused localhost
+  connections, handle errors and async REQUEST_ERROR. A public HTTPS probe to
+  `example.com` also returned status 200 and read its body. DOOM's real
+  service returned HTTP 200 for its HEAD request; the subsequent async read
+  had failed with ERROR_INVALID_PARAMETER before this callback fix. Later
+  authentication steps still require a user run.
 
 ## steamclient64.dll — ISteamRemoteStorage014 and ISteamUserStats011
 

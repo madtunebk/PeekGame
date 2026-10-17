@@ -263,4 +263,5 @@ pub unsafe extern "win64" fn get_best_interface(_dest_ip: u32, best_if_index: *m
     0
 }
 
+pub mod adapters;
 pub(crate) mod crypt_strings;

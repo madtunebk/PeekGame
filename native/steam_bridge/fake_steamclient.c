@@ -96,7 +96,30 @@ static bool us_global_double(void *self,const char *name,double *v) {if(self!=&s
 static void *get_stats(void *self,int32_t u,int32_t pipe,const char *v) {
     return self==&client && u==3 && pipe==7 && !strcmp(v,"STEAMUSERSTATS_INTERFACE_VERSION011")?&stats:NULL;
 }
+static void *mm_vtbl[38];static Object matchmaking={mm_vtbl};
+uint64_t fake_mm_lobby;int fake_mm_type,fake_mm_members;char fake_mm_key[32],fake_mm_value[32];
+static uint64_t mm_list(void *self) {return self==&matchmaking?0x123456789ULL:0;}
+static uint64_t mm_lobby_by_index(void *self,int index) {return self==&matchmaking && index==0?0xdeadbeefULL:0;}
+static uint64_t mm_lobby_owner(void *self,uint64_t lobby) {return self==&matchmaking && lobby==0xdeadbeefULL?0x0110000100000001ULL:0;}
+static uint64_t mm_create(void *self,int type,int members) {
+    if(self!=&matchmaking)return 0;
+    fake_mm_type=type;fake_mm_members=members;return 0x987654321ULL;
+}
+static const char *mm_get_data(void *self,uint64_t lobby,const char *key) {
+    return self==&matchmaking && lobby==fake_mm_lobby && !strcmp(key,fake_mm_key)?fake_mm_value:"";
+}
+static bool mm_set_data(void *self,uint64_t lobby,const char *key,const char *value) {
+    if(self!=&matchmaking)return false;
+    fake_mm_lobby=lobby;
+    snprintf(fake_mm_key,sizeof fake_mm_key,"%s",key);
+    snprintf(fake_mm_value,sizeof fake_mm_value,"%s",value);
+    return true;
+}
+static void *get_matchmaking(void *self,int32_t u,int32_t pipe,const char *v) {
+    return self==&client && u==3 && pipe==7 && !strcmp(v,"SteamMatchMaking009")?&matchmaking:NULL;
+}
 static void *get_generic(void *self,int32_t u,int32_t pipe,const char *v) {
+    if(!strcmp(v,"SteamMatchMaking009"))return get_matchmaking(self,u,pipe,v);
     if(!strcmp(v,"STEAMUSERSTATS_INTERFACE_VERSION011"))return get_stats(self,u,pipe,v);
     if(!strcmp(v,"STEAMREMOTESTORAGE_INTERFACE_VERSION014"))return get_remote(self,u,pipe,v);
     if(!strcmp(v,"SteamUtils010"))return get_utils(self,pipe,v);
@@ -169,8 +192,12 @@ static void init(void) {
     client014_vtbl[19]=(void *)run_frame014;client014_vtbl[21]=(void *)set_hook014;
     for(int i=0;i<32;i++)user_vtbl[i]=(void *)unexpected;
     for(int i=0;i<39;i++)utils_vtbl[i]=(void *)unexpected;
+    for(int i=0;i<38;i++)mm_vtbl[i]=(void *)unexpected;
+    mm_vtbl[4]=(void *)mm_list;mm_vtbl[12]=(void *)mm_lobby_by_index;
+    mm_vtbl[13]=(void *)mm_create;mm_vtbl[35]=(void *)mm_lobby_owner;
+    mm_vtbl[19]=(void *)mm_get_data;mm_vtbl[20]=(void *)mm_set_data;
     client_vtbl[0]=(void *)create_pipe;client_vtbl[2]=(void *)connect_user;client_vtbl[5]=(void *)get_user;
-    client_vtbl[9]=(void *)get_utils;client_vtbl[12]=(void *)get_generic;client_vtbl[22]=(void *)set_hook;
+    client_vtbl[9]=(void *)get_utils;client_vtbl[10]=(void *)get_matchmaking;client_vtbl[12]=(void *)get_generic;client_vtbl[22]=(void *)set_hook;
     client_vtbl[34]=(void *)set_check;
     client017_vtbl[0]=(void *)create_pipe017;client017_vtbl[2]=(void *)connect_user017;
     client017_vtbl[5]=(void *)get_user017;client017_vtbl[7]=(void *)set_ip017;client017_vtbl[9]=(void *)get_utils017;

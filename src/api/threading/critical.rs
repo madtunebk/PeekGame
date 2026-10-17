@@ -39,7 +39,12 @@ const HOST: usize = 24;
 fn get(p: *mut c_void) -> &'static Critical {
     let host = unsafe { p.cast::<u8>().add(HOST).cast::<*const Critical>().read() };
     if host.is_null() {
-        stop("critical section used before initialization or after deletion");
+        unsafe { initialize_spin(p, 0); }
+        let host = unsafe { p.cast::<u8>().add(HOST).cast::<*const Critical>().read() };
+        if host.is_null() {
+            stop("critical section used before initialization or after deletion");
+        }
+        return unsafe { &*host };
     }
     unsafe { &*host }
 }
@@ -138,4 +143,14 @@ pub extern "win64" fn delete(p: *mut c_void) {
         stop("DeleteCriticalSection on uninitialized/deleted object");
     }
     unsafe { p.cast::<u8>().add(HOST).cast::<usize>().write(0) };
+}
+pub unsafe extern "win64" fn set_spin_count(p: *mut c_void, spin: u32) -> u32 {
+    if p.is_null() {
+        return 0;
+    }
+    let old = unsafe { p.cast::<u8>().add(32).cast::<u64>().read() } as u32;
+    unsafe {
+        p.cast::<u8>().add(32).cast::<u64>().write(spin as u64);
+    }
+    old
 }

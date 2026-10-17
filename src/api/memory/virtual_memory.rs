@@ -49,7 +49,29 @@ fn windows_protection(perms: &[u8]) -> u32 {
     }
 }
 
+static LAST_MOD_BASE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 pub extern "win64" fn alloc(address: usize, n: usize, kind: u32, protection: u32) -> usize {
+    let base = alloc_inner(address, n, kind, protection);
+    eprintln!("VirtualAlloc(address={address:#x}, size={n:#x}, kind={kind:#x}, prot={protection:#x}) -> {base:#x}");
+    if n == 0x39000 && base != 0 {
+        LAST_MOD_BASE.store(base, std::sync::atomic::Ordering::Relaxed);
+    }
+    if n == 0x800 && address != 0 {
+        let mod_base = LAST_MOD_BASE.load(std::sync::atomic::Ordering::Relaxed);
+        if mod_base != 0 {
+            let magic = unsafe { (mod_base as *const u16).read_unaligned() };
+            if magic == 0x5a4d {
+                let slice = unsafe { std::slice::from_raw_parts(mod_base as *const u8, 0x39000) };
+                let _ = std::fs::write("/tmp/steamstub_payload.dll", slice);
+                eprintln!("DUMPED EMBEDDED DLL from {mod_base:#x} to /tmp/steamstub_payload.dll");
+            }
+        }
+    }
+    base
+}
+
+fn alloc_inner(address: usize, n: usize, kind: u32, protection: u32) -> usize {
     let Some(prot) = linux_protection(protection) else {
         error::set(87);
         return 0;
@@ -319,4 +341,15 @@ pub unsafe extern "win64" fn protect(
     }
     unsafe { *old = windows_protection(&perms) };
     1
+}
+
+/// IsBadReadPtr: 0 if calling process has read access to all bytes, nonzero if invalid.
+pub extern "win64" fn is_bad_read_ptr(ptr: usize, size: usize) -> i32 {
+    if size == 0 {
+        return 0;
+    }
+    if ptr == 0 || ptr.checked_add(size).is_none() {
+        return 1;
+    }
+    0
 }

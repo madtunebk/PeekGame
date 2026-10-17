@@ -27,6 +27,23 @@ struct State {
 }
 static STATE: Mutex<Option<State>> = Mutex::new(None);
 static NEXT: AtomicUsize = AtomicUsize::new(0x4c00_0000);
+static STEAM_SHM_PTR: AtomicUsize = AtomicUsize::new(0);
+
+pub fn is_steam_response_event(handle: usize) -> bool {
+    let ptr = STEAM_SHM_PTR.load(Ordering::Acquire);
+    if ptr != 0 {
+        unsafe {
+            let p = ptr as *const u8;
+            let target_handle = *(p.add(0xa0) as *const usize);
+            let state = *(p.add(0x94) as *const u32);
+            if target_handle == handle && state == 2 {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 fn with<T>(f: impl FnOnce(&mut State) -> T) -> T {
     let mut state = STATE.lock().unwrap();
     f(state.get_or_insert_with(|| State {
@@ -154,6 +171,74 @@ pub unsafe extern "win64" fn open_w(_access: u32, _inherit: i32, name: *const u1
         error::set(87);
         return 0;
     };
+    let clean = name.strip_prefix("Local\\").unwrap_or(&name);
+    if clean.eq_ignore_ascii_case("SteamStart_SharedMemFile") {
+        let existing = with(|s| {
+            s.handles
+                .values()
+                .find(|m| m.name.as_deref().map(|n| n.strip_prefix("Local\\").unwrap_or(n).eq_ignore_ascii_case("SteamStart_SharedMemFile")).unwrap_or(false))
+                .cloned()
+        });
+        if let Some(m) = existing {
+            return insert(m);
+        }
+        let h = create(usize::MAX, 4, 0, 0x1000, Some("Local\\SteamStart_SharedMemFile".into()));
+        let view = map_view_ex(h, 2, 0, 0, 0x1000, 0);
+        if view != 0 {
+            unsafe {
+                let ptr = view as *mut u8;
+                *(ptr.add(0x90) as *mut u32) = 2;
+                *(ptr.add(0x94) as *mut u32) = 0;
+            }
+            STEAM_SHM_PTR.store(view, Ordering::Release);
+        }
+        return h;
+    }
+    match with(|s| {
+        s.handles
+            .values()
+            .find(|m| m.name.as_deref() == Some(name.as_str()))
+            .cloned()
+    }) {
+        Some(mapping) => insert(mapping),
+        None => {
+            error::set(2);
+            0
+        }
+    }
+}
+pub unsafe extern "win64" fn open_a(_access: u32, _inherit: i32, name: *const i8) -> usize {
+    let Some(name) = (!name.is_null()).then(|| {
+        unsafe { std::ffi::CStr::from_ptr(name) }
+            .to_string_lossy()
+            .into_owned()
+    }) else {
+        error::set(87);
+        return 0;
+    };
+    let clean = name.strip_prefix("Local\\").unwrap_or(&name);
+    if clean.eq_ignore_ascii_case("SteamStart_SharedMemFile") {
+        let existing = with(|s| {
+            s.handles
+                .values()
+                .find(|m| m.name.as_deref().map(|n| n.strip_prefix("Local\\").unwrap_or(n).eq_ignore_ascii_case("SteamStart_SharedMemFile")).unwrap_or(false))
+                .cloned()
+        });
+        if let Some(m) = existing {
+            return insert(m);
+        }
+        let h = create(usize::MAX, 4, 0, 0x1000, Some("Local\\SteamStart_SharedMemFile".into()));
+        let view = map_view_ex(h, 2, 0, 0, 0x1000, 0);
+        if view != 0 {
+            unsafe {
+                let ptr = view as *mut u8;
+                *(ptr.add(0x90) as *mut u32) = 2;
+                *(ptr.add(0x94) as *mut u32) = 0;
+            }
+            STEAM_SHM_PTR.store(view, Ordering::Release);
+        }
+        return h;
+    }
     match with(|s| {
         s.handles
             .values()

@@ -31,6 +31,14 @@ pub unsafe extern "win64" fn puts(s: *const c_char) -> i32 {
     }
     unsafe { super::ucrt::fputc(10, f) }
 }
+pub unsafe extern "win64" fn cputs(s: *const c_char) -> i32 {
+    let f = super::ucrt::acrt_iob_func(1);
+    if unsafe { super::ucrt::fputs(s, f) } < 0 {
+        -1
+    } else {
+        0
+    }
+}
 pub extern "win64" fn putchar(c: i32) -> i32 {
     unsafe { super::ucrt::fputc(c, super::ucrt::acrt_iob_func(1)) }
 }

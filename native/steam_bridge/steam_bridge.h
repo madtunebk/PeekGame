@@ -17,4 +17,7 @@ void *steam_bridge_export(const char *name);
  * This is the honest source for HKCU\Software\Valve\Steam\ActiveProcess "pid". */
 uint32_t steam_bridge_steam_pid(void);
 
+/* Returns 1 if addr belongs to steamclient64.dll exports, vtables, wrappers, or the Linux client. */
+int steam_bridge_contains_address(const void *addr);
+
 #endif

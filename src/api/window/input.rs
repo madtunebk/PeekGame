@@ -34,7 +34,7 @@ pub(crate) use raw::{
     get_raw_input_device_info_w, get_raw_input_device_list, get_registered_raw_input_devices,
     register_raw_input_devices,
 };
-pub(super) use raw::{raw_keyboard, raw_mouse, raw_read};
+pub(super) use raw::{is_pending_mouse_motion, merge_raw_mouse, raw_keyboard, raw_mouse, raw_read};
 
 pub(super) fn trace_input(message: impl std::fmt::Display) {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();

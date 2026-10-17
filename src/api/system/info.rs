@@ -535,6 +535,25 @@ pub unsafe extern "win64" fn current_directory_a(capacity: u32, out: *mut u8) ->
 pub unsafe extern "win64" fn output_debug_string_w(message: *const u16) {
     if let Some(message) = unsafe { text::string(message) } {
         eprintln!("OutputDebugStringW: {message}");
+        let rsp_val: usize;
+        unsafe { std::arch::asm!("mov {}, rsp", out(reg) rsp_val); }
+        let ptr = rsp_val as *const usize;
+        for i in 0..64 {
+            let val = unsafe { ptr.add(i).read() };
+            if let Some(m) = crate::images::try_by_address(val) {
+                eprintln!("  debug_stack[{i}] = {val:#x} ({}+{:#x})", m.name, val - m.base);
+            } else if val >= 0x140000000 && val < 0x150000000 {
+                eprintln!("  debug_stack[{i}] = {val:#x} (Palworld+{:#x})", val - 0x140000000);
+            } else if val > 0x10000 {
+                eprintln!("  debug_stack[{i}] = {val:#x}");
+            }
+        }
+        let addrs: [usize; 4] = [0x1434826ce, 0x14349157e, 0x147923378, 0x1494484d4];
+        for &addr in &addrs {
+            let start = addr.saturating_sub(32);
+            let slice = unsafe { std::slice::from_raw_parts(start as *const u8, 64) };
+            eprintln!("Bytes around {addr:#x} (start {start:#x}): {:02x?}", slice);
+        }
     }
 }
 
@@ -544,7 +563,18 @@ fn module_path(module: usize) -> Option<std::path::PathBuf> {
     if module == 0 || module == exe.base {
         return Some(exe.path.clone());
     }
-    images::by_handle(module).map(|m| m.path.clone())
+    if let Some(m) = images::by_handle(module) {
+        return Some(m.path.clone());
+    }
+    if crate::api::steam::loaded() && module == crate::api::steam::base_address() {
+        return Some(std::path::PathBuf::from(r"C:\Program Files (x86)\Steam\steamclient64.dll"));
+    }
+    if let Some(name) = crate::api::system::dynamic::builtin_name(module) {
+        if crate::api::steam::recognizes(&name) {
+            return Some(std::path::PathBuf::from(r"C:\Program Files (x86)\Steam\steamclient64.dll"));
+        }
+    }
+    None
 }
 /// GetModuleFileName contract: truncated copies are NUL-terminated and return the
 /// capacity with ERROR_INSUFFICIENT_BUFFER.
@@ -574,8 +604,17 @@ pub unsafe extern "win64" fn module_file_name_w(
     out: *mut u16,
     capacity: u32,
 ) -> u32 {
-    match module_path(module) {
-        Some(path) => unsafe { copy_truncated(&text::wide(&paths::windows(&path)), out, capacity) },
+    let p = module_path(module);
+    eprintln!("[info] module_file_name_w module={module:#x} path={p:?}");
+    match p {
+        Some(path) => {
+            let win_path = if path.to_string_lossy().starts_with("C:") || path.to_string_lossy().starts_with(r"C:\") {
+                path.to_string_lossy().into_owned()
+            } else {
+                paths::windows(&path)
+            };
+            unsafe { copy_truncated(&text::wide(&win_path), out, capacity) }
+        }
         None => {
             error::set(126);
             0
@@ -588,9 +627,16 @@ pub unsafe extern "win64" fn module_file_name_a(
     capacity: u32,
 ) -> u32 {
     match module_path(module) {
-        Some(path) => unsafe {
-            copy_truncated(paths::windows(&path).as_bytes(), out.cast::<u8>(), capacity)
-        },
+        Some(path) => {
+            let win_path = if path.to_string_lossy().starts_with("C:") || path.to_string_lossy().starts_with(r"C:\") {
+                path.to_string_lossy().into_owned()
+            } else {
+                paths::windows(&path)
+            };
+            unsafe {
+                copy_truncated(win_path.as_bytes(), out.cast::<u8>(), capacity)
+            }
+        }
         None => {
             error::set(126);
             0

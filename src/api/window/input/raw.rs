@@ -6,7 +6,7 @@ use crate::api::window::{
     types::*,
 };
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     sync::Mutex,
 };
 
@@ -26,6 +26,8 @@ struct RawState {
     events: VecDeque<(usize, Vec<u8>)>,
     /// Events not yet read through GetRawInputBuffer, per thread.
     unread: HashMap<u32, VecDeque<usize>>,
+    /// A caller has observed these handles through GetRawInputData.
+    exposed: HashSet<usize>,
     next: usize,
     last: Option<(i32, i32)>,
 }
@@ -34,6 +36,7 @@ static RAW: std::sync::LazyLock<Mutex<RawState>> = std::sync::LazyLock::new(|| {
         devices: Vec::new(),
         events: VecDeque::new(),
         unread: HashMap::new(),
+        exposed: HashSet::new(),
         next: 0x0008_0000,
         last: None,
     })
@@ -72,7 +75,9 @@ fn deliver(target: usize, device: usize, kind: u32, body: &[u8]) {
         let handle = raw.next;
         raw.events.push_back((handle, bytes));
         if raw.events.len() > 4096 {
-            raw.events.pop_front();
+            if let Some((old, _)) = raw.events.pop_front() {
+                raw.exposed.remove(&old);
+            }
         }
         let unread = raw.unread.entry(thread).or_default();
         unread.push_back(handle);
@@ -87,6 +92,42 @@ fn deliver(target: usize, device: usize, kind: u32, body: &[u8]) {
         message.point = Point { x, y };
     }
     queue::post_to(thread, message);
+}
+/// Only an unread, unobserved RAWMOUSE packet with no button or wheel data may
+/// absorb more relative motion. Its handle and size stay valid for Windows code.
+fn is_mouse_motion(bytes: &[u8]) -> bool {
+    bytes.len() >= 44
+        && bytes[0..4] == [0; 4]
+        && bytes[8..16] == MOUSE_DEVICE.to_le_bytes()
+        && bytes[24..36].iter().all(|&b| b == 0)
+}
+pub(in crate::api::window) fn is_pending_mouse_motion(thread: u32, handle: usize) -> bool {
+    let raw = RAW.lock().unwrap();
+    raw.unread.get(&thread).is_some_and(|q| q.contains(&handle))
+        && !raw.exposed.contains(&handle)
+        && raw.events.iter().any(|(h, bytes)| *h == handle && is_mouse_motion(bytes))
+}
+pub(in crate::api::window) fn merge_raw_mouse(thread: u32, handle: usize, dx: i32, dy: i32) -> bool {
+    let mut raw = RAW.lock().unwrap();
+    if !raw.unread.get(&thread).is_some_and(|q| q.contains(&handle))
+        || raw.exposed.contains(&handle)
+    {
+        return false;
+    }
+    let Some((_, bytes)) = raw.events.iter_mut().find(|(h, _)| *h == handle) else {
+        return false;
+    };
+    if !is_mouse_motion(bytes) {
+        return false;
+    }
+    let old_x = i32::from_le_bytes(bytes[36..40].try_into().unwrap());
+    let old_y = i32::from_le_bytes(bytes[40..44].try_into().unwrap());
+    let (Some(x), Some(y)) = (old_x.checked_add(dx), old_y.checked_add(dy)) else {
+        return false;
+    };
+    bytes[36..40].copy_from_slice(&x.to_le_bytes());
+    bytes[40..44].copy_from_slice(&y.to_le_bytes());
+    true
 }
 /// RAWMOUSE: usFlags, (pad), usButtonFlags, usButtonData, ulRawButtons, lLastX,
 /// lLastY, ulExtraInformation.
@@ -113,6 +154,13 @@ pub(in crate::api::window) fn raw_mouse(
     };
     if buttons == 0 && dx == 0 && dy == 0 {
         return;
+    }
+    if buttons == 0 {
+        if let (Some((x, y)), Some(thread)) = (x_root, queue::owner(target)) {
+            if queue::merge_pending_raw_mouse(thread, target, dx, dy, Point { x, y }) {
+                return;
+            }
+        }
     }
     let mut body = [0u8; 24];
     body[4..6].copy_from_slice(&buttons.to_le_bytes());
@@ -216,7 +264,7 @@ pub(crate) unsafe extern "win64" fn get_raw_input_data(
     if size.is_null() || header_size != 24 {
         return fail(87, u32::MAX);
     }
-    let raw = RAW.lock().unwrap();
+    let mut raw = RAW.lock().unwrap();
     let Some((_, bytes)) = raw.events.iter().find(|(h, _)| *h == handle) else {
         return fail(6, u32::MAX);
     };
@@ -236,6 +284,7 @@ pub(crate) unsafe extern "win64" fn get_raw_input_data(
         return fail(122, u32::MAX);
     }
     unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), data, n as usize) };
+    raw.exposed.insert(handle);
     n
 }
 /// GetRawInputBuffer: this thread's unread RAWINPUTs, each 8-byte aligned; reading

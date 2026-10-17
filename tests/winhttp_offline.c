@@ -39,7 +39,7 @@ static int check(void) {
     if (WinHttpSetTimeouts(session, -2, 0, 0, 0) || GetLastError() != ERROR_INVALID_PARAMETER) return 3;
     if (!WinHttpSetOption(session, WINHTTP_OPTION_CONNECT_TIMEOUT, &value, 4)) return 4;
     if (WinHttpSetOption(session, 0x7777, &value, 4) || GetLastError() != ERROR_WINHTTP_INVALID_OPTION) return 5;
-    HINTERNET connection = WinHttpConnect(session, L"example.invalid", 443, 0);
+    HINTERNET connection = WinHttpConnect(session, L"127.0.0.1", 9, 0);
     if (!connection) return 6;
     if (WinHttpOpenRequest(session, L"GET", L"/", NULL, NULL, NULL, 0) || GetLastError() != ERROR_WINHTTP_INCORRECT_HANDLE_TYPE) return 7;
     HINTERNET request = WinHttpOpenRequest(connection, L"GET", L"/status", NULL, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
@@ -56,8 +56,8 @@ static int check(void) {
     session = WinHttpOpen(L"peekgame-test", WINHTTP_ACCESS_TYPE_NO_PROXY, NULL, NULL, WINHTTP_FLAG_ASYNC);
     if (!session) return 15;
     if (WinHttpSetStatusCallback(session, status, WINHTTP_CALLBACK_FLAG_ALL_NOTIFICATIONS, 0) != NULL) return 16;
-    connection = WinHttpConnect(session, L"example.invalid", 443, 0);
-    request = WinHttpOpenRequest(connection, L"POST", L"/login", NULL, NULL, NULL, WINHTTP_FLAG_SECURE);
+    connection = WinHttpConnect(session, L"127.0.0.1", 9, 0);
+    request = WinHttpOpenRequest(connection, L"GET", L"/login", NULL, NULL, NULL, WINHTTP_FLAG_SECURE);
     if (!connection || !request || created_count != 2) return 17;
     if (!WinHttpSendRequest(request, NULL, 0, NULL, 0, 0, 0x1234)) return 18;
     if (WaitForSingleObject(done_event, 5000) != WAIT_OBJECT_0) return 19;

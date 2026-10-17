@@ -208,6 +208,54 @@ pub unsafe extern "win64" fn call_new_handler(size: usize) -> i32 {
 pub extern "win64" fn seh_filter_dll(_code: u32, _pointers: usize) -> i32 {
     0 // EXCEPTION_CONTINUE_SEARCH
 }
+type InvalidParameterHandler = unsafe extern "win64" fn(
+    expression: *const u16,
+    function: *const u16,
+    file: *const u16,
+    line: u32,
+    reserved: usize,
+);
+static INVALID_PARAMETER_HANDLER: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+pub extern "win64" fn set_invalid_parameter_handler(handler: usize) -> usize {
+    INVALID_PARAMETER_HANDLER.swap(handler, std::sync::atomic::Ordering::AcqRel)
+}
+
+pub extern "win64" fn get_invalid_parameter_handler() -> usize {
+    INVALID_PARAMETER_HANDLER.load(std::sync::atomic::Ordering::Acquire)
+}
+
+pub extern "win64" fn set_thread_local_invalid_parameter_handler(handler: usize) -> usize {
+    set_invalid_parameter_handler(handler)
+}
+
+pub extern "win64" fn get_thread_local_invalid_parameter_handler() -> usize {
+    get_invalid_parameter_handler()
+}
+
+pub unsafe extern "win64" fn invalid_parameter(
+    expression: *const u16,
+    function: *const u16,
+    file: *const u16,
+    line: u32,
+    reserved: usize,
+) {
+    let handler = INVALID_PARAMETER_HANDLER.load(std::sync::atomic::Ordering::Acquire);
+    if handler != 0 {
+        let handler: InvalidParameterHandler = unsafe { std::mem::transmute(handler) };
+        unsafe { handler(expression, function, file, line, reserved) };
+    }
+}
+
+pub unsafe extern "win64" fn invalid_parameter_noinfo() {
+    unsafe { invalid_parameter(std::ptr::null(), std::ptr::null(), std::ptr::null(), 0, 0) };
+}
+
+pub unsafe extern "win64" fn invalid_parameter_noinfo_noreturn() -> ! {
+    unsafe { invalid_parameter(std::ptr::null(), std::ptr::null(), std::ptr::null(), 0, 0) };
+    std::process::abort();
+}
 /// __stdio_common_vsprintf_s: like vsprintf, but output that does not fit empties
 /// the buffer, sets ERANGE and returns -1.
 pub unsafe extern "win64" fn common_vsprintf_s(
@@ -231,6 +279,14 @@ pub unsafe extern "win64" fn common_vsprintf_s(
         return -1;
     }
     unsafe { super::ucrt::common_vsprintf(options, buffer, count, format, locale, args) }
+}
+/// vsprintf(buffer, format, argptr): standard C vsprintf for msvcrt.dll.
+pub unsafe extern "win64" fn vsprintf(
+    buffer: *mut c_char,
+    format: *const c_char,
+    args: *const u64,
+) -> i32 {
+    unsafe { super::ucrt::common_vsprintf(0, buffer, usize::MAX, format, 0, args) }
 }
 
 // ---- math ---------------------------------------------------------------------------
@@ -346,4 +402,9 @@ pub unsafe extern "win64" fn stream_buffer_pointers(
         }
     }
     0
+}
+
+/// _get_heap_handle returns the CRT heap handle (the process heap).
+pub extern "win64" fn get_heap_handle() -> usize {
+    crate::api::memory::heap::get_process_heap()
 }

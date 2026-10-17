@@ -110,6 +110,7 @@ impl Tree {
         };
         tree.load();
         tree.seed_steam();
+        tree.seed_vc_runtime();
         tree
     }
     fn seed_steam(&mut self) {
@@ -148,6 +149,23 @@ impl Tree {
                 .flat_map(|u| u.to_le_bytes())
                 .collect();
             self.set(active, "SteamClientDll64", 1, &dll_u16);
+        }
+    }
+    fn seed_vc_runtime(&mut self) {
+        if let Some((vc, _)) = self.walk(MACHINE, r"SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64", true) {
+            self.keys[vc].volatile = true;
+            self.set(vc, "Major", 4, &14u32.to_le_bytes());
+            self.set(vc, "Minor", 4, &34u32.to_le_bytes());
+            self.set(vc, "Bld", 4, &33810u32.to_le_bytes());
+            self.set(vc, "Rbld", 4, &0u32.to_le_bytes());
+            self.set(vc, "Installed", 4, &1u32.to_le_bytes());
+            let ver_val = "v14.34.33810";
+            let ver_u16: Vec<u8> = ver_val
+                .encode_utf16()
+                .chain(std::iter::once(0))
+                .flat_map(|u| u.to_le_bytes())
+                .collect();
+            self.set(vc, "Version", 1, &ver_u16);
         }
     }
     fn child(&self, k: usize, name: &str) -> Option<usize> {

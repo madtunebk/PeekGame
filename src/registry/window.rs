@@ -21,6 +21,10 @@ exports! {
     export!("user32.dll", "GetMenu", "window", "partial", "valid windows have no application menu; invalid HWND fails", crate::api::window::menus::menu),
     export!("user32.dll", "EnableMenuItem", "window", "partial", "no allocated menu handles; returns -1/ERROR_INVALID_MENU_HANDLE", crate::api::window::menus::enable),
     window!("RegisterClipboardFormatA", "process-local named formats; shared atom registry with W and window messages", misc::register_clipboard_format_a),
+    window!("wsprintfW", "formats string into buffer", misc::wsprintf_w),
+    window!("wsprintfA", "formats string into buffer", misc::wsprintf_a),
+    window!("wvsprintfW", "formats string with va_list into buffer", misc::wvsprintf_w),
+    window!("wvsprintfA", "formats string with va_list into buffer", misc::wvsprintf_a),
 
     export!("xinput1_3.dll", "XInputGetState", "input", "partial", "every slot ERROR_DEVICE_NOT_CONNECTED (no controller backend)", crate::api::window::input::xinput::get_state),
     export!("xinput1_3.dll", "XInputSetState", "input", "partial", "every slot ERROR_DEVICE_NOT_CONNECTED (no controller backend)", crate::api::window::input::xinput::set_state),

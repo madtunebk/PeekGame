@@ -154,7 +154,10 @@ fn canonical(dll: &str) -> String {
     if lower.starts_with("api-ms-win-downlevel-shell32-") {
         return "shell32".into();
     }
-    if lower.starts_with("api-ms-win-downlevel-advapi32-") {
+    if lower.starts_with("api-ms-win-downlevel-advapi32-")
+        || lower.starts_with("api-ms-win-eventing-provider-")
+        || lower.starts_with("api-ms-win-eventing-classicprovider-")
+    {
         return "advapi32".into();
     }
     if lower.starts_with("api-ms-win-downlevel-user32-") {
@@ -206,6 +209,12 @@ pub fn find_import(dll: &str, name: Option<&str>, ordinal: Option<u16>) -> Optio
 pub fn provides(dll: &str) -> bool {
     let normalized = canonical(dll);
     entries().any(|e| e.dll.strip_suffix(".dll").unwrap_or(e.dll) == normalized)
+}
+
+pub fn by_address(address: usize) -> Option<&'static str> {
+    entries().find(|e| {
+        e.address.map(|f| f() as usize) == Some(address)
+    }).map(|e| e.dll)
 }
 
 #[cfg(test)]

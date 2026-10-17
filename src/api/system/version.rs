@@ -196,6 +196,30 @@ pub unsafe extern "win64" fn rtl_verify_version_info(
     }
 }
 
+/// The ExW variants need a real PE VERSION resource. Do not synthesize a
+/// Windows 10 version for arbitrary files; report unsupported extraction.
+pub unsafe extern "win64" fn get_file_version_info_size_ex_w(
+    flags: u32, filename: *const u16, handle: *mut u32,
+) -> u32 {
+    if !handle.is_null() { unsafe { *handle = 0 }; }
+    if filename.is_null() || flags & !0x7 != 0 {
+        error::set(87); // ERROR_INVALID_PARAMETER
+    } else {
+        error::set(50); // ERROR_NOT_SUPPORTED
+    }
+    0
+}
+pub unsafe extern "win64" fn get_file_version_info_ex_w(
+    flags: u32, filename: *const u16, _handle: u32, _len: u32, _data: *mut u8,
+) -> i32 {
+    if filename.is_null() || flags & !0x7 != 0 {
+        error::set(87); // ERROR_INVALID_PARAMETER
+    } else {
+        error::set(50); // ERROR_NOT_SUPPORTED
+    }
+    0
+}
+
 pub unsafe extern "win64" fn get_file_version_info_size_w(
     filename: *const u16,
     handle: *mut u32,

@@ -52,8 +52,38 @@ pub(super) fn notify() {
 pub(super) fn owner(hwnd: usize) -> Option<u32> {
     state::windows().get(&hwnd).map(|w| w.owner)
 }
-/// Posts to `thread`'s queue. Successive mouse moves to one window coalesce, as on
-/// Windows.
+/// Merge motion only within the current run of mouse messages. A button, wheel,
+/// keyboard or other window's event is an ordering boundary.
+pub(super) fn merge_pending_raw_mouse(
+    thread: u32,
+    window: usize,
+    dx: i32,
+    dy: i32,
+    point: Point,
+) -> bool {
+    with(thread, |q| {
+        for pending in q.posted.iter_mut().rev() {
+            if pending.window != window {
+                return false;
+            }
+            match pending.message {
+                WM_MOUSEMOVE => continue,
+                WM_INPUT => {
+                    if super::input::merge_raw_mouse(thread, pending.lparam as usize, dx, dy) {
+                        pending.time = time::milliseconds();
+                        pending.point = point;
+                        return true;
+                    }
+                    return false;
+                }
+                _ => return false,
+            }
+        }
+        false
+    })
+}
+/// Posts to `thread`'s queue. Coalesce mouse motion across unread raw-motion
+/// messages, without moving it across button, wheel or keyboard input.
 pub(super) fn post_to(thread: u32, message: Message) {
     if matches!(message.message, 0xff | 0x200..=0x209) {
         super::input::trace_input(format_args!(
@@ -68,11 +98,22 @@ pub(super) fn post_to(thread: u32, message: Message) {
     }
     with(thread, |q| {
         if message.message == WM_MOUSEMOVE {
-            if let Some(last) = q.posted.back_mut() {
-                if last.message == WM_MOUSEMOVE && last.window == message.window {
-                    *last = message;
-                    return;
+            let mut stale = None;
+            for (index, pending) in q.posted.iter().enumerate().rev() {
+                if pending.window != message.window {
+                    break;
                 }
+                match pending.message {
+                    WM_MOUSEMOVE => {
+                        stale = Some(index);
+                        break;
+                    }
+                    WM_INPUT if super::input::is_pending_mouse_motion(thread, pending.lparam as usize) => {}
+                    _ => break,
+                }
+            }
+            if let Some(index) = stale {
+                q.posted.remove(index);
             }
         }
         q.posted.push_back(message);

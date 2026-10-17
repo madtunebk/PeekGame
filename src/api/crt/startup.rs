@@ -220,6 +220,79 @@ pub extern "win64" fn initial_narrow_environment() -> *const *const c_char {
     args().envp.as_ptr().cast()
 }
 
+pub extern "win64" fn get_narrow_winmain_command_line() -> *const c_char {
+    static WINMAIN_CMD: OnceLock<CString> = OnceLock::new();
+    WINMAIN_CMD
+        .get_or_init(|| {
+            let line = crate::host::process::PROCESS
+                .get()
+                .expect("process configured")
+                .command_line
+                .to_bytes();
+            let mut idx = 0;
+            while idx < line.len() && (line[idx] == b' ' || line[idx] == b'\t') {
+                idx += 1;
+            }
+            if idx < line.len() && line[idx] == b'"' {
+                idx += 1;
+                while idx < line.len() && line[idx] != b'"' {
+                    idx += 1;
+                }
+                if idx < line.len() && line[idx] == b'"' {
+                    idx += 1;
+                }
+            } else {
+                while idx < line.len() && line[idx] != b' ' && line[idx] != b'\t' {
+                    idx += 1;
+                }
+            }
+            while idx < line.len() && (line[idx] == b' ' || line[idx] == b'\t') {
+                idx += 1;
+            }
+            CString::new(&line[idx..]).unwrap_or_default()
+        })
+        .as_ptr()
+}
+
+pub extern "win64" fn get_wide_winmain_command_line() -> *const u16 {
+    static WINMAIN_WCMD: OnceLock<Vec<u16>> = OnceLock::new();
+    WINMAIN_WCMD
+        .get_or_init(|| {
+            let wline: Vec<u16> = crate::host::process::PROCESS
+                .get()
+                .expect("process configured")
+                .command_line
+                .to_string_lossy()
+                .encode_utf16()
+                .collect();
+            let mut idx = 0;
+            while idx < wline.len() && (wline[idx] == b' ' as u16 || wline[idx] == b'\t' as u16) {
+                idx += 1;
+            }
+            if idx < wline.len() && wline[idx] == b'"' as u16 {
+                idx += 1;
+                while idx < wline.len() && wline[idx] != b'"' as u16 {
+                    idx += 1;
+                }
+                if idx < wline.len() && wline[idx] == b'"' as u16 {
+                    idx += 1;
+                }
+            } else {
+                while idx < wline.len() && wline[idx] != b' ' as u16 && wline[idx] != b'\t' as u16 {
+                    idx += 1;
+                }
+            }
+            while idx < wline.len() && (wline[idx] == b' ' as u16 || wline[idx] == b'\t' as u16) {
+                idx += 1;
+            }
+            let mut rem = wline[idx..].to_vec();
+            rem.push(0);
+            rem
+        })
+        .as_ptr()
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;

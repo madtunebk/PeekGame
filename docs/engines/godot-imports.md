@@ -1,5 +1,28 @@
 # Godot import ledger
 
+## Mouse motion queue latency
+
+- **Affected APIs:** `user32.dll!PeekMessageW` and `GetMessageW` consume
+  `WM_MOUSEMOVE` and `WM_INPUT`; `RegisterRawInputDevices`, `GetRawInputData`
+  and `GetRawInputBuffer` expose the raw mouse packets.
+- **Trigger:** Gundam Survivors' hover could follow the pointer tens of seconds
+  late after motion. The window pump posts a raw motion message followed by a
+  mouse move for each X11 motion event. The queue previously coalesced only
+  adjacent `WM_MOUSEMOVE` messages, so interleaved `WM_INPUT` packets defeated
+  that limit.
+- **Implementation:** pending relative raw motion is accumulated within the
+  current run of mouse messages. The latest `WM_MOUSEMOVE` replaces a stale one
+  across unread raw motion. Buttons, wheel input, keyboard messages and other
+  windows remain ordering boundaries. A packet already read through
+  `GetRawInputData` is never changed.
+- **Scope:** shared window/input layer, so other engines using the same Win32
+  message queue benefit. Coordinate mapping itself is unchanged.
+- **Verification:** `cargo build --release --offline` and
+  `python3 tests/test_godot_input.py` passed. The private Xvfb Godot probe tests
+  three window sizes and a 2500-event pointer burst followed by a click.
+  Gundam's desktop hover still needs an owner run to confirm this fixes its
+  reported symptom.
+
 ## CRT thread termination: msvcrt.dll!_endthreadex
 
 - **Trigger:** Gundam Survivors hung on quit with audio and its window still alive.

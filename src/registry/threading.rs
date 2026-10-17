@@ -550,6 +550,13 @@ exports! {
         critical::initialize_spin
     ),
     implemented!(
+        "SetCriticalSectionSpinCount",
+        "threading",
+        "partial",
+        "recursive host mutex; update spin hint",
+        critical::set_spin_count
+    ),
+    implemented!(
         "EnterCriticalSection",
         "threading",
         "partial",

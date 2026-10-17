@@ -1,6 +1,7 @@
 //! Export declarations for loader. Implementation stays in api/.
 use crate::api::system::dynamic;
 use crate::api::system::modules;
+use crate::api::system::resources;
 use crate::registry::Export;
 
 exports! {
@@ -115,5 +116,54 @@ exports! {
         "partial",
         "main image, PeekGame DLLs or loaded PE modules; never loads",
         modules::get_module_handle_w
+    ),
+    implemented!(
+        "FindResourceW",
+        "system",
+        "implemented",
+        "finds resource in mapped module .rsrc tree",
+        resources::find_resource_w
+    ),
+    implemented!(
+        "FindResourceA",
+        "system",
+        "implemented",
+        "finds resource in mapped module .rsrc tree",
+        resources::find_resource_a
+    ),
+    implemented!(
+        "FindResourceExW",
+        "system",
+        "implemented",
+        "finds resource in mapped module .rsrc tree",
+        resources::find_resource_ex_w
+    ),
+    implemented!(
+        "LoadResource",
+        "system",
+        "implemented",
+        "returns pointer to mapped resource data",
+        resources::load_resource
+    ),
+    implemented!(
+        "LockResource",
+        "system",
+        "implemented",
+        "returns resource data pointer directly",
+        resources::lock_resource
+    ),
+    implemented!(
+        "SizeofResource",
+        "system",
+        "implemented",
+        "returns size of resource data entry",
+        resources::sizeof_resource
+    ),
+    implemented!(
+        "FreeResource",
+        "system",
+        "implemented",
+        "no-op on 32/64-bit Windows",
+        resources::free_resource
     ),
 }

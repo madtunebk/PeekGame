@@ -2,7 +2,7 @@
 Requires Godot and its Windows x86_64 release export template; override the
 latter with PEEKGAME_GODOT_TEMPLATE to test a different engine executable.
 """
-import os,sys,subprocess,time,shutil
+import os,sys,subprocess,time,shutil,ctypes
 from pathlib import Path
 root=Path(__file__).resolve().parents[1];sys.path.insert(0,str(root/'tests'))
 from private_x11 import display
@@ -34,10 +34,28 @@ with display() as d,open(work/'run.log','w') as log:
    time.sleep(.2)
    subprocess.run(['xdotool','click','1'],env=env,check=True)
    time.sleep(.3)
+  # Thousands of X motion events must not leave the final hover/click behind.
+  x11=ctypes.CDLL('libX11.so.6')
+  x11.XOpenDisplay.argtypes=[ctypes.c_char_p];x11.XOpenDisplay.restype=ctypes.c_void_p
+  x11.XWarpPointer.argtypes=[ctypes.c_void_p,ctypes.c_ulong,ctypes.c_ulong]+[ctypes.c_int]*6
+  x11.XSync.argtypes=[ctypes.c_void_p,ctypes.c_int]
+  x11.XCloseDisplay.argtypes=[ctypes.c_void_p]
+  native=x11.XOpenDisplay(d.encode())
+  if not native:raise RuntimeError('Cannot open private X display')
+  for i in range(2500):
+   x,y=(30,30) if i%2 else (width//2,height//2)
+   x11.XWarpPointer(native,0,int(win),0,0,0,0,x,y)
+  x11.XWarpPointer(native,0,int(win),0,0,0,0,width//2,height//2)
+  x11.XSync(native,0);x11.XCloseDisplay(native)
+  subprocess.run(['xdotool','click','1'],env=env,check=True)
+  for _ in range(60):
+   if (work/'run.log').read_text().count('INPUT_PROBE_PRESSED')>=4:break
+   time.sleep(.05)
+  else:raise RuntimeError('Godot click lagged behind motion burst')
  finally:
   p.terminate();p.wait(timeout=5)
 text=(work/'run.log').read_text()
-assert text.count('INPUT_PROBE_PRESSED')==3, f'Expected three button clicks; inspect {work}/run.log'
+assert text.count('INPUT_PROBE_PRESSED')==4, f'Expected four button clicks; inspect {work}/run.log'
 for size in ['(640, 360)','(800, 600)','(960, 540)']:
  assert any('position=(320.0, 180.0)' in line and 'window='+size in line for line in text.splitlines()), size
 print(f'PASS: Godot button hit testing at three moved/resized window sizes; log {work}/run.log')

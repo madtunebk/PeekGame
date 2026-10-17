@@ -47,6 +47,21 @@ int main(int argc,char **argv) {
     assert(!SLOT(client,8,void *(WIN *)(void *,int32_t,int32_t,const char *))(client,user,pipe,"SteamFriends018"));
     void *utils=SLOT(client,9,void *(WIN *)(void *,int32_t,const char *))(client,pipe,"SteamUtils010");
     assert(utils && SLOT(utils,9,uint32_t(WIN *)(void *))(utils)==952060);
+    void *mm=SLOT(client,12,void *(WIN *)(void *,int32_t,int32_t,const char *))(client,user,pipe,"SteamMatchMaking009");
+    assert(mm && mm!=SLOT(linux_create("SteamClient020",NULL),12,void *(*)(void *,int32_t,int32_t,const char *))(linux_create("SteamClient020",NULL),user,pipe,"SteamMatchMaking009"));
+    assert(mm==SLOT(client,10,void *(WIN *)(void *,int32_t,int32_t,const char *))(client,user,pipe,"SteamMatchMaking009"));
+    assert(SLOT(mm,4,uint64_t(WIN *)(void *))(mm)==0x123456789ULL);
+    uint64_t lobby_id=0;
+    assert(SLOT(mm,12,uint64_t *(WIN *)(void *,uint64_t *,int))(mm,&lobby_id,0)==&lobby_id);
+    assert(lobby_id==0xdeadbeefULL);
+    uint64_t lobby_owner=0;
+    assert(SLOT(mm,35,uint64_t *(WIN *)(void *,uint64_t *,uint64_t))(mm,&lobby_owner,lobby_id)==&lobby_owner);
+    assert(lobby_owner==0x0110000100000001ULL);
+    assert(SLOT(mm,13,uint64_t(WIN *)(void *,int,int))(mm,2,5)==0x987654321ULL);
+    assert(*(int *)dlsym(fake,"fake_mm_type")==2 && *(int *)dlsym(fake,"fake_mm_members")==5);
+    assert(SLOT(mm,20,bool(WIN *)(void *,uint64_t,const char *,const char *))(mm,0xdeadbeefULL,"mode","coop"));
+    assert(*(uint64_t *)dlsym(fake,"fake_mm_lobby")==0xdeadbeefULL);
+    assert(!strcmp(SLOT(mm,19,const char *(WIN *)(void *,uint64_t,const char *))(mm,0xdeadbeefULL,"mode"),"coop"));
 
     assert(SLOT(steam_user,0,int32_t(WIN *)(void *))(steam_user)==3);
     assert(SLOT(steam_user,1,bool(WIN *)(void *))(steam_user));

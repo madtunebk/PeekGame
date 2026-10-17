@@ -979,3 +979,74 @@ pub(crate) extern "win64" fn get_sys_color_brush(index: i32) -> usize {
     }
 }
 
+pub unsafe extern "win64" fn wsprintf_w_impl(
+    buffer: *mut u16,
+    format: *const u16,
+    args: *const u64,
+) -> i32 {
+    if buffer.is_null() {
+        return 0;
+    }
+    if format.is_null() {
+        unsafe { *buffer = 0 };
+        return 0;
+    }
+    unsafe { crate::api::crt::ucrt::common_vswprintf(0, buffer, usize::MAX, format, 0, args) }
+}
+
+pub unsafe extern "win64" fn wsprintf_a_impl(
+    buffer: *mut std::ffi::c_char,
+    format: *const std::ffi::c_char,
+    args: *const u64,
+) -> i32 {
+    if buffer.is_null() {
+        return 0;
+    }
+    if format.is_null() {
+        unsafe { *buffer = 0 };
+        return 0;
+    }
+    unsafe { crate::api::crt::ucrt::common_vsprintf(0, buffer, usize::MAX, format, 0, args) }
+}
+
+std::arch::global_asm!(
+    ".text",
+    ".globl peekgame_user32_wsprintf_w",
+    "peekgame_user32_wsprintf_w:",
+    "mov [rsp+24], r8",
+    "mov [rsp+32], r9",
+    "lea r8, [rsp+24]",
+    "jmp {wide}",
+    ".globl peekgame_user32_wsprintf_a",
+    "peekgame_user32_wsprintf_a:",
+    "mov [rsp+24], r8",
+    "mov [rsp+32], r9",
+    "lea r8, [rsp+24]",
+    "jmp {narrow}",
+    wide = sym wsprintf_w_impl,
+    narrow = sym wsprintf_a_impl,
+);
+
+unsafe extern "win64" {
+    #[link_name = "peekgame_user32_wsprintf_w"]
+    pub fn wsprintf_w(buffer: *mut u16, format: *const u16) -> i32;
+    #[link_name = "peekgame_user32_wsprintf_a"]
+    pub fn wsprintf_a(buffer: *mut std::ffi::c_char, format: *const std::ffi::c_char) -> i32;
+}
+
+pub unsafe extern "win64" fn wvsprintf_w(
+    buffer: *mut u16,
+    format: *const u16,
+    arglist: *const u64,
+) -> i32 {
+    unsafe { wsprintf_w_impl(buffer, format, arglist) }
+}
+
+pub unsafe extern "win64" fn wvsprintf_a(
+    buffer: *mut std::ffi::c_char,
+    format: *const std::ffi::c_char,
+    arglist: *const u64,
+) -> i32 {
+    unsafe { wsprintf_a_impl(buffer, format, arglist) }
+}
+

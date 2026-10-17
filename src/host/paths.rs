@@ -27,7 +27,34 @@ pub fn host(text: &str) -> Result<PathBuf, u32> {
         text = text[4..].to_owned();
     }
     if text.as_bytes().get(1) == Some(&b':') {
-        if !text[..1].eq_ignore_ascii_case("z") {
+        let drive = text.as_bytes()[0];
+        if drive.eq_ignore_ascii_case(&b'c') {
+            let relative = text[2..].trim_start_matches('/');
+            let lower = relative.to_ascii_lowercase();
+            if lower.contains("steamclient64.dll") {
+                if let Ok(home) = std::env::var("HOME") {
+                    let candidates = [
+                        PathBuf::from(&home).join(".steam/debian-installation/steamclient64.dll"),
+                        PathBuf::from(&home).join(".steam/debian-installation/legacycompat/steamclient64.dll"),
+                        PathBuf::from(&home).join(".steam/steam/steamclient64.dll"),
+                        PathBuf::from(&home).join(".steam/root/steamclient64.dll"),
+                    ];
+                    for cand in &candidates {
+                        if cand.is_file() {
+                            return Ok(cand.clone());
+                        }
+                    }
+                }
+            }
+            let base = std::env::var_os("XDG_DATA_HOME")
+                .map(PathBuf::from)
+                .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
+                .unwrap_or_else(|| PathBuf::from("/tmp"))
+                .join("peekgame");
+            let drive_c = base.join("drive_c");
+            let target_root = if drive_c.is_dir() { drive_c } else { base };
+            return Ok(resolve_case(target_root.join(relative)));
+        } else if !drive.eq_ignore_ascii_case(&b'z') {
             return Err(3);
         }
         text = text[2..].to_owned();

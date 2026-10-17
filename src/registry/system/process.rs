@@ -9,6 +9,7 @@ use crate::registry::Export;
 
 exports! {
     implemented!("GetProcessId", "system", "partial", "current-process handle only; others ERROR_INVALID_HANDLE", process::get_process_id),
+    implemented!("FlushInstructionCache", "system", "implemented", "coherent hardware no-op", process::flush_instruction_cache),
 
     export!("ntdll.dll", "RtlDllShutdownInProgress", "system", "implemented", "actual process ExitProcess shutdown state", process::dll_shutdown_in_progress),
     export!("ktmw32.dll", "CreateTransaction", "system", "partial", "unsupported transactions: INVALID_HANDLE_VALUE and ERROR_NOT_SUPPORTED", crate::api::system::transactions::create),
@@ -216,4 +217,8 @@ exports! {
     implemented!("GetEnvironmentStringsA", "system", "implemented", "ANSI/UTF-8 snapshot block of the host environment", environment::strings_a),
     implemented!("FreeEnvironmentStringsA", "system", "implemented", "blocks from GetEnvironmentStrings/GetEnvironmentStringsA", environment::free_strings_a),
     export!("ntdll.dll", "NtQueryInformationProcess", "system", "partial", "basic process info and debug port for current process", crate::api::system::nt_info::query_information_process),
+    export!("ntdll.dll", "NtSetInformationThread", "system", "partial", "thread information and debugger hiding", crate::api::system::nt_info::set_information_thread),
+    export!("ntdll.dll", "ZwSetInformationThread", "system", "partial", "thread information and debugger hiding", crate::api::system::nt_info::set_information_thread),
+    export!("ntdll.dll", "NtQueryInformationThread", "system", "partial", "thread information queries", crate::api::system::nt_info::query_information_thread),
+    export!("ntdll.dll", "ZwQueryInformationThread", "system", "partial", "thread information queries", crate::api::system::nt_info::query_information_thread),
 }
