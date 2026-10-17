@@ -210,13 +210,21 @@ fn create(path: PathBuf, access: u32, disposition: u32, flags: u32) -> usize {
     if writes && access & 0x5000_0002 == 0 {
         options.append(true);
     }
-    match disposition {
-        1 => options.create_new(true),            // CREATE_NEW
-        2 => options.create(true).truncate(true), // CREATE_ALWAYS
-        3 => &mut options,                        // OPEN_EXISTING
-        4 => options.create(true),                // OPEN_ALWAYS
-        5 => options.truncate(true),              // TRUNCATE_EXISTING
-        _ => return fail(87, INVALID_HANDLE),
+    // Rust refuses to create without write access, Windows does not (GENERIC_READ
+    // with OPEN_ALWAYS/CREATE_NEW/CREATE_ALWAYS makes the file): open(2) flags then.
+    const O_CREAT: i32 = 0o100;
+    const O_EXCL: i32 = 0o200;
+    const O_TRUNC: i32 = 0o1000;
+    match (disposition, writes) {
+        (1, true) => options.create_new(true),            // CREATE_NEW
+        (2, true) => options.create(true).truncate(true), // CREATE_ALWAYS
+        (4, true) => options.create(true),                // OPEN_ALWAYS
+        (1, false) => options.custom_flags(O_CREAT | O_EXCL),
+        (2, false) => options.custom_flags(O_CREAT | O_TRUNC),
+        (4, false) => options.custom_flags(O_CREAT),
+        (3, _) => &mut options,                           // OPEN_EXISTING
+        (5, true) => options.truncate(true),              // TRUNCATE_EXISTING
+        _ => return fail(87, INVALID_HANDLE),             // TRUNCATE_EXISTING needs write access
     };
     if writes && matches!(disposition, 2 | 4) {
         options.write(true);
@@ -942,78 +950,111 @@ pub unsafe extern "win64" fn set_time(
         Err(code) => fail(code, 0),
     }
 }
-/// LockFile: locks a range of a file.
-pub unsafe extern "win64" fn lock_file(
-    handle: usize,
-    _offset_low: u32,
-    _offset_high: u32,
-    _count_low: u32,
-    _count_high: u32,
-) -> i32 {
-    if get(handle).is_none() {
-        return fail(ERROR_INVALID_HANDLE, 0);
+/// Byte-range locks as Linux open-file-description locks: like Windows locks they
+/// belong to the open file, so two handles to one file conflict even in one process,
+/// and duplicated handles share them. They are advisory (Windows' are mandatory: a
+/// locked range is not enforced against plain reads and writes). A zero-length range
+/// locks nothing, as on Windows.
+fn lock_range(handle: usize, offset: u64, length: u64, kind: i16, wait: bool) -> Result<(), u32> {
+    #[repr(C)]
+    struct Flock {
+        kind: i16,
+        whence: i16,
+        start: i64,
+        length: i64,
+        pid: i32,
     }
-    1
-}
-/// LockFileEx: locks a range of a file, supporting flags and OVERLAPPED.
-pub unsafe extern "win64" fn lock_file_ex(
-    handle: usize,
-    _flags: u32,
-    _reserved: u32,
-    _count_low: u32,
-    _count_high: u32,
-    ov: *mut u8,
-) -> i32 {
-    let Some(_entry) = get(handle) else {
-        return fail(ERROR_INVALID_HANDLE, 0);
-    };
-    if !ov.is_null() {
-        unsafe {
-            (ov as *mut i64).write_unaligned(0); // STATUS_SUCCESS
-            (ov.add(8) as *mut u64).write_unaligned(0);
-            let event = (ov.add(24) as *const usize).read_unaligned();
-            if event != 0 {
-                crate::api::threading::events::set(event & !1);
-            }
+    unsafe extern "C" {
+        fn fcntl(fd: i32, command: i32, ...) -> i32;
+    }
+    const F_OFD_SETLK: i32 = 37;
+    const F_OFD_SETLKW: i32 = 38;
+    let entry = get(handle).ok_or(ERROR_INVALID_HANDLE)?;
+    if length == 0 {
+        return Ok(());
+    }
+    let start = i64::try_from(offset).map_err(|_| 87u32)?;
+    // A range reaching past i64::MAX locks to the end of all offsets (length 0).
+    let length = i64::try_from(length).ok().filter(|l| start.checked_add(*l).is_some()).unwrap_or(0);
+    let lock = Flock { kind, whence: 0, start, length, pid: 0 };
+    let fd = std::os::fd::AsRawFd::as_raw_fd(&entry.file);
+    loop {
+        if unsafe { fcntl(fd, if wait { F_OFD_SETLKW } else { F_OFD_SETLK }, &lock) } == 0 {
+            return Ok(());
+        }
+        match std::io::Error::last_os_error().raw_os_error() {
+            Some(4) => continue,               // EINTR
+            Some(11 | 13) => return Err(33),   // EAGAIN/EACCES: ERROR_LOCK_VIOLATION
+            Some(35) => return Err(33),        // EDEADLK
+            _ => return Err(ERROR_INVALID_HANDLE),
         }
     }
-    1
 }
-/// UnlockFile: unlocks a range of a file.
-pub unsafe extern "win64" fn unlock_file(
-    handle: usize,
-    _offset_low: u32,
-    _offset_high: u32,
-    _count_low: u32,
-    _count_high: u32,
-) -> i32 {
-    if get(handle).is_none() {
-        return fail(ERROR_INVALID_HANDLE, 0);
-    }
-    1
+const F_RDLCK: i16 = 0;
+const F_WRLCK: i16 = 1;
+const F_UNLCK: i16 = 2;
+fn join(low: u32, high: u32) -> u64 {
+    low as u64 | (high as u64) << 32
 }
-/// UnlockFileEx: unlocks a range of a file.
-pub unsafe extern "win64" fn unlock_file_ex(
-    handle: usize,
-    _reserved: u32,
-    _count_low: u32,
-    _count_high: u32,
-    ov: *mut u8,
-) -> i32 {
-    let Some(_entry) = get(handle) else {
-        return fail(ERROR_INVALID_HANDLE, 0);
-    };
-    if !ov.is_null() {
-        unsafe {
-            (ov as *mut i64).write_unaligned(0); // STATUS_SUCCESS
-            (ov.add(8) as *mut u64).write_unaligned(0);
-            let event = (ov.add(24) as *const usize).read_unaligned();
-            if event != 0 {
-                crate::api::threading::events::set(event & !1);
+/// The OVERLAPPED offset of a LockFileEx/UnlockFileEx call, which completes now.
+unsafe fn lock_offset(ov: *mut u8) -> Option<u64> {
+    (!ov.is_null()).then(|| unsafe {
+        join((ov.add(16) as *const u32).read_unaligned(), (ov.add(20) as *const u32).read_unaligned())
+    })
+}
+unsafe fn lock_done(ov: *mut u8, result: Result<(), u32>) -> i32 {
+    match result {
+        Ok(()) => {
+            unsafe {
+                (ov as *mut i64).write_unaligned(0);
+                (ov.add(8) as *mut u64).write_unaligned(0);
+                let event = (ov.add(24) as *const usize).read_unaligned();
+                if event != 0 {
+                    crate::api::threading::events::set(event & !1);
+                }
             }
+            1
         }
+        Err(code) => fail(code, 0),
     }
-    1
+}
+/// LockFile: an exclusive lock that fails at once (ERROR_LOCK_VIOLATION) on conflict.
+pub unsafe extern "win64" fn lock_file(handle: usize, offset_low: u32, offset_high: u32, count_low: u32, count_high: u32) -> i32 {
+    match lock_range(handle, join(offset_low, offset_high), join(count_low, count_high), F_WRLCK, false) {
+        Ok(()) => 1,
+        Err(code) => fail(code, 0),
+    }
+}
+/// LockFileEx: LOCKFILE_EXCLUSIVE_LOCK (2) or shared, LOCKFILE_FAIL_IMMEDIATELY (1)
+/// or wait; the offset comes from the OVERLAPPED. Waiting blocks the caller.
+pub unsafe extern "win64" fn lock_file_ex(handle: usize, flags: u32, reserved: u32, count_low: u32, count_high: u32, ov: *mut u8) -> i32 {
+    if reserved != 0 || flags & !3 != 0 {
+        return fail(87, 0);
+    }
+    let Some(offset) = (unsafe { lock_offset(ov) }) else {
+        return fail(87, 0);
+    };
+    let kind = if flags & 2 != 0 { F_WRLCK } else { F_RDLCK };
+    unsafe { lock_done(ov, lock_range(handle, offset, join(count_low, count_high), kind, flags & 1 == 0)) }
+}
+pub unsafe extern "win64" fn unlock_file(handle: usize, offset_low: u32, offset_high: u32, count_low: u32, count_high: u32) -> i32 {
+    match lock_range(handle, join(offset_low, offset_high), join(count_low, count_high), F_UNLCK, false) {
+        Ok(()) => 1,
+        Err(code) => fail(code, 0),
+    }
+}
+pub unsafe extern "win64" fn unlock_file_ex(handle: usize, reserved: u32, count_low: u32, count_high: u32, ov: *mut u8) -> i32 {
+    if reserved != 0 {
+        return fail(87, 0);
+    }
+    let Some(offset) = (unsafe { lock_offset(ov) }) else {
+        return fail(87, 0);
+    };
+    unsafe { lock_done(ov, lock_range(handle, offset, join(count_low, count_high), F_UNLCK, false)) }
+}
+/// The host path behind a file handle (directory handles included).
+pub(super) fn handle_path(handle: usize) -> Option<PathBuf> {
+    get(handle)?.path.lock().unwrap().clone()
 }
 
 // ---- directory searches ---------------------------------------------------

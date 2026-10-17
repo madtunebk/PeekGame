@@ -134,29 +134,29 @@ exports! {
     implemented!(
         "LockFile",
         "filesystem",
-        "implemented",
-        "locks file range",
+        "partial",
+        "advisory OFD lock (per open file); exclusive, fail-immediately",
         files::lock_file
     ),
     implemented!(
         "LockFileEx",
         "filesystem",
-        "implemented",
-        "locks file range with flags and overlapped",
+        "partial",
+        "advisory OFD lock: shared/exclusive, fail-immediately or blocking wait; completes at once",
         files::lock_file_ex
     ),
     implemented!(
         "UnlockFile",
         "filesystem",
-        "implemented",
-        "unlocks file range",
+        "partial",
+        "releases an OFD lock range (unlocked ranges are not reported as ERROR_NOT_LOCKED)",
         files::unlock_file
     ),
     implemented!(
         "UnlockFileEx",
         "filesystem",
-        "implemented",
-        "unlocks file range with overlapped",
+        "partial",
+        "releases an OFD lock range at the OVERLAPPED offset",
         files::unlock_file_ex
     ),
     implemented!(

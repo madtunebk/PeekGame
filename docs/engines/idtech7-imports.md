@@ -269,6 +269,24 @@
   early_appdata, crt_port, filelength, max_stdio, `cargo test` pass. DOOM streamed
   37239 reads at ~8.7 GB/s; MarioVsLuigi 0 exceptions.
 
+## Audit batch A: filesystem follow-ups (shared)
+
+- CreateFile: GENERIC_READ with OPEN_ALWAYS/CREATE_NEW/CREATE_ALWAYS failed (Rust
+  refuses to create without write access); now open(2) O_CREAT[/O_EXCL/O_TRUNC].
+  TRUNCATE_EXISTING without write access is ERROR_INVALID_PARAMETER.
+- LockFile/LockFileEx/UnlockFile(Ex) faked success; now Linux OFD locks (per open
+  file, conflicting between handles in one process, shared by duplicates):
+  shared/exclusive, fail-immediately or wait, zero length locks nothing. Advisory,
+  unlike Windows' mandatory locks; unlocking an unlocked range is not reported.
+- NtCreateFile: RootDirectory-relative names, FILE_DIRECTORY_FILE /
+  FILE_NON_DIRECTORY_FILE / FILE_DELETE_ON_CLOSE, invalid disposition
+  STATUS_INVALID_PARAMETER, Information FILE_CREATED/OPENED/OVERWRITTEN/SUPERSEDED.
+- Not changed: an overlapped read failing at once with EOF still queues its IOCP
+  packet. The audit called this a double notification, but `test_iocp.py`
+  deliberately asserts the packet and real Windows behaviour is unverified here.
+- **Verification:** `python3 tests/test_fs_batch_a.py` **PASS**; files_sync,
+  save_safety, iocp, iocp_pipe, read_scatter, case_paths, move_file, audit_fixes pass.
+
 ## Next
 
 - Done: `CloseWindow` (minimize); unbridged interfaces logged once; 720x576 came

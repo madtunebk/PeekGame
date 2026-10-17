@@ -176,34 +176,73 @@ pub unsafe extern "win64" fn create(
         return 0;
     }
 
+    // FILE_SUPERSEDE 0, FILE_OPEN 1, FILE_CREATE 2, FILE_OPEN_IF 3, FILE_OVERWRITE 4,
+    // FILE_OVERWRITE_IF 5 as CreateFile dispositions.
     let win32_disp = match disposition {
-        0 => 2,
+        0 | 5 => 2,
         1 => 3,
         2 => 1,
         3 => 4,
         4 => 5,
-        5 => 2,
-        _ => 3,
+        _ => return 0xC000000Du32 as i32,
     };
-
+    const FILE_DIRECTORY_FILE: u32 = 0x1;
+    const FILE_NON_DIRECTORY_FILE: u32 = 0x40;
+    const FILE_DELETE_ON_CLOSE: u32 = 0x1000;
+    // RootDirectory: the name is relative to that directory handle.
+    let root = unsafe { (*attr).root_directory };
+    let text = String::from_utf16_lossy(&path[..path.len() - 1]);
+    let host = if root != 0 {
+        let Some(base) = super::files::handle_path(root) else {
+            return 0xC0000008u32 as i32; // STATUS_INVALID_HANDLE
+        };
+        crate::host::paths::resolve_case(base.join(text.replace('\\', "/")))
+    } else {
+        match crate::host::paths::host(&text) {
+            Ok(p) => p,
+            Err(code) => return status(code) as i32,
+        }
+    };
+    let existed = host.symlink_metadata().ok();
+    if _options & FILE_DIRECTORY_FILE != 0 && existed.as_ref().is_some_and(|m| !m.is_dir()) {
+        return 0xC0000103u32 as i32; // STATUS_NOT_A_DIRECTORY
+    }
+    if _options & FILE_NON_DIRECTORY_FILE != 0 && existed.as_ref().is_some_and(|m| m.is_dir()) {
+        return 0xC00000BAu32 as i32; // STATUS_FILE_IS_A_DIRECTORY
+    }
+    let mut flags = file_attrs & 0xffff;
+    if _options & FILE_DIRECTORY_FILE != 0 {
+        flags |= 0x0200_0000; // FILE_FLAG_BACKUP_SEMANTICS
+    }
+    if _options & FILE_DELETE_ON_CLOSE != 0 {
+        flags |= 0x0400_0000;
+    }
+    let host_name: Vec<u16> = crate::host::paths::windows(&host).encode_utf16().chain([0]).collect();
     let handle = unsafe {
         super::files::create_w(
-            path.as_ptr(),
+            host_name.as_ptr(),
             access,
             share_access,
             0,
             win32_disp,
-            file_attrs,
+            flags,
             0,
         )
     };
 
     if handle != usize::MAX {
+        // FILE_SUPERSEDED 0, FILE_OPENED 1, FILE_CREATED 2, FILE_OVERWRITTEN 3.
+        let information = match (existed.is_some(), disposition) {
+            (false, _) => 2,
+            (true, 0) => 0,
+            (true, 4 | 5) => 3,
+            (true, _) => 1,
+        };
         unsafe {
             *file_handle = handle;
             io_status.write(IoStatus {
                 status: 0,
-                information: 1,
+                information,
             });
         }
         0
