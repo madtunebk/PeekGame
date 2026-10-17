@@ -2,7 +2,23 @@ use super::*;
 use crate::api::filesystem::files;
 use crate::api::filesystem::paths;
 exports! {
+    export!("ntdll.dll", "NtWriteFile", "filesystem", "partial", "synchronous current-position file/pipe/standard stream writes; APC, event and explicit offsets unsupported", crate::api::filesystem::nt_io::write),
+    export!("ntdll.dll", "NtReadFile", "filesystem", "partial", "synchronous current-position file/pipe/standard stream reads; APC, event and explicit offsets unsupported", crate::api::filesystem::nt_io::read),
+    export!("ntdll.dll", "NtCreateFile", "filesystem", "partial", "NT path and disposition mapping to host files", crate::api::filesystem::nt_io::create),
+    export!("ntdll.dll", "NtOpenFile", "filesystem", "partial", "NT open existing file", crate::api::filesystem::nt_io::open),
+    export!("ntdll.dll", "NtCancelIoFileEx", "filesystem", "partial", "NT cancel pending asynchronous I/O requests", crate::api::filesystem::nt_io::cancel_io_file_ex),
+    export!("ntdll.dll", "NtDeviceIoControlFile", "filesystem", "partial", "AFD socket polling and device IO control", crate::api::filesystem::nt_io::device_io_control_file),
+    implemented!("MoveFileW", "filesystem", "partial", "atomic same-filesystem rename, no destination replacement, UTF-16 Windows paths", files::move_w),
+    export!("ntdll.dll", "NtQueryDirectoryFile", "filesystem", "partial", "synchronous directory records, filtering and restart", crate::api::filesystem::directory::query),
+    export!("ntdll.dll", "NtQueryInformationFile", "filesystem", "partial", "basic, standard, internal, position, network open file info", crate::api::filesystem::nt_io::query_information_file),
+    export!("ntdll.dll", "NtQueryVolumeInformationFile", "filesystem", "partial", "disk device information; unsupported classes return STATUS_INVALID_INFO_CLASS", crate::api::filesystem::nt_io::query_volume_information_file),
+    export!("ntdll.dll", "NtSetInformationFile", "filesystem", "partial", "basic, position, allocation, end-of-file info", crate::api::filesystem::nt_io::set_information_file),
+    export!("ntdll.dll", "RtlNtStatusToDosError", "filesystem", "partial", "known file/IO statuses; unknown returns ERROR_MR_MID_NOT_FOUND", crate::api::filesystem::directory::status_to_dos),
     implemented!("SetNamedPipeHandleState", "file", "partial", "local Unix socket byte-stream pipe clients", crate::api::filesystem::pipes::set_state),
+    implemented!("GetLogicalDrives", "filesystem", "partial", "returns drive C: availability mask", files::get_logical_drives),
+    implemented!("GetVolumeInformationW", "filesystem", "partial", "NTFS filesystem info for root volume", files::get_volume_information_w),
+    implemented!("SetFileInformationByHandle", "filesystem", "partial", "sets file length and allocation info", files::set_file_information_by_handle),
+    implemented!("SetFileInformationByHandleW", "filesystem", "partial", "sets file length and allocation info", files::set_file_information_by_handle),
     implemented!(
         "CreateFileW",
         "filesystem",
@@ -23,6 +39,13 @@ exports! {
         "partial",
         "files, pipes, standard input; overlapped completes at once",
         files::read
+    ),
+    implemented!(
+        "ReadFileScatter",
+        "filesystem",
+        "partial",
+        "overlapped no-buffering file handles; page-sized segments, preadv at the OVERLAPPED offset, completes at once",
+        files::read_scatter
     ),
     implemented!(
         "SetFilePointer",
@@ -88,11 +111,53 @@ exports! {
         files::information_by_handle_ex
     ),
     implemented!(
+        "GetFileInformationByHandleExW",
+        "filesystem",
+        "partial",
+        "basic, standard, attribute tag, id classes",
+        files::information_by_handle_ex
+    ),
+    implemented!(
+        "GetFileTime",
+        "filesystem",
+        "implemented",
+        "creation, access and write times from handle metadata",
+        files::get_time
+    ),
+    implemented!(
         "SetFileTime",
         "filesystem",
         "partial",
         "access and write times; creation time ignored",
         files::set_time
+    ),
+    implemented!(
+        "LockFile",
+        "filesystem",
+        "partial",
+        "advisory OFD lock (per open file); exclusive, fail-immediately",
+        files::lock_file
+    ),
+    implemented!(
+        "LockFileEx",
+        "filesystem",
+        "partial",
+        "advisory OFD lock: shared/exclusive, fail-immediately or blocking wait; completes at once",
+        files::lock_file_ex
+    ),
+    implemented!(
+        "UnlockFile",
+        "filesystem",
+        "partial",
+        "releases an OFD lock range (unlocked ranges are not reported as ERROR_NOT_LOCKED)",
+        files::unlock_file
+    ),
+    implemented!(
+        "UnlockFileEx",
+        "filesystem",
+        "partial",
+        "releases an OFD lock range at the OVERLAPPED offset",
+        files::unlock_file_ex
     ),
     implemented!(
         "FindFirstFileExW",
@@ -114,6 +179,27 @@ exports! {
         "implemented",
         "next match",
         files::find_next_w
+    ),
+    implemented!(
+        "FindFirstFileExA",
+        "filesystem",
+        "partial",
+        "ANSI wrapper over FindFirstFileExW",
+        files::find_first_ex_a
+    ),
+    implemented!(
+        "FindFirstFileA",
+        "filesystem",
+        "partial",
+        "ANSI wrapper over FindFirstFileW",
+        files::find_first_a
+    ),
+    implemented!(
+        "FindNextFileA",
+        "filesystem",
+        "implemented",
+        "ANSI wrapper over FindNextFileW",
+        files::find_next_a
     ),
     implemented!(
         "FindClose",
@@ -179,11 +265,32 @@ exports! {
         files::temp_file_name_w
     ),
     implemented!(
+        "GetDiskFreeSpaceA",
+        "filesystem",
+        "implemented",
+        "statvfs cluster and sector metrics",
+        files::disk_free_space_a
+    ),
+    implemented!(
+        "GetDiskFreeSpaceW",
+        "filesystem",
+        "implemented",
+        "statvfs cluster and sector metrics",
+        files::disk_free_space_w
+    ),
+    implemented!(
         "GetDiskFreeSpaceExW",
         "filesystem",
         "implemented",
         "statvfs",
         files::disk_free_space_ex_w
+    ),
+    implemented!(
+        "GetDriveTypeA",
+        "filesystem",
+        "partial",
+        "Z: fixed, other drives absent",
+        files::drive_type_a
     ),
     implemented!(
         "GetDriveTypeW",
@@ -254,6 +361,13 @@ exports! {
         "partial",
         "lexical absolute path through Z: mapping",
         paths::full_w
+    ),
+    implemented!(
+        "GetFullPathNameA",
+        "filesystem",
+        "partial",
+        "lexical absolute path through Z: mapping",
+        paths::full_a
     ),
     implemented!(
         "GetModuleFileNameW",

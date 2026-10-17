@@ -29,8 +29,12 @@ try:
           ' thread notifications, exports by name/ordinal/forwarder, API sets, FreeLibrary with DLL_PROCESS_DETACH')
     # The same EXE relinked into a native ELF beside its DLLs: imports from
     # plugin.dll are bound at startup by the PE loader, the rest at link time.
-    subprocess.run([str(root/'target/release/peekgame'),str(work/'host.exe'),'--relink','--output',str(work)],
+    # MSVC commonly puts the IAT in read-only .rdata; exercise equivalent rights.
+    subprocess.run(['x86_64-w64-mingw32-objcopy', '--set-section-flags',
+        '.idata=alloc,load,readonly,data',str(work/'host.exe')],check=True)
+    subprocess.run([str(root/'dist/peekgame'),str(work/'host.exe'),'--relink','--output',str(work)],
         check=True,timeout=120,stdout=subprocess.DEVNULL)
+    assert (work/'windows-dlls/dxgi.dll').is_file(), 'relink omitted Windows runtime DLLs'
     result=subprocess.run([str(work/'host')],capture_output=True,text=True,timeout=20)
     assert result.returncode==0,f'relinked host exit {result.returncode}\n{result.stderr}'
     assert result.stderr.index('dep.dll: DLL_PROCESS_ATTACH')<result.stderr.index('plugin.dll: DLL_PROCESS_ATTACH'),result.stderr

@@ -113,6 +113,34 @@ unsafe fn start(args: &[String], base: usize, entry_rva: u32, info: &Info) -> Re
 /// Loads the program DLLs the EXE imports from and writes their addresses into its IAT.
 unsafe fn bind_program_dlls(base: usize, info: &Info) -> Result<(), String> {
     let entries = unsafe { std::slice::from_raw_parts(info.entries.as_ptr(), info.count as usize) };
+    // ELF maps .rdata read-only immediately. The loader must temporarily write
+    // program-DLL IAT slots before mapped::protect restores the PE permissions.
+    unsafe extern "C" {
+        fn mprotect(address: *mut std::ffi::c_void, size: usize, prot: i32) -> i32;
+    }
+    let module = images::by_handle(base).ok_or("main image is not registered")?;
+    for entry in entries {
+        let rva = entry.iat_rva as usize;
+        let section = module
+            .image
+            .sections
+            .iter()
+            .find(|section| {
+                rva >= section.rva as usize
+                    && rva
+                        .checked_add(8)
+                        .is_some_and(|end| end <= section.rva as usize + section.extent() as usize)
+            })
+            .ok_or("runtime IAT slot outside image sections")?;
+        let start = (base + rva) & !4095;
+        let end = (base + rva + 8).div_ceil(4096) * 4096;
+        if unsafe { mprotect(start as *mut _, end - start, section.protection() | 2) } != 0 {
+            return Err(format!(
+                "cannot make runtime IAT writable: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+    }
     images::with_loader_lock(|| {
         let mut providers: Vec<(String, images::Provider)> = Vec::new();
         for entry in entries {

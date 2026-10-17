@@ -77,6 +77,14 @@ const OLEAUT32: &[(u16, &str)] = &[
     (27, "SafeArrayCopy"),
     (149, "SysStringByteLen"),
     (150, "SysAllocStringByteLen"),
+    (159, "LoadTypeLib"),
+    (160, "LoadRegTypeLib"),
+    (161, "RegisterTypeLib"),
+    (162, "QueryPathOfRegTypeLib"),
+    (181, "LoadTypeLibEx"),
+    (184, "UnRegisterTypeLib"),
+    (440, "RegisterTypeLibForUser"),
+    (441, "UnRegisterTypeLibForUser"),
 ];
 const D3D12: &[(u16, &str)] = &[
     (101, "D3D12CreateDevice"),
@@ -85,12 +93,25 @@ const D3D12: &[(u16, &str)] = &[
     (104, "D3D12SerializeRootSignature"),
     (105, "D3D12EnableExperimentalFeatures"),
 ];
+/// XINPUT1_3/1_4: 1 is DllMain; 100 is the unnamed XInputGetStateEx.
+const XINPUT: &[(u16, &str)] = &[
+    (2, "XInputGetState"),
+    (3, "XInputSetState"),
+    (4, "XInputGetCapabilities"),
+    (5, "XInputEnable"),
+    (6, "XInputGetDSoundAudioDeviceGuids"),
+    (7, "XInputGetBatteryInformation"),
+    (8, "XInputGetKeystroke"),
+    (10, "XInputGetAudioDeviceIds"),
+    (100, "XInputGetStateEx"),
+];
 /// The name of export `ordinal` of `dll` (canonical, without ".dll").
 pub(super) fn name(dll: &str, ordinal: u16) -> Option<&'static str> {
     let table = match dll {
         "ws2_32" | "wsock32" => WS2_32,
         "oleaut32" => OLEAUT32,
         "d3d12" => D3D12,
+        "xinput1_3" | "xinput1_4" => XINPUT,
         _ => return None,
     };
     table.iter().find(|(o, _)| *o == ordinal).map(|(_, n)| *n)

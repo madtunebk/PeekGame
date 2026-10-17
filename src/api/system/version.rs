@@ -11,6 +11,21 @@ const SUITE: u16 = 0x100; // VER_SUITE_SINGLEUSERTS
 pub extern "win64" fn get_version() -> u32 {
     BUILD << 16 | MINOR << 8 | MAJOR
 }
+/// Report the Windows 10 Pro edition of the workstation exposed by this runtime.
+pub unsafe extern "win64" fn get_product_info(
+    major: u32,
+    _minor: u32,
+    _service_pack_major: u32,
+    _service_pack_minor: u32,
+    product: *mut u32,
+) -> i32 {
+    if major < 6 || product.is_null() {
+        error::set(87); // ERROR_INVALID_PARAMETER
+        return 0;
+    }
+    unsafe { product.write(0x30) }; // PRODUCT_PROFESSIONAL
+    1
+}
 /// OSVERSIONINFO(EX)W: size, major, minor, build, platform, szCSDVersion[128]
 /// (WCHAR) @20; EX adds service pack major/minor @276/278, suite @280, product
 /// type @282. The A forms have a 128-byte CHAR szCSDVersion (EX fields @148).
@@ -180,3 +195,137 @@ pub unsafe extern "win64" fn rtl_verify_version_info(
         Err(_) => 0xC000_000Du32 as i32,
     }
 }
+
+pub unsafe extern "win64" fn get_file_version_info_size_w(
+    filename: *const u16,
+    handle: *mut u32,
+) -> u32 {
+    if filename.is_null() {
+        error::set(87);
+        return 0;
+    }
+    if !handle.is_null() {
+        unsafe { *handle = 0 };
+    }
+    512
+}
+
+pub unsafe extern "win64" fn get_file_version_info_size_a(
+    filename: *const std::ffi::c_char,
+    handle: *mut u32,
+) -> u32 {
+    if filename.is_null() {
+        error::set(87);
+        return 0;
+    }
+    if !handle.is_null() {
+        unsafe { *handle = 0 };
+    }
+    512
+}
+
+pub unsafe extern "win64" fn get_file_version_info_w(
+    filename: *const u16,
+    _handle: u32,
+    len: u32,
+    data: *mut u8,
+) -> i32 {
+    if filename.is_null() || data.is_null() || len < 52 {
+        error::set(87);
+        return 0;
+    }
+    unsafe {
+        std::ptr::write_bytes(data, 0, len as usize);
+        (data as *mut u32).write_unaligned(0xFEEF04BD); // dwSignature
+        (data.add(4) as *mut u32).write_unaligned(0x00010000); // dwStrucVersion
+        (data.add(8) as *mut u32).write_unaligned(0x000a0000); // dwFileVersionMS (10.0)
+        (data.add(12) as *mut u32).write_unaligned(0x00004a65); // dwFileVersionLS (19045)
+        (data.add(16) as *mut u32).write_unaligned(0x000a0000); // dwProductVersionMS
+        (data.add(20) as *mut u32).write_unaligned(0x00004a65); // dwProductVersionLS
+        (data.add(24) as *mut u32).write_unaligned(0x3F); // dwFileFlagsMask
+        (data.add(28) as *mut u32).write_unaligned(0); // dwFileFlags
+        (data.add(32) as *mut u32).write_unaligned(0x00040004); // dwFileOS (VOS_NT_WINDOWS32)
+        (data.add(36) as *mut u32).write_unaligned(0x00000001); // dwFileType (VFT_APP)
+        (data.add(40) as *mut u32).write_unaligned(0); // dwFileSubtype
+        (data.add(44) as *mut u32).write_unaligned(0); // dwFileDateMS
+        (data.add(48) as *mut u32).write_unaligned(0); // dwFileDateLS
+    }
+    1
+}
+
+pub unsafe extern "win64" fn get_file_version_info_a(
+    filename: *const std::ffi::c_char,
+    handle: u32,
+    len: u32,
+    data: *mut u8,
+) -> i32 {
+    let mut wide = Vec::new();
+    if !filename.is_null() {
+        if let Ok(s) = unsafe { std::ffi::CStr::from_ptr(filename) }.to_str() {
+            wide = s.encode_utf16().chain(std::iter::once(0)).collect();
+        }
+    }
+    unsafe { get_file_version_info_w(if wide.is_empty() { std::ptr::null() } else { wide.as_ptr() }, handle, len, data) }
+}
+
+static VERSION_STR_W: &[u16] = &[
+    b'1' as u16, b'0' as u16, b'.' as u16, b'0' as u16, b'.' as u16,
+    b'1' as u16, b'9' as u16, b'0' as u16, b'4' as u16, b'5' as u16,
+    b'.' as u16, b'0' as u16, 0
+];
+static VERSION_STR_A: &[u8] = b"10.0.19045.0\0";
+
+pub unsafe extern "win64" fn ver_query_value_w(
+    block: *const u8,
+    sub_block: *const u16,
+    buffer: *mut *const std::ffi::c_void,
+    len: *mut u32,
+) -> i32 {
+    if block.is_null() || sub_block.is_null() || buffer.is_null() || len.is_null() {
+        error::set(87);
+        return 0;
+    }
+    let sub = unsafe { crate::api::text::string(sub_block) }.unwrap_or_default();
+    if sub.is_empty() || sub == "\\" {
+        unsafe {
+            *buffer = block as *const std::ffi::c_void;
+            *len = 52;
+        }
+        return 1;
+    }
+    unsafe {
+        *buffer = VERSION_STR_W.as_ptr() as *const std::ffi::c_void;
+        *len = VERSION_STR_W.len() as u32;
+    }
+    1
+}
+
+pub unsafe extern "win64" fn ver_query_value_a(
+    block: *const u8,
+    sub_block: *const std::ffi::c_char,
+    buffer: *mut *const std::ffi::c_void,
+    len: *mut u32,
+) -> i32 {
+    if block.is_null() || sub_block.is_null() || buffer.is_null() || len.is_null() {
+        error::set(87);
+        return 0;
+    }
+    let sub = if !sub_block.is_null() {
+        unsafe { std::ffi::CStr::from_ptr(sub_block) }.to_str().unwrap_or("")
+    } else {
+        ""
+    };
+    if sub.is_empty() || sub == "\\" {
+        unsafe {
+            *buffer = block as *const std::ffi::c_void;
+            *len = 52;
+        }
+        return 1;
+    }
+    unsafe {
+        *buffer = VERSION_STR_A.as_ptr() as *const std::ffi::c_void;
+        *len = VERSION_STR_A.len() as u32;
+    }
+    1
+}
+

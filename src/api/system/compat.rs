@@ -89,13 +89,22 @@ pub unsafe extern "win64" fn handle_information(_handle: usize, flags: *mut u32)
     }
     1
 }
+/// On Windows NT, SetHandleCount does not change the file handle limit.
+/// It reports the requested count; file handles remain managed by the OS.
+pub extern "win64" fn set_handle_count(requested: u32) -> u32 {
+    requested
+}
 pub extern "win64" fn set_handle_information(_handle: usize, _mask: u32, _flags: u32) -> i32 {
     1
 }
-/// OpenProcess: only this process exists (its pseudo handle).
+pub(crate) const STEAM_PROCESS_HANDLE: usize = 0x57EA_0001;
+
+/// OpenProcess: supports current process and the running Steam client process.
 pub extern "win64" fn open_process(_access: u32, _inherit: i32, id: u32) -> usize {
     if id == super::startup::process_id() {
         usize::MAX
+    } else if id != 0 && id == crate::api::steam::steam_pid() {
+        STEAM_PROCESS_HANDLE
     } else {
         error::set(87);
         0
@@ -135,29 +144,47 @@ pub extern "win64" fn delete_dc(dc: usize) -> i32 {
 }
 /// ChangeDisplaySettingsEx: the current mode stays (DISP_CHANGE_SUCCESSFUL for a
 /// reset or the current size, DISP_CHANGE_BADMODE otherwise).
-pub unsafe extern "win64" fn change_display_settings_ex(
-    _device: usize,
+/// ChangeDisplaySettingsEx: no mode switching. NULL (restore) and the device's
+/// current size succeed; any other size is DISP_CHANGE_BADMODE (-2). The size is
+/// dmPelsWidth/dmPelsHeight: DEVMODEW @172/176, DEVMODEA @108/112 (32-byte names).
+fn change_display_settings(device: Option<String>, mode: *const u8, size_offset: usize) -> i32 {
+    if mode.is_null() {
+        return 0;
+    }
+    let (w, h) = unsafe {
+        (
+            mode.add(size_offset).cast::<u32>().read_unaligned(),
+            mode.add(size_offset + 4).cast::<u32>().read_unaligned(),
+        )
+    };
+    let Some(current) = crate::api::window::display::device_size(device.as_deref()) else {
+        return -2;
+    };
+    if w == 0 || (w as i32, h as i32) == current {
+        0
+    } else {
+        -2
+    }
+}
+pub unsafe extern "win64" fn change_display_settings_ex_w(
+    device: *const u16,
     mode: *const u8,
     _window: usize,
     _flags: u32,
     _parameter: usize,
 ) -> i32 {
-    if mode.is_null() {
-        return 0;
-    }
-    // DEVMODEW: dmPelsWidth @172, dmPelsHeight @176 (fields dmFields @72 bit 0x80000/0x100000).
-    let (w, h) = unsafe {
-        (
-            mode.add(172).cast::<u32>().read_unaligned(),
-            mode.add(176).cast::<u32>().read_unaligned(),
-        )
-    };
-    let current = crate::host::x11::screen_size().unwrap_or((0, 0));
-    if (w as i32, h as i32) == current || w == 0 {
-        0
-    } else {
-        -2
-    }
+    let device = (!device.is_null()).then(|| String::from_utf16_lossy(unsafe { units(device) }));
+    change_display_settings(device, mode, 172)
+}
+pub unsafe extern "win64" fn change_display_settings_ex_a(
+    device: *const c_char,
+    mode: *const u8,
+    _window: usize,
+    _flags: u32,
+    _parameter: usize,
+) -> i32 {
+    let device = (!device.is_null()).then(|| unsafe { CStr::from_ptr(device) }.to_string_lossy().into_owned());
+    change_display_settings(device, mode, 108)
 }
 // lstr*: the old string helpers (NULL counts as empty).
 unsafe fn units<'a>(p: *const u16) -> &'a [u16] {
@@ -238,4 +265,26 @@ pub unsafe extern "win64" fn lstrcpy_a(out: *mut c_char, s: *const c_char) -> *m
         *out.add(s.len()) = 0;
     }
     out
+}
+pub extern "win64" fn get_profile_int_a(
+    _app: *const c_char,
+    _key: *const c_char,
+    default: i32,
+) -> u32 {
+    default.max(0) as u32
+}
+pub extern "win64" fn mul_div(number: i32, numerator: i32, denominator: i32) -> i32 {
+    let d = denominator as i64;
+    if d == 0 {
+        return -1;
+    }
+    let prod = (number as i64) * (numerator as i64);
+    let half = d.abs() / 2;
+    let rounded = if (prod >= 0) == (d >= 0) {
+        prod + half
+    } else {
+        prod - half
+    };
+    let q = rounded / d;
+    i32::try_from(q).unwrap_or(-1)
 }

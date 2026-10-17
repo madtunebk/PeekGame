@@ -52,6 +52,9 @@ pub fn clear_tls_slot(index: usize) {
         unsafe { slot_in(teb, index).write(0) };
     }
 }
+pub(crate) fn peb_address() -> usize {
+    peb(0)
+}
 /// The process environment block, shared by every thread (Windows code reads it
 /// through gs:0x60): image base, process heap, the process parameters (command
 /// line, image path, standard handles), processor count and OS version.
@@ -91,7 +94,12 @@ fn peb(image: usize) -> usize {
         put(parameters, 8, 1, 4); // Flags: RTL_USER_PROC_PARAMS_NORMALIZED
         if let Some(p) = process {
             for (i, h) in p.standard_handles.iter().enumerate() {
-                put(parameters, 0x20 + 8 * i, *h as u64, 8);
+                put(
+                    parameters,
+                    0x20 + 8 * i,
+                    h.load(std::sync::atomic::Ordering::SeqCst) as u64,
+                    8,
+                );
             }
         }
         string(parameters, 0x38, &directory);
@@ -145,6 +153,7 @@ pub fn initialize(image: usize, data: Vec<u8>) -> Result<(), String> {
             environment.teb[8] = getpid() as u64;
             environment.teb[9] = syscall(186) as u64;
             environment.teb[12] = peb(image) as u64;
+            environment.teb[0x108 / 8] = crate::api::system::locale::thread::get() as u64;
             environment.teb[0x1780 / 8] = environment.expansion.as_ptr() as u64;
             crate::images::tls::set_exe_template(data);
             crate::images::tls::thread_start(&mut environment.teb[11]);
@@ -174,6 +183,21 @@ pub fn set_error(value: u32) {
         }
     });
 }
+/// Windows TEB.CurrentLocale, a 32-bit LCID at x64 offset 0x108.
+pub(crate) fn set_locale(value: u32) {
+    let _ = ENVIRONMENT.try_with(|env| {
+        if let Some(env) = env.borrow_mut().as_mut() {
+            unsafe {
+                env.teb
+                    .as_mut_ptr()
+                    .cast::<u8>()
+                    .add(0x108)
+                    .cast::<u32>()
+                    .write(value)
+            };
+        }
+    });
+}
 pub fn error() -> Option<u32> {
     ENVIRONMENT
         .try_with(|env| {
@@ -194,3 +218,31 @@ impl Drop for ThreadEnvironment {
         }
     }
 }
+
+/// Current Windows thread's native stack bounds, for bounded stack walking.
+pub(crate) fn stack_bounds() -> Option<(u64, u64)> {
+    ENVIRONMENT
+        .try_with(|env| env.borrow().as_ref().map(|env| (env.teb[2], env.teb[1])))
+        .ok()
+        .flatten()
+}
+
+pub(crate) fn set_fiber_data(ptr: usize) {
+    let _ = ENVIRONMENT.try_with(|env| {
+        if let Some(env) = env.borrow_mut().as_mut() {
+            env.teb[4] = ptr as u64;
+        }
+    });
+}
+
+pub(crate) fn get_fiber_data() -> usize {
+    ENVIRONMENT
+        .try_with(|env| {
+            env.borrow()
+                .as_ref()
+                .map(|env| env.teb[4] as usize)
+                .unwrap_or(0)
+        })
+        .unwrap_or(0)
+}
+

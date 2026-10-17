@@ -39,11 +39,14 @@ impl ThreadVector {
     }
 }
 
-/// Sets the EXE's template (slot 0) once; later calls keep the first.
+/// Sets the EXE's template in slot 0. Imported DLLs may have reserved their
+/// own slots before the first Windows thread is initialized.
 pub fn set_exe_template(data: Vec<u8>) {
     let mut state = STATE.lock().unwrap();
     if state.templates.is_empty() {
         state.templates.push(Some(data));
+    } else if state.templates[0].is_none() {
+        state.templates[0] = Some(data);
     }
 }
 
@@ -102,4 +105,19 @@ pub fn thread_start(field: *mut u64) {
 pub fn thread_end(field: *mut u64) {
     let mut state = STATE.lock().unwrap();
     state.threads.retain(|t| t.field != field);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn imported_dll_before_exe_keeps_exe_tls_template() {
+        let slot = add_module(vec![0x55]);
+        assert!(slot > 0);
+        set_exe_template(vec![0x12, 0x34]);
+        let state = STATE.lock().unwrap();
+        assert_eq!(state.templates[0].as_deref(), Some([0x12, 0x34].as_slice()));
+        assert_eq!(state.templates[slot].as_deref(), Some([0x55].as_slice()));
+    }
 }

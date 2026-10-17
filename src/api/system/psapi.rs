@@ -54,10 +54,14 @@ pub unsafe extern "win64" fn enum_process_modules(
         error::set(998);
         return 0;
     }
-    let modules = images::all();
+    let mut modules = images::all()
+        .iter()
+        .map(|module| module.base)
+        .collect::<Vec<_>>();
+    modules.extend(super::dynamic::loaded_builtin_handles());
     let room = if out.is_null() { 0 } else { size as usize / 8 };
     for (i, m) in modules.iter().take(room).enumerate() {
-        unsafe { *out.add(i) = m.base };
+        unsafe { *out.add(i) = *m };
     }
     unsafe { *needed = (modules.len() * 8) as u32 };
     1

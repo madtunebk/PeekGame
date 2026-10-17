@@ -73,7 +73,7 @@ fn trust(error: i32) -> u32 {
         _ => 0x20,
     }
 }
-unsafe fn purpose(parameters: *const u8) -> Result<i32, u32> {
+unsafe fn purpose(parameters: *const u8) -> Result<(u32, Vec<String>), u32> {
     if parameters.is_null() {
         return Err(87);
     }
@@ -106,9 +106,9 @@ unsafe fn purpose(parameters: *const u8) -> Result<i32, u32> {
     }
     let count = unsafe { parameters.add(16).cast::<u32>().read_unaligned() };
     if count == 0 {
-        return Ok(0);
+        return Ok((match_type, Vec::new()));
     }
-    if count != 1 {
+    if count > 128 {
         return Err(50);
     }
     let list = unsafe {
@@ -120,17 +120,20 @@ unsafe fn purpose(parameters: *const u8) -> Result<i32, u32> {
     if list.is_null() {
         return Err(87);
     }
-    let name = unsafe { *list };
-    if name.is_null() {
-        return Err(87);
+    let mut oids = Vec::new();
+    for index in 0..count as usize {
+        let name = unsafe { *list.add(index) };
+        if name.is_null() {
+            return Err(87);
+        }
+        let oid = unsafe { CStr::from_ptr(name) }
+            .to_str()
+            .map_err(|_| 87u32)?;
+        oids.push(oid.to_owned());
     }
-    match unsafe { CStr::from_ptr(name) }.to_bytes() {
-        b"1.3.6.1.5.5.7.3.1" => Ok(2),
-        b"1.3.6.1.5.5.7.3.2" => Ok(1),
-        b"2.5.29.37.0" => Ok(0),
-        _ => Err(50),
-    }
+    Ok((match_type, oids))
 }
+
 pub unsafe extern "win64" fn get(
     engine: usize,
     cert: *const Context,
@@ -147,11 +150,21 @@ pub unsafe extern "win64" fn get(
     unsafe {
         *out = std::ptr::null();
     }
+    if std::env::var_os("PEEKGAME_TRACE_CERTS").is_some() {
+        eprintln!(
+            "crypt32: GetCertificateChain engine={engine}, flags={flags:#x}, parameter size={}",
+            if parameters.is_null() {
+                0
+            } else {
+                unsafe { parameters.cast::<u32>().read_unaligned() }
+            }
+        );
+    }
     if engine > 1 || !reserved.is_null() || flags & !(0xf0000000 | 1 | 4 | 0x100 | 0x2000) != 0 {
         return fail(50, 0);
     }
-    let purpose = match unsafe { purpose(parameters) } {
-        Ok(purpose) => purpose,
+    let usage = match unsafe { purpose(parameters) } {
+        Ok(usage) => usage,
         Err(code) => return fail(code, 0),
     };
     let (leaf, untrusted) = {
@@ -179,10 +192,16 @@ pub unsafe extern "win64" fn get(
     } else {
         Some((unsafe { time.read_unaligned() } / 10000000) as i64 - 11644473600)
     };
-    let verified = match openssl::verify(&leaf, &untrusted, time, purpose) {
+    let verified = match openssl::verify(&leaf, &untrusted, time, 0) {
         Ok(verified) => verified,
         Err(code) => return fail(code, 0),
     };
+    if std::env::var_os("PEEKGAME_TRACE_CERTS").is_some() {
+        eprintln!(
+            "crypt32: chain flags={flags:#x}, requested usage={usage:?}, OpenSSL error={}, depth={}",
+            verified.error, verified.depth
+        );
+    }
     let mut error = trust(verified.error);
     if flags & 0x70000000 != 0 {
         error |= 0x1000040;
@@ -192,6 +211,30 @@ pub unsafe extern "win64" fn get(
         match Certificate::parse(der.clone()) {
             Ok(cert) => certificates.push(Arc::new(cert)),
             Err(()) => return fail(0x80092002, 0),
+        }
+    }
+    if !usage.1.is_empty() && !usage.1.iter().any(|oid| oid == "2.5.29.37.0") {
+        let mut allowed = vec![true; usage.1.len()];
+        for certificate in &certificates {
+            let usages = match certificate.usages() {
+                Ok(value) => value,
+                Err(()) => return fail(0x80092002, 0),
+            };
+            if let Some(oids) = usages {
+                if !oids.iter().any(|oid| oid == "2.5.29.37.0") {
+                    for (index, wanted) in usage.1.iter().enumerate() {
+                        allowed[index] &= oids.contains(wanted);
+                    }
+                }
+            }
+        }
+        let matches = if usage.0 == 0 {
+            allowed.iter().all(|value| *value)
+        } else {
+            allowed.iter().any(|value| *value)
+        };
+        if !matches {
+            error |= 0x10;
         }
     }
     let mut elements = Vec::new();
@@ -325,6 +368,9 @@ pub unsafe extern "win64" fn policy(
     if status.is_null() || unsafe { status.cast::<u32>().read_unaligned() } < 24 {
         return fail(87, 0);
     }
+    if std::env::var_os("PEEKGAME_TRACE_CERTS").is_some() {
+        eprintln!("crypt32: policy kind={kind}");
+    }
     if kind != 1 && kind != 4 {
         return fail(50, 0);
     }
@@ -396,6 +442,9 @@ pub unsafe extern "win64" fn policy(
         }
     }
     let result = policy_error(error);
+    if std::env::var_os("PEEKGAME_TRACE_CERTS").is_some() {
+        eprintln!("crypt32: policy error={result:#x}, trust={error:#x}");
+    }
     unsafe {
         status.add(4).cast::<u32>().write_unaligned(result);
         status

@@ -10,12 +10,39 @@ macro_rules! com {
             name: $name,
             category: "com",
             status: "partial",
-            scope: "logical COM apartments and task allocator; no registered COM classes",
+            scope: "logical COM apartments, task allocator and WASAPI render endpoint",
             address: Some(|| $function as *const std::ffi::c_void),
         }
     };
 }
 exports! {
+    export!("ole32.dll", "CoGetContextToken", "com", "partial", "E_POINTER/null, CO_E_NOTINITIALIZED before COM; initialized context objects unsupported: E_NOTIMPL", crate::api::com::context::get_token),
+ export!("ole32.dll","ReleaseStgMedium","com","partial","TYMED_HGLOBAL or pUnkForRelease ownership",crate::api::window::drop_data::release_medium),
+    export!("ole32.dll", "RegisterDragDrop", "com", "partial", "owner-thread OLE registration with native Xdnd local-file delivery", crate::api::window::ole_drop::register),
+    export!("ole32.dll", "RevokeDragDrop", "com", "partial", "revoke Xdnd awareness and release owned drop target", crate::api::window::ole_drop::revoke),
+    export!("ole32.dll", "CoInitializeSecurity", "com", "partial", "apartment security initialization stub", apartment::initialize_security),
+    export!("ole32.dll", "CoSetProxyBlanket", "com", "partial", "validates proxy interface pointer", apartment::set_proxy_blanket),
+
+    export!("uiautomationcore.dll", "UiaLookupId", "accessibility", "partial", "UI Automation identifier registry unavailable: lookup returns 0", winrt::uia_lookup_id),
+    export!("uiautomationcore.dll", "UiaGetReservedNotSupportedValue", "accessibility", "partial", "returns static sentinel pointer for unsupported value", winrt::uia_get_reserved_not_supported_value),
+
+    export!("oleaut32.dll", "SafeArrayCreateVector", "com", "partial", "1D safe array contiguous vector allocation", crate::api::com::safearray::create_vector),
+    export!("oleaut32.dll", "SafeArrayCreate", "com", "partial", "1D safe array contiguous vector allocation", crate::api::com::safearray::create),
+    export!("oleaut32.dll", "SafeArrayDestroy", "com", "partial", "deallocates safe array vector and data", crate::api::com::safearray::destroy_vector),
+    export!("oleaut32.dll", "SafeArrayPutElement", "com", "partial", "bounds-checked element assignment for 1D safe array", crate::api::com::safearray::put_element),
+    export!("oleaut32.dll", "SafeArrayGetElement", "com", "partial", "bounds-checked element retrieval for 1D safe array", crate::api::com::safearray::get_element),
+    export!("oleaut32.dll", "SafeArrayAccessData", "com", "partial", "locks array and retrieves data pointer", crate::api::com::safearray::access_data),
+    export!("oleaut32.dll", "SafeArrayUnaccessData", "com", "partial", "unlocks array", crate::api::com::safearray::unaccess_data),
+    export!("oleaut32.dll", "SafeArrayGetDim", "com", "partial", "retrieves array dimensions", crate::api::com::safearray::get_dim),
+    export!("oleaut32.dll", "SafeArrayGetElemsize", "com", "partial", "retrieves element size", crate::api::com::safearray::get_elemsize),
+    export!("oleaut32.dll", "SafeArrayGetUBound", "com", "partial", "retrieves upper bound", crate::api::com::safearray::get_ubound),
+    export!("oleaut32.dll", "SafeArrayGetLBound", "com", "partial", "retrieves lower bound", crate::api::com::safearray::get_lbound),
+    export!("oleaut32.dll", "SafeArrayLock", "com", "partial", "increments lock count", crate::api::com::safearray::lock),
+    export!("oleaut32.dll", "SafeArrayUnlock", "com", "partial", "decrements lock count", crate::api::com::safearray::unlock),
+    export!("oleaut32.dll", "SetErrorInfo", "com", "partial", "thread-local IErrorInfo assignment", crate::api::com::error_info::set_error_info),
+    export!("oleaut32.dll", "GetErrorInfo", "com", "partial", "thread-local IErrorInfo retrieval and clear", crate::api::com::error_info::get_error_info),
+
+    export!("ole32.dll", "PropVariantClear", "com", "partial", "owned scalar/string/blob/interface variants", crate::api::com::variants::clear),
     export!(
         "oleaut32.dll",
         "SysAllocString",
@@ -47,6 +74,70 @@ exports! {
         "partial",
         "BSTR layout as on Windows",
         bstr::free_string
+    ),
+    export!(
+        "oleaut32.dll",
+        "QueryPathOfRegTypeLib",
+        "com",
+        "partial",
+        "returns TYPE_E_LIBNOTREGISTERED",
+        bstr::query_path_of_reg_type_lib
+    ),
+    export!(
+        "oleaut32.dll",
+        "RegisterTypeLib",
+        "com",
+        "partial",
+        "returns S_OK",
+        bstr::register_type_lib
+    ),
+    export!(
+        "oleaut32.dll",
+        "UnRegisterTypeLib",
+        "com",
+        "partial",
+        "returns S_OK",
+        bstr::unregister_type_lib
+    ),
+    export!(
+        "oleaut32.dll",
+        "RegisterTypeLibForUser",
+        "com",
+        "partial",
+        "returns S_OK",
+        bstr::register_type_lib_for_user
+    ),
+    export!(
+        "oleaut32.dll",
+        "UnRegisterTypeLibForUser",
+        "com",
+        "partial",
+        "returns S_OK",
+        bstr::unregister_type_lib_for_user
+    ),
+    export!(
+        "oleaut32.dll",
+        "LoadRegTypeLib",
+        "com",
+        "partial",
+        "returns TYPE_E_LIBNOTREGISTERED",
+        bstr::load_reg_type_lib
+    ),
+    export!(
+        "oleaut32.dll",
+        "LoadTypeLib",
+        "com",
+        "partial",
+        "returns TYPE_E_CANTLOADLIBRARY",
+        bstr::load_type_lib
+    ),
+    export!(
+        "oleaut32.dll",
+        "LoadTypeLibEx",
+        "com",
+        "partial",
+        "returns TYPE_E_CANTLOADLIBRARY",
+        bstr::load_type_lib_ex
     ),
     export!(
         "oleaut32.dll",
@@ -275,7 +366,7 @@ exports! {
     com!("CoInitializeEx", apartment::initialize),
     com!("CoUninitialize", apartment::uninitialize),
     com!("OleInitialize", apartment::ole_initialize),
-    com!("OleUninitialize", apartment::uninitialize),
+    com!("OleUninitialize", apartment::ole_uninitialize),
     com!("CoCreateInstance", apartment::create_instance),
     com!("CoTaskMemAlloc", apartment::allocate),
     com!("CoTaskMemRealloc", apartment::reallocate),

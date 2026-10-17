@@ -1,6 +1,11 @@
 mod events;
+mod fullscreen;
+pub(crate) mod modes;
+pub(crate) mod xdnd;
 mod ffi;
+pub(crate) mod identity;
 pub(crate) mod keyboard;
+pub(crate) mod monitors;
 mod types;
 pub(crate) use events::NativeEvent;
 use std::{
@@ -8,15 +13,13 @@ use std::{
     sync::{Arc, OnceLock},
 };
 /// Size of the default X screen. None without a display.
-pub(crate) fn screen_size() -> Option<(i32, i32)> {
-    let c = Connection::shared().ok()?;
-    unsafe {
-        let screen = ffi::XDefaultScreen(c.display);
-        Some((
-            ffi::XDisplayWidth(c.display, screen),
-            ffi::XDisplayHeight(c.display, screen),
-        ))
-    }
+pub(crate) fn monitors() -> Vec<monitors::Monitor> {
+    Connection::shared()
+        .map(|c| monitors::list(&c))
+        .unwrap_or_default()
+}
+pub(crate) fn primary_size() -> Option<(i32, i32)> {
+    monitors().first().map(|m| (m.width, m.height))
 }
 /// X errors (a window gone meanwhile, a focus request the server refuses) are the
 /// normal result of racing the window manager: they are logged, never fatal.
@@ -124,6 +127,39 @@ impl Connection {
             cursor
         })
     }
+    /// A two-color cursor from X bitmaps (LSB-first bits, rows padded to bytes):
+    /// `mask` bits are visible, `source` bits white and the rest black.
+    pub(crate) fn bitmap_cursor(
+        &self,
+        width: u32,
+        height: u32,
+        source: &[u8],
+        mask: &[u8],
+        hot_x: u32,
+        hot_y: u32,
+    ) -> Result<u64, u32> {
+        unsafe {
+            let source = ffi::XCreateBitmapFromData(self.display, self.root, source.as_ptr().cast(), width, height);
+            let mask = ffi::XCreateBitmapFromData(self.display, self.root, mask.as_ptr().cast(), width, height);
+            let mut white = types::Color { pixel: 0, red: 0xffff, green: 0xffff, blue: 0xffff, flags: 7, pad: 0 };
+            let mut black = types::Color { red: 0, green: 0, blue: 0, ..white };
+            let cursor = if source != 0 && mask != 0 {
+                ffi::XCreatePixmapCursor(self.display, source, mask, &mut white, &mut black, hot_x, hot_y)
+            } else {
+                0
+            };
+            for pixmap in [source, mask] {
+                if pixmap != 0 {
+                    ffi::XFreePixmap(self.display, pixmap);
+                }
+            }
+            if cursor == 0 {
+                Err(8)
+            } else {
+                Ok(cursor)
+            }
+        }
+    }
     /// A window: top-level under the root, or a child of `parent`.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn create(
@@ -136,6 +172,12 @@ impl Connection {
         height: u32,
         cursor: u64,
     ) -> Result<u64, u32> {
+        let (x, y) = if parent == 0 {
+            let (ox, oy) = monitors::origin(self);
+            (x + ox, y + oy)
+        } else {
+            (x, y)
+        };
         unsafe {
             let window = ffi::XCreateSimpleWindow(
                 self.display,
@@ -152,6 +194,23 @@ impl Connection {
                 return Err(8);
             }
             ffi::XSelectInput(self.display, window, EVENT_MASK);
+            if parent==0{let mut hints=types::SizeHints::default();hints.flags=1<<2;hints.x=x;hints.y=y;ffi::XSetWMNormalHints(self.display,window,&mut hints);}
+
+            if parent == 0 {
+                if let Some(class) = identity::property() {
+                    ffi::XChangeProperty(
+                        self.display,
+                        window,
+                        self.atom(c"WM_CLASS"),
+                        31,
+                        8,
+                        0,
+                        class.as_ptr(),
+                        class.len() as i32,
+                    );
+                }
+            }
+
             if parent == 0 {
                 let mut delete = self.delete;
                 ffi::XSetWMProtocols(self.display, window, &mut delete, 1);
@@ -191,13 +250,50 @@ impl Connection {
             ffi::XFlush(self.display);
         }
     }
+    pub(crate) fn set_icon(&self, window: u64, width: u32, height: u32, pixels: &[u32]) {
+        let values: Vec<u64> = if pixels.is_empty() {
+            Vec::new()
+        } else {
+            std::iter::once(width as u64)
+                .chain(std::iter::once(height as u64))
+                .chain(pixels.iter().map(|&p| p as u64))
+                .collect()
+        };
+        unsafe {
+            ffi::XChangeProperty(
+                self.display,
+                window,
+                self.atom(c"_NET_WM_ICON"),
+                6,
+                32,
+                0,
+                values.as_ptr().cast(),
+                values.len() as i32,
+            );
+            ffi::XFlush(self.display);
+        }
+    }
     pub(crate) fn destroy(&self, window: u64) {
         unsafe {
             ffi::XDestroyWindow(self.display, window);
             ffi::XFlush(self.display);
         }
     }
-    pub(crate) fn move_resize(&self, window: u64, x: i32, y: i32, width: u32, height: u32) {
+    pub(crate) fn move_resize(
+        &self,
+        window: u64,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+        top_level: bool,
+    ) {
+        let (x, y) = if top_level {
+            let (ox, oy) = monitors::origin(self);
+            (x + ox, y + oy)
+        } else {
+            (x, y)
+        };
         unsafe {
             ffi::XMoveResizeWindow(self.display, window, x, y, width.max(1), height.max(1));
             ffi::XFlush(self.display);
@@ -206,8 +302,10 @@ impl Connection {
     /// Fixed-size windows (no WS_THICKFRAME) get equal minimum and maximum sizes.
     pub(crate) fn set_resizable(&self, window: u64, resizable: bool, width: i32, height: i32) {
         let mut hints = types::SizeHints::default();
+        let mut supplied=0;unsafe{ffi::XGetWMNormalHints(self.display,window,&mut hints,&mut supplied);}
+        hints.flags &= !((1<<4)|(1<<5));
         if !resizable {
-            hints.flags = (1 << 4) | (1 << 5); // PMinSize | PMaxSize
+            hints.flags |= (1 << 4) | (1 << 5); // PMinSize | PMaxSize
             hints.min_width = width;
             hints.max_width = width;
             hints.min_height = height;
@@ -315,7 +413,8 @@ impl Connection {
                 &mut child,
             )
         };
-        (x, y)
+        let (ox, oy) = monitors::origin(self);
+        (x - ox, y - oy)
     }
     /// Pointer position on the screen and the button/modifier mask.
     pub(crate) fn pointer(&self) -> (i32, i32, u32) {
@@ -333,9 +432,12 @@ impl Connection {
                 &mut mask,
             )
         };
-        (x, y, mask)
+        let (ox, oy) = monitors::origin(self);
+        (x - ox, y - oy, mask)
     }
     pub(crate) fn warp(&self, x: i32, y: i32) {
+        let (ox, oy) = monitors::origin(self);
+        let (x, y) = (x + ox, y + oy);
         unsafe {
             ffi::XWarpPointer(self.display, 0, self.root, 0, 0, 0, 0, x, y);
             ffi::XFlush(self.display);

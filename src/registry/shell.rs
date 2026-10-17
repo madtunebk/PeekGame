@@ -2,6 +2,14 @@ use super::*;
 use crate::api::shell::folders;
 use crate::api::{memory::local, shell::arguments};
 exports! {
+ export!("shell32.dll","DragQueryFileW","shell","partial","UTF-16 CF_HDROP count, length and file names",crate::api::window::drop_data::query_file),
+ export!("shell32.dll","DragFinish","shell","implemented","release HDROP global allocation",crate::api::window::drop_data::finish),
+    export!("shell32.dll", "SHGetPropertyStoreForWindow", "shell", "partial", "per-window shell property store unavailable: NULL output and E_NOTIMPL", crate::api::shell::identity::window_property_store),
+
+    export!("shell32.dll", "DragAcceptFiles", "window", "partial", "updates WS_EX_ACCEPTFILES; native WM_DROPFILES delivery unsupported and logged", crate::api::window::drops::accept),
+
+    export!("shell32.dll", "SetCurrentProcessExplicitAppUserModelID", "shell", "partial", "process application ID becomes WM_CLASS for subsequent top-level X11 windows", crate::api::shell::identity::set),
+    export!("shell32.dll", "ShellExecuteW", "shell", "partial", "open/explore URI and files through host GIO applications; no Windows process execution", crate::api::shell::execute::execute_w),
     export!(
         "shell32.dll",
         "SHGetKnownFolderPath",
@@ -32,6 +40,13 @@ exports! {
         "partial",
         "fixed allocation with optional zero-fill; movable unsupported",
         local::allocate
+    ),
+    implemented!(
+        "LocalReAlloc",
+        "memory",
+        "partial",
+        "registered LocalAlloc block resize with optional zero-fill",
+        local::reallocate
     ),
     implemented!(
         "LocalFree",

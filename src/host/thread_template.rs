@@ -33,6 +33,7 @@ pub fn attach() -> Result<(), String> {
 }
 pub fn detach() {
     crate::api::threading::fls::thread_exit();
+    crate::api::crt::startup::run_thread_local_callbacks(3);
     notify(3);
     crate::images::thread_notify(3);
 }

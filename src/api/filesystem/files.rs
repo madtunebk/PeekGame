@@ -33,14 +33,44 @@ const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
 const FILE_ATTRIBUTE_NORMAL: u32 = 0x80;
 const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
 const FILE_FLAG_OVERLAPPED: u32 = 0x4000_0000;
+const FILE_FLAG_DELETE_ON_CLOSE: u32 = 0x0400_0000;
 /// Seconds between 1601-01-01 and 1970-01-01.
 const EPOCH_1601: i64 = 11_644_473_600;
 
-struct Entry {
-    file: File,
+pub(super) struct Entry {
+    pub(super) file: File,
+    pub(super) directory: Mutex<Option<super::directory::Scan>>,
     overlapped: bool,
     completion: Mutex<Option<crate::api::threading::iocp::Binding>>,
     completion_modes: std::sync::atomic::AtomicU8,
+    /// The host path the handle was opened with (follows renames through the
+    /// handle); None for pipes and standard streams.
+    path: Mutex<Option<PathBuf>>,
+    /// FILE_FLAG_DELETE_ON_CLOSE or a delete disposition: the file is removed when
+    /// the last handle to this entry closes (duplicated handles share the entry).
+    delete_on_close: std::sync::atomic::AtomicBool,
+}
+impl Entry {
+    fn new(file: File, path: Option<PathBuf>, overlapped: bool) -> Entry {
+        Entry {
+            file,
+            directory: Mutex::new(None),
+            overlapped,
+            completion: Mutex::new(None),
+            completion_modes: 0.into(),
+            path: Mutex::new(path),
+            delete_on_close: false.into(),
+        }
+    }
+}
+impl Drop for Entry {
+    fn drop(&mut self) {
+        if self.delete_on_close.load(Ordering::Acquire) {
+            if let Some(path) = self.path.get_mut().unwrap().take() {
+                let _ = if path.is_dir() { std::fs::remove_dir(&path) } else { std::fs::remove_file(&path) };
+            }
+        }
+    }
 }
 type Table = HashMap<usize, Arc<Entry>>;
 static FILES: Mutex<Option<Table>> = Mutex::new(None);
@@ -56,8 +86,13 @@ fn insert(entry: Entry) -> usize {
         .insert(handle, Arc::new(entry));
     handle
 }
-fn get(handle: usize) -> Option<Arc<Entry>> {
+pub(super) fn get(handle: usize) -> Option<Arc<Entry>> {
     FILES.lock().unwrap().as_ref()?.get(&handle).cloned()
+}
+/// `PEEKGAME_TRACE_FILES`: log file opens, reads and mappings to stderr.
+pub(crate) fn tracing() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("PEEKGAME_TRACE_FILES").is_some())
 }
 fn fail<T>(code: u32, value: T) -> T {
     error::set(code);
@@ -102,10 +137,10 @@ unsafe fn wide_path(name: *const u16) -> Result<PathBuf, u32> {
 unsafe fn narrow_path(name: *const c_char) -> Result<PathBuf, u32> {
     unsafe { paths::narrow(name) }.and_then(|s| paths::host(&s))
 }
-fn filetime(seconds: i64, nanoseconds: i64) -> u64 {
+pub(crate) fn filetime(seconds: i64, nanoseconds: i64) -> u64 {
     ((seconds + EPOCH_1601) as u64) * 10_000_000 + nanoseconds as u64 / 100
 }
-fn attributes(meta: &std::fs::Metadata, name: Option<&str>) -> u32 {
+pub(crate) fn attributes(meta: &std::fs::Metadata, name: Option<&str>) -> u32 {
     let mut a = if meta.is_dir() {
         FILE_ATTRIBUTE_DIRECTORY
     } else {
@@ -142,12 +177,7 @@ pub(crate) fn duplicate(handle: usize) -> Option<usize> {
     let fd = stdio::fd_for(handle)?;
     let borrowed = unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) };
     let file = File::from(borrowed.try_clone_to_owned().ok()?);
-    Some(insert(Entry {
-        file,
-        overlapped: false,
-        completion: Mutex::new(None),
-        completion_modes: 0.into(),
-    }))
+    Some(insert(Entry::new(file, None, false)))
 }
 /// A file handle's file, as a new descriptor (CreateFileMapping keeps its own).
 pub(crate) fn clone_file(handle: usize) -> Option<File> {
@@ -180,13 +210,21 @@ fn create(path: PathBuf, access: u32, disposition: u32, flags: u32) -> usize {
     if writes && access & 0x5000_0002 == 0 {
         options.append(true);
     }
-    match disposition {
-        1 => options.create_new(true),            // CREATE_NEW
-        2 => options.create(true).truncate(true), // CREATE_ALWAYS
-        3 => &mut options,                        // OPEN_EXISTING
-        4 => options.create(true),                // OPEN_ALWAYS
-        5 => options.truncate(true),              // TRUNCATE_EXISTING
-        _ => return fail(87, INVALID_HANDLE),
+    // Rust refuses to create without write access, Windows does not (GENERIC_READ
+    // with OPEN_ALWAYS/CREATE_NEW/CREATE_ALWAYS makes the file): open(2) flags then.
+    const O_CREAT: i32 = 0o100;
+    const O_EXCL: i32 = 0o200;
+    const O_TRUNC: i32 = 0o1000;
+    match (disposition, writes) {
+        (1, true) => options.create_new(true),            // CREATE_NEW
+        (2, true) => options.create(true).truncate(true), // CREATE_ALWAYS
+        (4, true) => options.create(true),                // OPEN_ALWAYS
+        (1, false) => options.custom_flags(O_CREAT | O_EXCL),
+        (2, false) => options.custom_flags(O_CREAT | O_TRUNC),
+        (4, false) => options.custom_flags(O_CREAT),
+        (3, _) => &mut options,                           // OPEN_EXISTING
+        (5, true) => options.truncate(true),              // TRUNCATE_EXISTING
+        _ => return fail(87, INVALID_HANDLE),             // TRUNCATE_EXISTING needs write access
     };
     if writes && matches!(disposition, 2 | 4) {
         options.write(true);
@@ -203,19 +241,26 @@ fn create(path: PathBuf, access: u32, disposition: u32, flags: u32) -> usize {
             }
         }
         Err(e) if e.raw_os_error() == Some(17) => return fail(ERROR_FILE_EXISTS, INVALID_HANDLE),
-        Err(e) => return fail(path_error(&path, &e), INVALID_HANDLE),
+        Err(e) => {
+            if tracing() {
+                eprintln!("[files] open {} access={access:#x} disp={disposition} flags={flags:#x} -> {e}", path.display());
+            }
+            return fail(path_error(&path, &e), INVALID_HANDLE);
+        }
     };
     if file.metadata().is_ok_and(|m| m.is_dir()) && flags & FILE_FLAG_BACKUP_SEMANTICS == 0 {
         return fail(ERROR_ACCESS_DENIED, INVALID_HANDLE);
     }
     // CREATE_ALWAYS and OPEN_ALWAYS report an existing file with ERROR_ALREADY_EXISTS.
     error::set(if existed { ERROR_ALREADY_EXISTS } else { 0 });
-    insert(Entry {
-        file,
-        overlapped: flags & FILE_FLAG_OVERLAPPED != 0,
-        completion: Mutex::new(None),
-        completion_modes: 0.into(),
-    })
+    let fd = std::os::fd::AsRawFd::as_raw_fd(&file);
+    let entry = Entry::new(file, Some(path.clone()), flags & FILE_FLAG_OVERLAPPED != 0);
+    entry.delete_on_close.store(flags & FILE_FLAG_DELETE_ON_CLOSE != 0, Ordering::Release);
+    let handle = insert(entry);
+    if tracing() {
+        eprintln!("[files] open {} access={access:#x} disp={disposition} flags={flags:#x} -> {handle:#x} fd={fd}", path.display());
+    }
+    handle
 }
 pub unsafe extern "win64" fn create_w(
     name: *const u16,
@@ -274,18 +319,8 @@ pub unsafe extern "win64" fn create_pipe(
     }
     use std::os::fd::FromRawFd;
     unsafe {
-        *read = insert(Entry {
-            file: File::from_raw_fd(fds[0]),
-            overlapped: false,
-            completion: Mutex::new(None),
-            completion_modes: 0.into(),
-        });
-        *write = insert(Entry {
-            file: File::from_raw_fd(fds[1]),
-            overlapped: false,
-            completion: Mutex::new(None),
-            completion_modes: 0.into(),
-        });
+        *read = insert(Entry::new(File::from_raw_fd(fds[0]), None, false));
+        *write = insert(Entry::new(File::from_raw_fd(fds[1]), None, false));
     }
     1
 }
@@ -302,22 +337,39 @@ unsafe fn overlapped(
     ov: *mut u8,
     writing: bool,
 ) -> i32 {
+    unsafe {
+        overlapped_with(entry, n, count, ov, writing, |offset| {
+            if writing {
+                entry.file.write_at(std::slice::from_raw_parts(buffer, n as usize), offset)
+            } else {
+                entry.file.read_at(std::slice::from_raw_parts_mut(buffer, n as usize), offset)
+            }
+        })
+    }
+}
+/// The completion half of an OVERLAPPED transfer; `transfer` moves the bytes at the
+/// OVERLAPPED offset.
+unsafe fn overlapped_with(
+    entry: &Entry,
+    n: u32,
+    count: *mut u32,
+    ov: *mut u8,
+    writing: bool,
+    transfer: impl FnOnce(u64) -> std::io::Result<usize>,
+) -> i32 {
     let offset = unsafe {
         (ov.add(16) as *const u32).read_unaligned() as u64
             | ((ov.add(20) as *const u32).read_unaligned() as u64) << 32
     };
     let event = unsafe { (ov.add(24) as *const usize).read_unaligned() };
-    let result = if writing {
-        entry.file.write_at(
-            unsafe { std::slice::from_raw_parts(buffer, n as usize) },
-            offset,
-        )
-    } else {
-        entry.file.read_at(
-            unsafe { std::slice::from_raw_parts_mut(buffer, n as usize) },
-            offset,
-        )
-    };
+    let result = transfer(offset);
+    if tracing() {
+        eprintln!(
+            "[files] {} ov fd={} offset={offset:#x} n={n:#x} event={event:#x} -> {result:?}",
+            if writing { "write" } else { "read" },
+            std::os::fd::AsRawFd::as_raw_fd(&entry.file),
+        );
+    }
     let (status, moved): (i64, u64) = match &result {
         Ok(0) if !writing && n > 0 => (0xc000_0011u32 as i32 as i64, 0), // STATUS_END_OF_FILE
         Ok(done) => (0, *done as u64),
@@ -383,7 +435,13 @@ pub unsafe extern "win64" fn read(
     if entry.overlapped {
         return fail(87, 0);
     }
-    match (&entry.file).read(unsafe { std::slice::from_raw_parts_mut(out, n as usize) }) {
+    let result = (&entry.file).read(unsafe { std::slice::from_raw_parts_mut(out, n as usize) });
+    if tracing() {
+        let position = (&entry.file).stream_position().unwrap_or(u64::MAX);
+        let fd = std::os::fd::AsRawFd::as_raw_fd(&entry.file);
+        eprintln!("[files] read fd={fd} n={n:#x} -> {result:?} (now at {position:#x})");
+    }
+    match result {
         Ok(done) => {
             if !count.is_null() {
                 unsafe { *count = done as u32 };
@@ -391,6 +449,66 @@ pub unsafe extern "win64" fn read(
             1
         }
         Err(e) => fail(paths::error(&e), 0),
+    }
+}
+/// ReadFileScatter: one overlapped read at the OVERLAPPED offset into page-sized
+/// buffers (FILE_SEGMENT_ELEMENT, a 64-bit pointer each), done now with preadv.
+/// Like Windows, the handle must be overlapped and `n` a multiple of the page size.
+pub unsafe extern "win64" fn read_scatter(
+    handle: usize,
+    segments: *const u64,
+    n: u32,
+    reserved: *mut u32,
+    ov: *mut u8,
+) -> i32 {
+    unsafe extern "C" {
+        fn preadv(fd: i32, iov: *const [usize; 2], count: i32, offset: i64) -> isize;
+        fn sysconf(name: i32) -> i64;
+    }
+    let page = unsafe { sysconf(30) } as usize; // _SC_PAGESIZE
+    let Some(entry) = get(handle) else {
+        return fail(ERROR_INVALID_HANDLE, 0);
+    };
+    if segments.is_null() || !reserved.is_null() || ov.is_null() || !entry.overlapped {
+        return fail(87, 0);
+    }
+    if !(n as usize).is_multiple_of(page) {
+        return fail(87, 0);
+    }
+    let pages: Vec<[usize; 2]> = (0..n as usize / page)
+        .map(|i| [unsafe { *segments.add(i) } as usize, page])
+        .collect();
+    if pages.iter().any(|p| p[0] == 0 || p[0] % page != 0) {
+        return fail(998, 0); // ERROR_NOACCESS
+    }
+    let fd = std::os::fd::AsRawFd::as_raw_fd(&entry.file);
+    unsafe {
+        overlapped_with(&entry, n, std::ptr::null_mut(), ov, false, |offset| {
+            // preadv may stop early; continue from the first unfilled byte.
+            let mut done = 0usize;
+            while done < n as usize {
+                let first = done / page;
+                let mut iov = pages[first..].to_vec();
+                iov[0][0] += done % page;
+                iov[0][1] -= done % page;
+                let got = preadv(fd, iov.as_ptr(), iov.len().min(1024) as i32, (offset + done as u64) as i64);
+                if got < 0 {
+                    let error = std::io::Error::last_os_error();
+                    if error.kind() == std::io::ErrorKind::Interrupted {
+                        continue;
+                    }
+                    return Err(error);
+                }
+                if got == 0 {
+                    break;
+                }
+                done += got as usize;
+            }
+            if tracing() {
+                eprintln!("[files] read scatter fd={fd} offset={offset:#x} n={n:#x} pages={} -> {done:#x}", pages.len());
+            }
+            Ok(done)
+        })
     }
 }
 /// WriteFile on a file handle; false if the handle is not a file (the caller then
@@ -445,7 +563,12 @@ fn seek(handle: usize, offset: i64, method: u32) -> Result<u64, u32> {
         2 => SeekFrom::End(offset),
         _ => return Err(87),
     };
-    (&entry.file).seek(from).map_err(|_| 131) // ERROR_NEGATIVE_SEEK
+    let result = (&entry.file).seek(from).map_err(|_| 131); // ERROR_NEGATIVE_SEEK
+    if tracing() {
+        let fd = std::os::fd::AsRawFd::as_raw_fd(&entry.file);
+        eprintln!("[files] seek fd={fd} {from:?} -> {result:?}");
+    }
+    result
 }
 pub unsafe extern "win64" fn set_pointer(
     handle: usize,
@@ -697,35 +820,241 @@ pub unsafe extern "win64" fn information_by_handle_ex(
     unsafe { std::ptr::copy_nonoverlapping(d.as_ptr(), out, d.len()) };
     1
 }
-/// SetFileTime: last access and last write (creation time cannot be set on Linux
-/// and is ignored).
+/// GetFileTime: retrieves creation, last access, and last write times.
+pub unsafe extern "win64" fn get_time(
+    handle: usize,
+    created: *mut u64,
+    accessed: *mut u64,
+    written: *mut u64,
+) -> i32 {
+    let Some(meta) = get(handle).and_then(|e| e.file.metadata().ok()) else {
+        return fail(ERROR_INVALID_HANDLE, 0);
+    };
+    if !created.is_null() {
+        unsafe { *created = filetime(meta.ctime(), meta.ctime_nsec()) };
+    }
+    if !accessed.is_null() {
+        unsafe { *accessed = filetime(meta.atime(), meta.atime_nsec()) };
+    }
+    if !written.is_null() {
+        unsafe { *written = filetime(meta.mtime(), meta.mtime_nsec()) };
+    }
+    1
+}
+/// A FILETIME for SetFileTime/FileBasicInfo: Ok(None) leaves the time unchanged
+/// (0, and the special 0xFFFFFFFF_FFFFFFFF / 0xFFFFFFFF_FFFFFFFE values); times
+/// before 1970 are valid. Err for a time the host cannot represent.
+fn host_time(ticks: u64) -> Result<Option<std::time::SystemTime>, u32> {
+    if ticks == 0 || ticks >= 0xFFFF_FFFF_FFFF_FFFE {
+        return Ok(None);
+    }
+    let since_unix = ticks as i128 - EPOCH_1601 as i128 * 10_000_000;
+    let span = std::time::Duration::from_nanos((since_unix.unsigned_abs() * 100) as u64);
+    let time = if since_unix >= 0 {
+        std::time::UNIX_EPOCH.checked_add(span)
+    } else {
+        std::time::UNIX_EPOCH.checked_sub(span)
+    };
+    time.map(Some).ok_or(87)
+}
+/// Sets access/write times and the read-only attribute through a handle (creation
+/// and change times cannot be set on Linux; attributes 0 leaves them).
+pub(super) fn set_basic(handle: usize, accessed: u64, written: u64, attributes: u32) -> Result<(), u32> {
+    let entry = get(handle).ok_or(ERROR_INVALID_HANDLE)?;
+    let mut times = std::fs::FileTimes::new();
+    let mut any = false;
+    if let Some(t) = host_time(accessed)? {
+        times = times.set_accessed(t);
+        any = true;
+    }
+    if let Some(t) = host_time(written)? {
+        times = times.set_modified(t);
+        any = true;
+    }
+    if any {
+        entry.file.set_times(times).map_err(|e| paths::error(&e))?;
+    }
+    if attributes != 0 {
+        let meta = entry.file.metadata().map_err(|e| paths::error(&e))?;
+        let mut mode = meta.permissions().mode();
+        mode = if attributes & FILE_ATTRIBUTE_READONLY != 0 { mode & !0o222 } else { mode | 0o200 };
+        entry
+            .file
+            .set_permissions(std::fs::Permissions::from_mode(mode))
+            .map_err(|e| paths::error(&e))?;
+    }
+    Ok(())
+}
+/// Delete disposition: the file goes when the last handle closes; `false` cancels.
+pub(super) fn mark_delete(handle: usize, delete: bool) -> Result<(), u32> {
+    let entry = get(handle).ok_or(ERROR_INVALID_HANDLE)?;
+    let path = entry.path.lock().unwrap().clone().ok_or(ERROR_ACCESS_DENIED)?;
+    if delete && path.is_dir() && std::fs::read_dir(&path).map_err(|e| paths::error(&e))?.next().is_some() {
+        return Err(145); // ERROR_DIR_NOT_EMPTY
+    }
+    entry.delete_on_close.store(delete, Ordering::Release);
+    Ok(())
+}
+/// Renames the file open on `handle` to the Windows path `name` (relative to the
+/// directory handle `root` when given). The handle keeps working and follows it.
+pub(super) fn rename_handle(handle: usize, root: usize, name: &str, replace: bool) -> Result<(), u32> {
+    let entry = get(handle).ok_or(ERROR_INVALID_HANDLE)?;
+    let from = entry.path.lock().unwrap().clone().ok_or(ERROR_ACCESS_DENIED)?;
+    let name = name.strip_prefix(r"\??\").unwrap_or(name);
+    let to = if root != 0 {
+        let base = get(root).and_then(|r| r.path.lock().unwrap().clone()).ok_or(ERROR_INVALID_HANDLE)?;
+        base.join(name.replace('\\', "/"))
+    } else {
+        paths::host(name)?
+    };
+    match rename_raw(&from, &to, replace) {
+        Ok(()) => {
+            *entry.path.lock().unwrap() = Some(to);
+            Ok(())
+        }
+        Err(e) if e.raw_os_error() == Some(17) => Err(ERROR_ALREADY_EXISTS),
+        Err(e) if e.raw_os_error() == Some(18) => Err(17), // ERROR_NOT_SAME_DEVICE
+        Err(e) => Err(path_error(&to, &e)),
+    }
+}
+/// FILE_RENAME_INFO / FILE_RENAME_INFORMATION: ReplaceIfExists (or Flags bit 1) @0,
+/// RootDirectory @8, FileNameLength (bytes) @16, FileName @20.
+pub(super) unsafe fn rename_from_info(handle: usize, info: *const u8, size: u32, flags_word: bool) -> Result<(), u32> {
+    if size < 20 {
+        return Err(24); // ERROR_BAD_LENGTH
+    }
+    let replace = if flags_word {
+        (unsafe { (info as *const u32).read_unaligned() } & 1) != 0
+    } else {
+        (unsafe { *info }) != 0
+    };
+    let root = unsafe { (info.add(8) as *const usize).read_unaligned() };
+    let bytes = unsafe { (info.add(16) as *const u32).read_unaligned() } as usize;
+    if bytes == 0 || !bytes.is_multiple_of(2) || 20 + bytes > size as usize {
+        return Err(87);
+    }
+    let units = unsafe { std::slice::from_raw_parts(info.add(20) as *const u16, bytes / 2) };
+    let name = String::from_utf16(units).map_err(|_| 123u32)?; // ERROR_INVALID_NAME
+    rename_handle(handle, root, &name, replace)
+}
+/// SetFileTime: access and write times (creation time cannot be set on Linux).
 pub unsafe extern "win64" fn set_time(
     handle: usize,
     _created: *const u64,
     accessed: *const u64,
     written: *const u64,
 ) -> i32 {
-    let Some(entry) = get(handle) else {
-        return fail(ERROR_INVALID_HANDLE, 0);
-    };
-    let to_time = |p: *const u64| {
-        (!p.is_null() && unsafe { *p } != 0).then(|| {
-            let ticks = unsafe { *p };
-            std::time::UNIX_EPOCH
-                + std::time::Duration::from_nanos((ticks - (EPOCH_1601 as u64) * 10_000_000) * 100)
-        })
-    };
-    let mut times = std::fs::FileTimes::new();
-    if let Some(t) = to_time(accessed) {
-        times = times.set_accessed(t);
-    }
-    if let Some(t) = to_time(written) {
-        times = times.set_modified(t);
-    }
-    match entry.file.set_times(times) {
+    let read = |p: *const u64| if p.is_null() { 0 } else { unsafe { p.read_unaligned() } };
+    match set_basic(handle, read(accessed), read(written), 0) {
         Ok(()) => 1,
-        Err(e) => fail(paths::error(&e), 0),
+        Err(code) => fail(code, 0),
     }
+}
+/// Byte-range locks as Linux open-file-description locks: like Windows locks they
+/// belong to the open file, so two handles to one file conflict even in one process,
+/// and duplicated handles share them. They are advisory (Windows' are mandatory: a
+/// locked range is not enforced against plain reads and writes). A zero-length range
+/// locks nothing, as on Windows.
+fn lock_range(handle: usize, offset: u64, length: u64, kind: i16, wait: bool) -> Result<(), u32> {
+    #[repr(C)]
+    struct Flock {
+        kind: i16,
+        whence: i16,
+        start: i64,
+        length: i64,
+        pid: i32,
+    }
+    unsafe extern "C" {
+        fn fcntl(fd: i32, command: i32, ...) -> i32;
+    }
+    const F_OFD_SETLK: i32 = 37;
+    const F_OFD_SETLKW: i32 = 38;
+    let entry = get(handle).ok_or(ERROR_INVALID_HANDLE)?;
+    if length == 0 {
+        return Ok(());
+    }
+    let start = i64::try_from(offset).map_err(|_| 87u32)?;
+    // A range reaching past i64::MAX locks to the end of all offsets (length 0).
+    let length = i64::try_from(length).ok().filter(|l| start.checked_add(*l).is_some()).unwrap_or(0);
+    let lock = Flock { kind, whence: 0, start, length, pid: 0 };
+    let fd = std::os::fd::AsRawFd::as_raw_fd(&entry.file);
+    loop {
+        if unsafe { fcntl(fd, if wait { F_OFD_SETLKW } else { F_OFD_SETLK }, &lock) } == 0 {
+            return Ok(());
+        }
+        match std::io::Error::last_os_error().raw_os_error() {
+            Some(4) => continue,               // EINTR
+            Some(11 | 13) => return Err(33),   // EAGAIN/EACCES: ERROR_LOCK_VIOLATION
+            Some(35) => return Err(33),        // EDEADLK
+            _ => return Err(ERROR_INVALID_HANDLE),
+        }
+    }
+}
+const F_RDLCK: i16 = 0;
+const F_WRLCK: i16 = 1;
+const F_UNLCK: i16 = 2;
+fn join(low: u32, high: u32) -> u64 {
+    low as u64 | (high as u64) << 32
+}
+/// The OVERLAPPED offset of a LockFileEx/UnlockFileEx call, which completes now.
+unsafe fn lock_offset(ov: *mut u8) -> Option<u64> {
+    (!ov.is_null()).then(|| unsafe {
+        join((ov.add(16) as *const u32).read_unaligned(), (ov.add(20) as *const u32).read_unaligned())
+    })
+}
+unsafe fn lock_done(ov: *mut u8, result: Result<(), u32>) -> i32 {
+    match result {
+        Ok(()) => {
+            unsafe {
+                (ov as *mut i64).write_unaligned(0);
+                (ov.add(8) as *mut u64).write_unaligned(0);
+                let event = (ov.add(24) as *const usize).read_unaligned();
+                if event != 0 {
+                    crate::api::threading::events::set(event & !1);
+                }
+            }
+            1
+        }
+        Err(code) => fail(code, 0),
+    }
+}
+/// LockFile: an exclusive lock that fails at once (ERROR_LOCK_VIOLATION) on conflict.
+pub unsafe extern "win64" fn lock_file(handle: usize, offset_low: u32, offset_high: u32, count_low: u32, count_high: u32) -> i32 {
+    match lock_range(handle, join(offset_low, offset_high), join(count_low, count_high), F_WRLCK, false) {
+        Ok(()) => 1,
+        Err(code) => fail(code, 0),
+    }
+}
+/// LockFileEx: LOCKFILE_EXCLUSIVE_LOCK (2) or shared, LOCKFILE_FAIL_IMMEDIATELY (1)
+/// or wait; the offset comes from the OVERLAPPED. Waiting blocks the caller.
+pub unsafe extern "win64" fn lock_file_ex(handle: usize, flags: u32, reserved: u32, count_low: u32, count_high: u32, ov: *mut u8) -> i32 {
+    if reserved != 0 || flags & !3 != 0 {
+        return fail(87, 0);
+    }
+    let Some(offset) = (unsafe { lock_offset(ov) }) else {
+        return fail(87, 0);
+    };
+    let kind = if flags & 2 != 0 { F_WRLCK } else { F_RDLCK };
+    unsafe { lock_done(ov, lock_range(handle, offset, join(count_low, count_high), kind, flags & 1 == 0)) }
+}
+pub unsafe extern "win64" fn unlock_file(handle: usize, offset_low: u32, offset_high: u32, count_low: u32, count_high: u32) -> i32 {
+    match lock_range(handle, join(offset_low, offset_high), join(count_low, count_high), F_UNLCK, false) {
+        Ok(()) => 1,
+        Err(code) => fail(code, 0),
+    }
+}
+pub unsafe extern "win64" fn unlock_file_ex(handle: usize, reserved: u32, count_low: u32, count_high: u32, ov: *mut u8) -> i32 {
+    if reserved != 0 {
+        return fail(87, 0);
+    }
+    let Some(offset) = (unsafe { lock_offset(ov) }) else {
+        return fail(87, 0);
+    };
+    unsafe { lock_done(ov, lock_range(handle, offset, join(count_low, count_high), F_UNLCK, false)) }
+}
+/// The host path behind a file handle (directory handles included).
+pub(super) fn handle_path(handle: usize) -> Option<PathBuf> {
+    get(handle)?.path.lock().unwrap().clone()
 }
 
 // ---- directory searches ---------------------------------------------------
@@ -735,7 +1064,7 @@ struct Search {
 }
 /// Windows wildcard match: `*` and `?`, case-insensitive; `*.*` also matches names
 /// without an extension.
-fn matches(pattern: &str, name: &str) -> bool {
+pub(super) fn matches(pattern: &str, name: &str) -> bool {
     if pattern == "*.*" || pattern == "*" {
         return true;
     }
@@ -867,6 +1196,59 @@ pub unsafe extern "win64" fn find_next_w(handle: usize, out: *mut u8) -> i32 {
         fail(ERROR_NO_MORE_FILES, 0)
     }
 }
+/// Convert WIN32_FIND_DATAW (592 bytes) into WIN32_FIND_DATAA (320 bytes).
+unsafe fn wide_find_to_narrow(w: &[u8; 592], out: *mut u8) {
+    let mut units = [0u16; 260];
+    for (i, slot) in units.iter_mut().enumerate() {
+        *slot = u16::from_le_bytes([w[44 + i * 2], w[45 + i * 2]]);
+    }
+    let len = units.iter().position(|&c| c == 0).unwrap_or(260);
+    let name = String::from_utf16_lossy(&units[..len]);
+    unsafe {
+        out.write_bytes(0, 320);
+        std::ptr::copy_nonoverlapping(w.as_ptr(), out, 44);
+        text::copy_out_narrow(name.as_bytes(), out.add(44), 260);
+    }
+}
+pub unsafe extern "win64" fn find_first_ex_a(
+    pattern: *const c_char,
+    level: i32,
+    out: *mut u8,
+    op: i32,
+    filter: usize,
+    flags: u32,
+) -> usize {
+    if out.is_null() {
+        return fail(87, INVALID_HANDLE);
+    }
+    let Ok(s) = (unsafe { paths::narrow(pattern) }) else {
+        return fail(87, INVALID_HANDLE);
+    };
+    let mut wide_pat = text::wide(&s);
+    wide_pat.push(0);
+    let mut w = [0u8; 592];
+    let handle = unsafe {
+        find_first_ex_w(wide_pat.as_ptr(), level, w.as_mut_ptr(), op, filter, flags)
+    };
+    if handle != INVALID_HANDLE {
+        unsafe { wide_find_to_narrow(&w, out) };
+    }
+    handle
+}
+pub unsafe extern "win64" fn find_first_a(pattern: *const c_char, out: *mut u8) -> usize {
+    unsafe { find_first_ex_a(pattern, 0, out, 0, 0, 0) }
+}
+pub unsafe extern "win64" fn find_next_a(handle: usize, out: *mut u8) -> i32 {
+    if out.is_null() {
+        return fail(87, 0);
+    }
+    let mut w = [0u8; 592];
+    let r = unsafe { find_next_w(handle, w.as_mut_ptr()) };
+    if r != 0 {
+        unsafe { wide_find_to_narrow(&w, out) };
+    }
+    r
+}
 pub extern "win64" fn find_close(handle: usize) -> i32 {
     match FINDS
         .lock()
@@ -905,33 +1287,77 @@ pub unsafe extern "win64" fn remove_directory_w(name: *const u16) -> i32 {
         Err(code) => fail(code, 0),
     }
 }
-fn rename(from: &Path, to: &Path, replace: bool) -> i32 {
+/// renameat2: atomic, refusing an existing destination unless `replace`.
+fn rename_raw(from: &Path, to: &Path, replace: bool) -> std::io::Result<()> {
     unsafe extern "C" {
         fn syscall(number: i64, ...) -> i64;
     }
     use std::os::unix::ffi::OsStrExt;
-    let (Ok(a), Ok(b)) = (
-        std::ffi::CString::new(from.as_os_str().as_bytes()),
-        std::ffi::CString::new(to.as_os_str().as_bytes()),
-    ) else {
-        return fail(87, 0);
-    };
+    let invalid = || std::io::Error::from_raw_os_error(22);
+    let a = std::ffi::CString::new(from.as_os_str().as_bytes()).map_err(|_| invalid())?;
+    let b = std::ffi::CString::new(to.as_os_str().as_bytes()).map_err(|_| invalid())?;
     const AT_FDCWD: i64 = -100;
     const RENAME_NOREPLACE: i64 = 1;
     let flags = if replace { 0 } else { RENAME_NOREPLACE };
     if unsafe { syscall(316, AT_FDCWD, a.as_ptr(), AT_FDCWD, b.as_ptr(), flags) } == 0 {
-        return 1;
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
     }
-    let e = std::io::Error::last_os_error();
-    fail(path_error(if from.exists() { to } else { from }, &e), 0)
 }
-pub unsafe extern "win64" fn move_ex_w(from: *const u16, to: *const u16, flags: u32) -> i32 {
-    if flags & !1 != 0 || to.is_null() {
-        return fail(if to.is_null() { 87 } else { 50 }, 0);
+fn rename(from: &Path, to: &Path, replace: bool) -> i32 {
+    match rename_raw(from, to, replace) {
+        Ok(()) => 1,
+        Err(e) => fail(path_error(if from.exists() { to } else { from }, &e), 0),
     }
-    match (unsafe { wide_path(from) }, unsafe { wide_path(to) }) {
-        (Ok(a), Ok(b)) => rename(&a, &b, flags & 1 != 0),
+}
+/// MoveFileW: atomic rename without replacing the destination, UTF-16 Windows paths.
+/// Cross-filesystem copy/delete is not supported by this backend yet.
+pub unsafe extern "win64" fn move_w(from: *const u16, to: *const u16) -> i32 {
+    let parse = |p| unsafe { paths::wide(p) }.and_then(|s| paths::host(&s));
+    match (parse(from), parse(to)) {
+        (Ok(a), Ok(b)) => rename(&a, &b, false),
         (Err(code), _) | (_, Err(code)) => fail(code, 0),
+    }
+}
+/// MoveFileExW: MOVEFILE_REPLACE_EXISTING (1), MOVEFILE_COPY_ALLOWED (2) and
+/// MOVEFILE_WRITE_THROUGH (8). Like Windows, the destination folder must exist, and
+/// only a move across filesystems may become copy + delete, with COPY_ALLOWED.
+/// MOVEFILE_DELAY_UNTIL_REBOOT has no equivalent: ERROR_NOT_SUPPORTED.
+pub unsafe extern "win64" fn move_ex_w(from: *const u16, to: *const u16, flags: u32) -> i32 {
+    const REPLACE: u32 = 1;
+    const COPY_ALLOWED: u32 = 2;
+    const DELAY_UNTIL_REBOOT: u32 = 4;
+    const WRITE_THROUGH: u32 = 8;
+    if flags & DELAY_UNTIL_REBOOT != 0 {
+        return fail(50, 0);
+    }
+    if to.is_null() || flags & !(REPLACE | COPY_ALLOWED | WRITE_THROUGH) != 0 {
+        return fail(87, 0);
+    }
+    let replace = flags & REPLACE != 0;
+    let (a, b) = match (unsafe { wide_path(from) }, unsafe { wide_path(to) }) {
+        (Ok(a), Ok(b)) => (a, b),
+        (Err(code), _) | (_, Err(code)) => return fail(code, 0),
+    };
+    match rename_raw(&a, &b, replace) {
+        Ok(()) => 1,
+        Err(e) if e.raw_os_error() == Some(18) && flags & COPY_ALLOWED != 0 && a.is_file() => {
+            // EXDEV: copy, then remove the source; a failed removal undoes the copy.
+            if !replace && b.exists() {
+                return fail(ERROR_FILE_EXISTS, 0);
+            }
+            if let Err(e) = std::fs::copy(&a, &b) {
+                return fail(path_error(&b, &e), 0);
+            }
+            if let Err(e) = std::fs::remove_file(&a) {
+                let _ = std::fs::remove_file(&b);
+                return fail(path_error(&a, &e), 0);
+            }
+            1
+        }
+        Err(e) if e.raw_os_error() == Some(18) => fail(17, 0), // ERROR_NOT_SAME_DEVICE
+        Err(e) => fail(path_error(if a.exists() { &b } else { &a }, &e), 0),
     }
 }
 /// ReplaceFileW without a backup: the replacement takes the replaced file's name.
@@ -1106,6 +1532,75 @@ pub unsafe extern "win64" fn disk_free_space_ex_w(
     }
     1
 }
+/// GetDiskFreeSpaceW: sectors per cluster, bytes per sector, and cluster counts.
+pub unsafe extern "win64" fn disk_free_space_w(
+    name: *const u16,
+    sectors_per_cluster: *mut u32,
+    bytes_per_sector: *mut u32,
+    free_clusters: *mut u32,
+    total_clusters: *mut u32,
+) -> i32 {
+    let mut avail = 0u64;
+    let mut total = 0u64;
+    let mut free = 0u64;
+    if unsafe { disk_free_space_ex_w(name, &mut avail, &mut total, &mut free) } == 0 {
+        return 0;
+    }
+    const SECTOR_SIZE: u32 = 512;
+    const SECTORS_PER_CLUSTER: u32 = 8;
+    let cluster_size = (SECTOR_SIZE as u64) * (SECTORS_PER_CLUSTER as u64);
+    let total_c = (total / cluster_size).min(u32::MAX as u64) as u32;
+    let free_c = (avail / cluster_size).min(u32::MAX as u64) as u32;
+    unsafe {
+        if !sectors_per_cluster.is_null() {
+            *sectors_per_cluster = SECTORS_PER_CLUSTER;
+        }
+        if !bytes_per_sector.is_null() {
+            *bytes_per_sector = SECTOR_SIZE;
+        }
+        if !free_clusters.is_null() {
+            *free_clusters = free_c;
+        }
+        if !total_clusters.is_null() {
+            *total_clusters = total_c;
+        }
+    }
+    1
+}
+/// GetDiskFreeSpaceA: ANSI version of GetDiskFreeSpaceW.
+pub unsafe extern "win64" fn disk_free_space_a(
+    root: *const c_char,
+    sectors_per_cluster: *mut u32,
+    bytes_per_sector: *mut u32,
+    free_clusters: *mut u32,
+    total_clusters: *mut u32,
+) -> i32 {
+    if root.is_null() {
+        return unsafe {
+            disk_free_space_w(
+                std::ptr::null(),
+                sectors_per_cluster,
+                bytes_per_sector,
+                free_clusters,
+                total_clusters,
+            )
+        };
+    }
+    let Ok(s) = (unsafe { paths::narrow(root) }) else {
+        return fail(87, 0);
+    };
+    let mut wide = text::wide(&s);
+    wide.push(0);
+    unsafe {
+        disk_free_space_w(
+            wide.as_ptr(),
+            sectors_per_cluster,
+            bytes_per_sector,
+            free_clusters,
+            total_clusters,
+        )
+    }
+}
 /// GetDriveTypeW: Z: (the host root) is a fixed drive; other drives do not exist.
 pub unsafe extern "win64" fn drive_type_w(root: *const u16) -> u32 {
     let root = unsafe { text::string(root) }.unwrap_or_default();
@@ -1114,6 +1609,18 @@ pub unsafe extern "win64" fn drive_type_w(root: *const u16) -> u32 {
     } else {
         1 // DRIVE_NO_ROOT_DIR
     }
+}
+/// GetDriveTypeA: ANSI version of GetDriveTypeW.
+pub unsafe extern "win64" fn drive_type_a(root: *const c_char) -> u32 {
+    if root.is_null() {
+        return unsafe { drive_type_w(std::ptr::null()) };
+    }
+    let Ok(s) = (unsafe { paths::narrow(root) }) else {
+        return 1; // DRIVE_NO_ROOT_DIR
+    };
+    let mut wide = text::wide(&s);
+    wide.push(0);
+    unsafe { drive_type_w(wide.as_ptr()) }
 }
 
 /// Completion association belongs to the file object, including duplicated handles.
@@ -1155,4 +1662,85 @@ pub(crate) fn set_completion_modes(handle: usize, modes: u8) -> Result<(), u32> 
     }
     entry.completion_modes.fetch_or(modes, Ordering::AcqRel);
     Ok(())
+}
+
+pub extern "win64" fn get_logical_drives() -> u32 {
+    0x04
+}
+
+pub unsafe extern "win64" fn get_volume_information_w(
+    _root: *const u16,
+    volume_name: *mut u16,
+    volume_name_size: u32,
+    serial_number: *mut u32,
+    max_component_len: *mut u32,
+    flags: *mut u32,
+    fs_name: *mut u16,
+    fs_name_size: u32,
+) -> i32 {
+    if !volume_name.is_null() && volume_name_size > 0 {
+        unsafe { *volume_name = 0 };
+    }
+    if !serial_number.is_null() {
+        unsafe { *serial_number = 0x1234_5678 };
+    }
+    if !max_component_len.is_null() {
+        unsafe { *max_component_len = 255 };
+    }
+    if !flags.is_null() {
+        unsafe { *flags = 6 };
+    }
+    if !fs_name.is_null() && fs_name_size >= 5 {
+        let ntfs: [u16; 5] = [b'N' as u16, b'T' as u16, b'F' as u16, b'S' as u16, 0];
+        unsafe { std::ptr::copy_nonoverlapping(ntfs.as_ptr(), fs_name, 5) };
+    }
+    1
+}
+
+/// SetFileInformationByHandle: FileBasicInfo (0: access/write times, read-only),
+/// FileRenameInfo (3) and FileRenameInfoEx (22), FileDispositionInfo (4) and
+/// FileDispositionInfoEx (21: DELETE, POSIX semantics treated alike),
+/// FileAllocationInfo (5, a hint), FileEndOfFileInfo (6). Others: ERROR_NOT_SUPPORTED.
+pub unsafe extern "win64" fn set_file_information_by_handle(
+    handle: usize,
+    class: u32,
+    info: *const std::ffi::c_void,
+    size: u32,
+) -> i32 {
+    if info.is_null() {
+        return fail(87, 0);
+    }
+    let Some(entry) = get(handle) else {
+        return fail(ERROR_INVALID_HANDLE, 0);
+    };
+    let info = info as *const u8;
+    let result = match class {
+        0 if size >= 40 => unsafe {
+            set_basic(
+                handle,
+                (info.add(8) as *const u64).read_unaligned(),
+                (info.add(16) as *const u64).read_unaligned(),
+                (info.add(32) as *const u32).read_unaligned(),
+            )
+        },
+        3 => unsafe { rename_from_info(handle, info, size, false) },
+        22 => unsafe { rename_from_info(handle, info, size, true) },
+        4 if size >= 1 => mark_delete(handle, unsafe { *info } != 0),
+        21 if size >= 4 => mark_delete(handle, unsafe { (info as *const u32).read_unaligned() } & 1 != 0),
+        5 if size >= 8 => Ok(()),
+        6 if size >= 8 => {
+            let len = unsafe { (info as *const i64).read_unaligned() };
+            if len < 0 {
+                Err(87)
+            } else {
+                entry.file.set_len(len as u64).map_err(|e| paths::error(&e))
+            }
+        }
+        0 | 4 | 5 | 6 | 21 => Err(24), // ERROR_BAD_LENGTH
+        _ => Err(50),
+    };
+    match result {
+        Ok(()) => 1,
+        Err(code) => fail(code, 0),
+    }
 }

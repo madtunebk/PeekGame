@@ -160,3 +160,46 @@ unsafe extern "C" {
         length: c_int,
     ) -> c_int;
 }
+
+#[link(name = "X11")]
+unsafe extern "C" {
+    pub fn XGetWindowProperty(
+        display: *mut Display,
+        window: c_ulong,
+        property: c_ulong,
+        offset: c_long,
+        length: c_long,
+        delete: c_int,
+        requested: c_ulong,
+        actual: *mut c_ulong,
+        format: *mut c_int,
+        count: *mut c_ulong,
+        remaining: *mut c_ulong,
+        data: *mut *mut u8,
+    ) -> c_int;
+    pub fn XDeleteProperty(display: *mut Display, window: c_ulong, property: c_ulong) -> c_int;
+    pub fn XConvertSelection(
+        display: *mut Display,
+        selection: c_ulong,
+        target: c_ulong,
+        property: c_ulong,
+        requestor: c_ulong,
+        time: c_ulong,
+    ) -> c_int;
+    pub fn XFree(data: *mut c_void) -> c_int;
+}
+
+#[link(name = "X11")]
+unsafe extern "C" {
+    pub fn XGetWindowAttributes(
+        display: *mut Display,
+        window: c_ulong,
+        out: *mut Attributes,
+    ) -> c_int;
+    pub fn XGetWMNormalHints(
+        display: *mut Display,
+        window: c_ulong,
+        out: *mut SizeHints,
+        supplied: *mut c_long,
+    ) -> c_int;
+}

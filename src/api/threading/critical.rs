@@ -69,10 +69,10 @@ pub unsafe extern "win64" fn initialize_spin(p: *mut c_void, spin: u32) -> i32 {
             return 0;
         }
     }
+    // Memory holding a critical section may be freed without DeleteCriticalSection
+    // and reused for a new one; Windows simply re-initializes, and so do we (the
+    // old pthread mutex goes when its last user drops it).
     let mut map = sections().lock().unwrap();
-    if map.contains_key(&(p as usize)) {
-        stop("critical section initialized twice");
-    }
     unsafe {
         std::ptr::write_bytes(p, 0, 40);
         p.cast::<u8>().add(8).cast::<i32>().write(-1);

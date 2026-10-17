@@ -100,6 +100,72 @@ pub(crate) unsafe extern "win64" fn register_class_ex_w(class: *const WindowClas
         )
     }
 }
+
+#[repr(C)]
+pub struct WindowClassExA {
+    pub size: u32,
+    pub style: u32,
+    pub procedure: Option<WndProc>,
+    pub class_extra: i32,
+    pub window_extra: i32,
+    pub instance: usize,
+    pub icon: usize,
+    pub cursor: usize,
+    pub background: usize,
+    pub menu: *const std::ffi::c_char,
+    pub name: *const std::ffi::c_char,
+    pub small_icon: usize,
+}
+
+pub(crate) unsafe extern "win64" fn register_class_ex_a(class: *const WindowClassExA) -> u16 {
+    if class.is_null() || unsafe { (*class).size } != std::mem::size_of::<WindowClassExA>() as u32 {
+        error::set(87);
+        return 0;
+    }
+    let c = unsafe { &*class };
+    if (c.name as usize) <= 0xffff {
+        let wide = WindowClass {
+            size: std::mem::size_of::<WindowClass>() as u32,
+            style: c.style,
+            procedure: c.procedure,
+            class_extra: c.class_extra,
+            window_extra: c.window_extra,
+            instance: c.instance,
+            icon: c.icon,
+            cursor: c.cursor,
+            background: c.background,
+            menu: std::ptr::null(),
+            name: c.name as *const u16,
+            small_icon: c.small_icon,
+        };
+        return unsafe { register_class_ex_w(&wide) };
+    }
+    let name_str = match unsafe { std::ffi::CStr::from_ptr(c.name) }.to_str() {
+        Ok(s) => s,
+        Err(_) => {
+            error::set(87);
+            return 0;
+        }
+    };
+    let mut wide_name: Vec<u16> = name_str.encode_utf16().collect();
+    wide_name.push(0);
+    let wide = WindowClass {
+        size: std::mem::size_of::<WindowClass>() as u32,
+        style: c.style,
+        procedure: c.procedure,
+        class_extra: c.class_extra,
+        window_extra: c.window_extra,
+        instance: c.instance,
+        icon: c.icon,
+        cursor: c.cursor,
+        background: c.background,
+        menu: std::ptr::null(),
+        name: wide_name.as_ptr(),
+        small_icon: c.small_icon,
+    };
+    unsafe { register_class_ex_w(&wide) }
+}
+
 pub(crate) unsafe extern "win64" fn register_class_w(class: *const WindowClassPlain) -> u16 {
     if class.is_null() {
         error::set(87);
@@ -110,6 +176,41 @@ pub(crate) unsafe extern "win64" fn register_class_w(class: *const WindowClassPl
         register(
             c.procedure,
             c.name,
+            c.instance,
+            c.style,
+            c.cursor,
+            c.window_extra,
+        )
+    }
+}
+pub(crate) unsafe extern "win64" fn register_class_a(class: *const WindowClassPlain) -> u16 {
+    if class.is_null() {
+        error::set(87);
+        return 0;
+    }
+    let c = unsafe { &*class };
+    if (c.name as usize) <= 0xffff {
+        return unsafe {
+            register(
+                c.procedure,
+                c.name,
+                c.instance,
+                c.style,
+                c.cursor,
+                c.window_extra,
+            )
+        };
+    }
+    let Ok(name_str) = (unsafe { strings::narrow(c.name.cast()) }) else {
+        error::set(87);
+        return 0;
+    };
+    let mut wide_name: Vec<u16> = name_str.encode_utf16().collect();
+    wide_name.push(0);
+    unsafe {
+        register(
+            c.procedure,
+            wide_name.as_ptr(),
             c.instance,
             c.style,
             c.cursor,

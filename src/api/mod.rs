@@ -11,3 +11,7 @@ pub(crate) mod memory;
 pub(crate) mod network;
 pub(crate) mod shell;
 pub(crate) mod text;
+
+pub(crate) mod audio;
+
+pub(crate) mod steam;

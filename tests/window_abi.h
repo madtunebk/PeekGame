@@ -26,5 +26,8 @@ extern void (WIN *quit)(int32_t);
 extern int32_t (WIN *peek)(struct Msg *,uintptr_t,uint32_t,uint32_t,uint32_t);
 extern intptr_t (WIN *dispatch)(const struct Msg *);
 extern int32_t (WIN *translate)(const struct Msg *);
+extern uint32_t observed_size_count;
+extern intptr_t observed_size;
+void test_native_input(uintptr_t hwnd,struct Native native,const void *(*resolve)(const char *,const char *));
 void test_native_events(uintptr_t hwnd,struct Native native);
 #endif

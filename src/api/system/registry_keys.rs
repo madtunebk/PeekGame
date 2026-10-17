@@ -109,7 +109,46 @@ impl Tree {
             next_handle: 0x5245_0000,
         };
         tree.load();
+        tree.seed_steam();
         tree
+    }
+    fn seed_steam(&mut self) {
+        let pid = crate::api::steam::steam_pid();
+        if pid == 0 {
+            return;
+        }
+        if let Some((valve, _)) = self.walk(USER, r"Software\Valve", true) {
+            self.keys[valve].volatile = true;
+        }
+        if let Some((steam, _)) = self.walk(USER, r"Software\Valve\Steam", true) {
+            self.keys[steam].volatile = true;
+            let path_val = "C:\\Program Files (x86)\\Steam";
+            let path_u16: Vec<u8> = path_val
+                .encode_utf16()
+                .chain(std::iter::once(0))
+                .flat_map(|u| u.to_le_bytes())
+                .collect();
+            self.set(steam, "SteamPath", 1, &path_u16);
+            let exe_val = "C:\\Program Files (x86)\\Steam\\steam.exe";
+            let exe_u16: Vec<u8> = exe_val
+                .encode_utf16()
+                .chain(std::iter::once(0))
+                .flat_map(|u| u.to_le_bytes())
+                .collect();
+            self.set(steam, "SteamExe", 1, &exe_u16);
+        }
+        if let Some((active, _)) = self.walk(USER, r"Software\Valve\Steam\ActiveProcess", true) {
+            self.keys[active].volatile = true;
+            let pid_bytes = pid.to_le_bytes();
+            self.set(active, "pid", 4, &pid_bytes);
+            let dll_path = "C:\\Program Files (x86)\\Steam\\steamclient64.dll";
+            let dll_u16: Vec<u8> = dll_path
+                .encode_utf16()
+                .chain(std::iter::once(0))
+                .flat_map(|u| u.to_le_bytes())
+                .collect();
+            self.set(active, "SteamClientDll64", 1, &dll_u16);
+        }
     }
     fn child(&self, k: usize, name: &str) -> Option<usize> {
         self.keys[k]

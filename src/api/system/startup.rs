@@ -38,7 +38,7 @@ pub unsafe extern "win64" fn startup_info(p: *mut u8) {
             unsafe {
                 p.add(80 + i * 8)
                     .cast::<usize>()
-                    .write(process.standard_handles[i]);
+                    .write(process.standard_handles[i].load(std::sync::atomic::Ordering::SeqCst));
             }
         }
     }
@@ -77,7 +77,13 @@ pub unsafe extern "win64" fn performance_counter(p: *mut i64) -> i32 {
         fn clock_gettime(clock: i32, time: *mut Timespec) -> i32;
     }
     let mut time = Timespec { sec: 0, nsec: 0 };
-    if unsafe { clock_gettime(1, &mut time) } != 0 {
+    if unsafe {
+        clock_gettime(
+            7, /* CLOCK_BOOTTIME: QPC includes suspend on Windows */
+            &mut time,
+        )
+    } != 0
+    {
         crate::api::system::error::set(87);
         return 0;
     }

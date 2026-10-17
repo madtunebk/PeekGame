@@ -15,12 +15,15 @@ intptr_t (WIN *dispatch)(const struct Msg *);
 int32_t (WIN *translate)(const struct Msg *);
 static int created,destroyed,ncdestroyed;
 static int parameter;
+uint32_t observed_size_count;
+intptr_t observed_size;
 static intptr_t WIN procedure(uintptr_t hwnd,uint32_t message,uintptr_t wp,intptr_t lp) {
     if(message==0x81 || message==1){
         const struct Create *create=(void *)lp;
         assert(create->width==640 && create->height==480 && create->parameter==&parameter);
     }
     if(message==1){created++;assert(post(hwnd,0x8001,1,2));}
+    if(message==5){observed_size_count++;observed_size=lp;}
     if(message==2){destroyed++;quit(17);}
     if(message==0x82){ncdestroyed++;}
     return default_proc(hwnd,message,wp,lp);
@@ -60,6 +63,7 @@ int main(int argc,char **argv) {
     assert(show_window(hwnd,0)==1);assert(!show_window(hwnd,5));
     struct Msg message;assert(peek(&message,hwnd,0x8001,0x8001,1));
     assert(message.wp==1&&message.lp==2); /* reentrant post from WM_CREATE */
+    test_native_input(hwnd,native,resolve);
     test_native_events(hwnd,native);
     assert(destroyed==1&&ncdestroyed==1);
     assert(native_window(hwnd,&native)==1400);

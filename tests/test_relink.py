@@ -5,7 +5,7 @@ import shutil
 import subprocess
 from private_x11 import display
 root=Path(__file__).resolve().parents[1]
-runner=root/'target/release/peekgame'
+runner=Path(os.environ.get('PEEKGAME_RUNNER',root/'target/release/peekgame'))
 work=root/f'target/relink-test-{os.getpid()}'
 work.mkdir(parents=True)
 def mingw(source,output,*libs):
@@ -42,7 +42,7 @@ try:
     assert result.returncode==78 and 'STOP: missing Windows API KERNEL32.dll!Beep' in result.stderr,result
     print('PASS: unresolved static import stops with its name')
     elf=relink(root/'tests/testgame/testgame.exe','testgame')
-    dxvk=(elf.parent/'runtime/libdxvk_d3d11.so.0').is_file()
+    dxvk=(elf.parent/'runtime/libdxvk_d3d11.so.0').is_file() or (elf.parent/'windows-dlls/d3d11.dll').is_file()
     with display() as d:
         env=dict(os.environ,DISPLAY=d,VK_DRIVER_FILES='/usr/share/vulkan/icd.d/lvp_icd.json',DXVK_LOG_PATH='none')
         result=subprocess.run([str(elf),'--frames','6'],env=env,capture_output=True,text=True,timeout=30)

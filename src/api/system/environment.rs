@@ -103,6 +103,34 @@ pub unsafe extern "win64" fn free_strings_w(block: *mut u16) -> i32 {
     drop(unsafe { Box::from_raw(std::ptr::slice_from_raw_parts_mut(block, length)) });
     1
 }
+static BLOCKS_A: Mutex<Vec<(usize, usize)>> = Mutex::new(Vec::new());
+pub extern "win64" fn strings_a() -> *mut u8 {
+    let mut block: Vec<u8> = Vec::new();
+    for (k, v) in std::env::vars_os() {
+        block.extend_from_slice(
+            format!("{}={}", k.to_string_lossy(), v.to_string_lossy()).as_bytes(),
+        );
+        block.push(0);
+    }
+    block.push(0);
+    if block.len() == 1 {
+        block.push(0);
+    }
+    let length = block.len();
+    let p: *mut u8 = Box::into_raw(block.into_boxed_slice()).cast();
+    BLOCKS_A.lock().unwrap().push((p as usize, length));
+    p
+}
+pub unsafe extern "win64" fn free_strings_a(block: *mut u8) -> i32 {
+    let mut blocks = BLOCKS_A.lock().unwrap();
+    let Some(index) = blocks.iter().position(|(p, _)| *p == block as usize) else {
+        error::set(87);
+        return 0;
+    };
+    let (_, length) = blocks.swap_remove(index);
+    drop(unsafe { Box::from_raw(std::ptr::slice_from_raw_parts_mut(block, length)) });
+    1
+}
 /// `%NAME%` replaced by the variable's value; unknown names stay as written.
 pub(crate) fn expand(source: &str) -> String {
     let mut result = String::new();

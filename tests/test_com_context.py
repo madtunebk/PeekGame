@@ -1,0 +1,14 @@
+"""Context-token failure contracts, apartment nesting, and thread isolation."""
+import os, subprocess
+from pathlib import Path
+root = Path(__file__).resolve().parents[1]
+work = root / "cache" / ("com-context-" + str(os.getpid()))
+work.mkdir(parents=True)
+env = {**os.environ, "TMPDIR": str(work)}
+exe = work / "com_context.exe"
+subprocess.run(["x86_64-w64-mingw32-gcc", "-O2", "-Wall", "-Wextra", "-Werror", "-nostdlib", "-nostartfiles", "-fno-builtin", "-Wl,-e,entry", str(root/"tests/com_context.c"), "-lole32", "-lkernel32", "-o", str(exe)], check=True, env=env)
+runner = root / "dist/peekgame"
+subprocess.run([str(runner), str(exe), "--output", str(work/"reports"), "--run"], check=True, timeout=10)
+subprocess.run([str(runner), str(exe), "--relink", "--output", str(work/"relinked")], check=True, timeout=120, env=env)
+subprocess.run([str(work/"relinked/com_context")], check=True, timeout=10)
+print("PASS: CoGetContextToken PE/ELF, E_POINTER, uninitialized/unsupported apartments, nesting and thread isolation")

@@ -15,4 +15,9 @@ for name,defines in [('fixture',[]),('host',['-DHOST_BUNDLE'])]:
     (root/f'logs/certificate-store-{name}.log').write_text(result.stdout+result.stderr)
     assert result.returncode==0,f'{name} exit {result.returncode}\n{result.stderr}'
     print(f'PASS: {name} ROOT enumeration, CERT_INFO ABI, DER metadata, reference lifetime, memory store and invalid DER')
+import ssl,hashlib
+encoded=ssl.PEM_cert_to_DER_cert((work/'ca.pem').read_text())
+expected=hashlib.sha1(encoded).digest()+hashlib.md5(encoded).digest()+hashlib.sha256(encoded).digest()
+assert (work/'hashes.bin').read_bytes()==expected
+print('PASS: certificate hash properties agree with independent SHA1/MD5/SHA256; size/error contracts')
 (work/'key.pem').unlink()

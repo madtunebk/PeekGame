@@ -29,3 +29,11 @@ pub(crate) mod version;
 pub(crate) mod winmm;
 
 pub(crate) mod transactions;
+
+pub(crate) mod cpu_times;
+
+pub(crate) mod power;
+
+pub(crate) mod priority;
+pub(crate) mod nt_info;
+pub(crate) mod pdh;

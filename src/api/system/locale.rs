@@ -3,6 +3,8 @@
 //! en-US. Only the user's own locale exists. Unmapped GetLocaleInfo types stop with
 //! their number.
 use crate::api::{system::error, text};
+mod metadata;
+pub(crate) mod thread;
 const ERROR_INSUFFICIENT_BUFFER: u32 = 122;
 const ERROR_INVALID_FLAGS: u32 = 1004;
 const LOCALE_USER_DEFAULT: u32 = 0x400;
@@ -99,13 +101,36 @@ pub(crate) fn langid() -> u16 {
 fn info_text(kind: u32) -> String {
     let (lang, country) = parts();
     match kind & 0x0fff_ffff {
+        0x0e..=0x10
+        | 0x14..=0x57
+        | 0x78
+        | 0x79
+        | 0x1003
+        | 0x1005
+        | 0x1006
+        | 0x1007
+        | 0x1008
+        | 0x1009
+        | 0x100c..=0x100f => {
+            crate::host::nls::number(&locale_name(), kind & 0x0fff_ffff).unwrap_or_else(|| {
+                eprintln!(
+                    "STOP: GetLocaleInfo: ICU cannot supply locale currency metadata {kind:#x}"
+                );
+                std::process::exit(78)
+            })
+        }
+        0x1004 => metadata::ansi_code_page().to_string(),
+        0x1001 => metadata::english_language().into(),
+        0x1002 => match metadata::english_country(&country) {
+            Some(name) => name.into(),
+            None => {
+                eprintln!("STOP: GetLocaleInfo: English name for country {country} is not mapped");
+                std::process::exit(78)
+            }
+        },
         0x5c => locale_name(),
         0x59 => lang,
         0x5a => country,
-        // Number separators: the decimal point and thousands separator of the C locale
-        // unless the user's numeric locale says otherwise; '.' and ',' cover most.
-        0x0e => ".".into(),
-        0x0f => ",".into(),
         0x0d => ((["US", "LR", "MM"].contains(&country.as_str())) as u8).to_string(),
         other => {
             eprintln!("STOP: GetLocaleInfo: information type {other:#x} is not mapped");
@@ -114,7 +139,28 @@ fn info_text(kind: u32) -> String {
     }
 }
 unsafe fn info_out(kind: u32, out: *mut u16, capacity: i32) -> i32 {
-    let value = text::wide(&info_text(kind));
+    if capacity < 0 || (capacity > 0 && out.is_null()) {
+        error::set(87);
+        return 0;
+    }
+    let value = info_text(kind);
+    if kind & 0x2000_0000 != 0 {
+        // LOCALE_RETURN_NUMBER: a DWORD in two WCHAR slots.
+        let Ok(number) = value.parse::<u32>() else {
+            error::set(ERROR_INVALID_FLAGS);
+            return 0;
+        };
+        if capacity == 0 {
+            return 2;
+        }
+        if capacity < 2 {
+            error::set(ERROR_INSUFFICIENT_BUFFER);
+            return 0;
+        }
+        unsafe { out.cast::<u32>().write_unaligned(number) };
+        return 2;
+    }
+    let value = text::wide(&value);
     let needed = value.len() as i32 + 1;
     if capacity == 0 {
         return needed;
@@ -327,6 +373,109 @@ pub unsafe extern "win64" fn lcmap_ex(
 ) -> i32 {
     unsafe { lcmap(flags, source, count, out, capacity) }
 }
+unsafe fn narrow_bytes<'a>(source: *const u8, count: i32) -> Option<&'a [u8]> {
+    if source.is_null() || count == 0 {
+        return None;
+    }
+    if count > 0 {
+        Some(unsafe { std::slice::from_raw_parts(source, count as usize) })
+    } else {
+        let len = unsafe { std::ffi::CStr::from_ptr(source.cast()) }
+            .to_bytes_with_nul()
+            .len();
+        Some(unsafe { std::slice::from_raw_parts(source, len) })
+    }
+}
+pub unsafe extern "win64" fn info_a(lcid: u32, kind: u32, out: *mut u8, capacity: i32) -> i32 {
+    if capacity < 0 || (capacity > 0 && out.is_null()) {
+        error::set(87);
+        return 0;
+    }
+    if !own_lcid(lcid) && lcid != 0x0409 && lcid != 0x7f {
+        error::set(87);
+        return 0;
+    }
+    let value = info_text(kind);
+    if kind & 0x2000_0000 != 0 {
+        let Ok(number) = value.parse::<u32>() else {
+            error::set(ERROR_INVALID_FLAGS);
+            return 0;
+        };
+        if capacity == 0 {
+            return 4;
+        }
+        if capacity < 4 {
+            error::set(ERROR_INSUFFICIENT_BUFFER);
+            return 0;
+        }
+        unsafe { out.cast::<u32>().write_unaligned(number) };
+        return 4;
+    }
+    let bytes = value.as_bytes();
+    let needed = bytes.len() as i32 + 1;
+    if capacity == 0 {
+        return needed;
+    }
+    if out.is_null() || capacity < needed {
+        error::set(ERROR_INSUFFICIENT_BUFFER);
+        return 0;
+    }
+    unsafe { text::copy_out_narrow(bytes, out, capacity as u32) };
+    needed
+}
+pub unsafe extern "win64" fn string_type_a(
+    _lcid: u32,
+    kind: u32,
+    source: *const u8,
+    count: i32,
+    out: *mut u16,
+) -> i32 {
+    let Some(bytes) = (unsafe { narrow_bytes(source, count) }) else {
+        error::set(87);
+        return 0;
+    };
+    let wide: Vec<u16> = bytes.iter().map(|&b| b as u16).collect();
+    unsafe { string_type_w(kind, wide.as_ptr(), wide.len() as i32, out) }
+}
+pub unsafe extern "win64" fn lcmap_a(
+    lcid: u32,
+    flags: u32,
+    source: *const u8,
+    count: i32,
+    out: *mut u8,
+    capacity: i32,
+) -> i32 {
+    let Some(bytes) = (unsafe { narrow_bytes(source, count) }) else {
+        error::set(87);
+        return 0;
+    };
+    let wide: Vec<u16> = bytes.iter().map(|&b| b as u16).collect();
+    let mut mapped = vec![0u16; wide.len()];
+    let n = unsafe {
+        lcmap_w(
+            lcid,
+            flags,
+            wide.as_ptr(),
+            wide.len() as i32,
+            mapped.as_mut_ptr(),
+            mapped.len() as i32,
+        )
+    };
+    if n <= 0 {
+        return 0;
+    }
+    if capacity == 0 {
+        return n;
+    }
+    if out.is_null() || capacity < n {
+        error::set(ERROR_INSUFFICIENT_BUFFER);
+        return 0;
+    }
+    for (i, &u) in mapped[..n as usize].iter().enumerate() {
+        unsafe { *out.add(i) = u as u8 };
+    }
+    n
+}
 const NORM_IGNORECASE: u32 = 0x1;
 /// CompareString: ordinal UTF-16 order, case-insensitive with NORM_IGNORECASE
 /// (or LINGUISTIC_IGNORECASE); returns CSTR_LESS_THAN (1), CSTR_EQUAL (2) or
@@ -448,4 +597,124 @@ pub unsafe extern "win64" fn enum_system_locales_ex(
     wide.push(0);
     callback(wide.as_ptr(), kind, parameter);
     1
+}
+
+/// CPINFOEXW uses Windows WCHARs: UnicodeDefaultChar at 18, CodePage at 20,
+/// CodePageName[260] at 24. ACP/OEM/thread ACP select this runtime's UTF-8 page.
+pub unsafe extern "win64" fn cp_info_ex_w(cp: u32, flags: u32, out: *mut u8) -> i32 {
+    let cp = if matches!(cp, 0 | 1 | 3) { 65001 } else { cp };
+    if flags != 0 || out.is_null() || is_valid_code_page(cp) == 0 {
+        error::set(87);
+        return 0;
+    }
+    unsafe {
+        out.write_bytes(0, 544);
+        cp_info(cp, out);
+        out.add(18)
+            .cast::<u16>()
+            .write_unaligned(if cp == 65001 { 0xfffd } else { b'?' as u16 });
+        out.add(20).cast::<u32>().write_unaligned(cp);
+        let name = if cp == 65001 {
+            "Unicode (UTF-8)"
+        } else {
+            "1252 (ANSI - Latin I)"
+        };
+        for (index, unit) in name.encode_utf16().enumerate() {
+            out.add(24 + index * 2).cast::<u16>().write_unaligned(unit);
+        }
+    }
+    1
+}
+
+/// UI language uses the same host-locale mapping as the existing locale APIs.
+pub extern "win64" fn user_default_ui_language() -> u16 {
+    langid()
+}
+
+pub unsafe extern "win64" fn preferred_ui_languages(
+    flags: u32,
+    count: *mut u32,
+    buffer: *mut u16,
+    size: *mut u32,
+) -> i32 {
+    if (flags & !0x0c) != 0 || (flags & 0x0c) == 0x0c || count.is_null() || size.is_null() {
+        error::set(87);
+        return 0;
+    }
+    let tag = if flags & 4 != 0 {
+        format!("{:04X}", langid())
+    } else {
+        let env = std::env::var("LC_ALL")
+            .or_else(|_| std::env::var("LC_MESSAGES"))
+            .or_else(|_| std::env::var("LANG"))
+            .unwrap_or_else(|_| "en_US".into());
+        let clean = env.split('.').next().unwrap_or("en-US").replace('_', "-");
+        if clean.is_empty() { "en-US".into() } else { clean }
+    };
+    let utf16: Vec<u16> = tag.encode_utf16().chain(std::iter::once(0)).chain(std::iter::once(0)).collect();
+    let need = utf16.len() as u32;
+    unsafe { *count = 1 };
+    if buffer.is_null() {
+        unsafe { *size = need };
+        return 1;
+    }
+    let cur_size = unsafe { *size };
+    if cur_size < need {
+        unsafe { *size = need };
+        error::set(122); // ERROR_INSUFFICIENT_BUFFER
+        return 0;
+    }
+    unsafe {
+        std::ptr::copy_nonoverlapping(utf16.as_ptr(), buffer, utf16.len());
+        *size = need;
+    }
+    1
+}
+
+/// GetThreadPreferredUILanguages: no thread-specific list has been installed,
+/// so merged queries use the existing user UI language and thread-only queries
+/// return an empty multi-string.
+pub unsafe extern "win64" fn thread_preferred_ui_languages(
+    flags: u32,
+    count: *mut u32,
+    buffer: *mut u16,
+    size: *mut u32,
+) -> i32 {
+    const MUI_LANGUAGE_ID: u32 = 0x04;
+    const MUI_LANGUAGE_NAME: u32 = 0x08;
+    const MUI_MERGE_SYSTEM_FALLBACK: u32 = 0x10;
+    const MUI_MERGE_USER_FALLBACK: u32 = 0x20;
+    const MUI_THREAD_LANGUAGES: u32 = 0x40;
+    if count.is_null()
+        || size.is_null()
+        || flags & !0x7c != 0
+        || flags & (MUI_LANGUAGE_ID | MUI_LANGUAGE_NAME) == (MUI_LANGUAGE_ID | MUI_LANGUAGE_NAME)
+        || (flags & MUI_THREAD_LANGUAGES != 0
+            && flags & (MUI_MERGE_SYSTEM_FALLBACK | MUI_MERGE_USER_FALLBACK) != 0)
+        || (flags & MUI_MERGE_SYSTEM_FALLBACK != 0
+            && flags & MUI_MERGE_USER_FALLBACK == 0)
+    {
+        error::set(87); // ERROR_INVALID_PARAMETER
+        return 0;
+    }
+    if flags & MUI_THREAD_LANGUAGES != 0 {
+        let available = unsafe { *size };
+        unsafe {
+            *count = 0;
+            *size = 2; // empty double-null-terminated multi-string
+        }
+        if buffer.is_null() {
+            return 1;
+        }
+        if available < 2 {
+            error::set(122); // ERROR_INSUFFICIENT_BUFFER
+            return 0;
+        }
+        unsafe {
+            *buffer = 0;
+            *buffer.add(1) = 0;
+        }
+        return 1;
+    }
+    unsafe { preferred_ui_languages(flags & (MUI_LANGUAGE_ID | MUI_LANGUAGE_NAME), count, buffer, size) }
 }

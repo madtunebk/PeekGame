@@ -19,4 +19,10 @@ for destination in destinations:
     destination.mkdir(parents=True,exist_ok=True)
     for name in ('d3d11.dll','dxgi.dll','DXVK-LICENSE','PROVENANCE.json'):
         shutil.copy2(source/name,destination/name)
+    # Optional user-supplied PE dependencies stay local and are never taken from target/.
+    local=root/'windows-dlls'
+    if local.is_dir():
+        for library in local.glob('*.dll'):
+            if library.name.lower() not in ('d3d11.dll','dxgi.dll'):
+                shutil.copy2(library,destination/library.name)
     print('Windows DXVK runtime staged:',destination)

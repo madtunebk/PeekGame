@@ -20,6 +20,9 @@ fn main_image() -> Handle {
 /// A loaded module by name: PeekGame's own DLLs (always loaded) or a mapped PE
 /// image. GetModuleHandle never loads anything.
 fn named(name: &str) -> Option<(Handle, Option<std::sync::Arc<images::Module>>)> {
+    if crate::api::steam::recognizes(name) && crate::api::steam::loaded() {
+        return Some((builtin_handle("steamclient64.dll"), None));
+    }
     if registry::provides(name) {
         return Some((builtin_handle(name), None));
     }

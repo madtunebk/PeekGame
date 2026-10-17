@@ -6,8 +6,9 @@ use crate::{
     images,
 };
 use std::{
+    collections::HashMap,
     ffi::c_char,
-    sync::atomic::{AtomicU32, Ordering},
+    sync::{atomic::{AtomicU32, Ordering}, Mutex, OnceLock},
 };
 unsafe extern "C" {
     fn sched_getaffinity(pid: i32, size: usize, set: *mut u64) -> i32;
@@ -76,6 +77,21 @@ fn meminfo(file: &str, key: &str) -> u64 {
         .map_or(0, |kb| kb * 1024)
 }
 /// MEMORYSTATUSEX (64 bytes) from /proc/meminfo and the process size.
+/// GlobalMemoryStatus: the MEMORYSTATUS (56 bytes on x64: length, load, six
+/// SIZE_T counts) subset of GlobalMemoryStatusEx; it sets dwLength itself.
+pub unsafe extern "win64" fn global_memory_status(out: *mut u8) {
+    if out.is_null() {
+        return;
+    }
+    let mut ex = [0u32; 16];
+    ex[0] = 64;
+    unsafe { global_memory_status_ex(ex.as_mut_ptr()) };
+    unsafe {
+        out.cast::<u32>().write_unaligned(56);
+        out.add(4).cast::<u32>().write_unaligned(ex[1]);
+        std::ptr::copy_nonoverlapping(ex.as_ptr().add(2).cast::<u8>(), out.add(8), 48);
+    }
+}
 pub unsafe extern "win64" fn global_memory_status_ex(out: *mut u32) -> i32 {
     if out.is_null() || unsafe { *out } != 64 {
         error::set(87);
@@ -206,6 +222,97 @@ pub unsafe extern "win64" fn logical_processor_information_ex(
     1
 }
 
+/// GetLogicalProcessorInformation: returns processor cores and caches.
+pub unsafe extern "win64" fn logical_processor_information(
+    out: *mut u8,
+    length: *mut u32,
+) -> i32 {
+    if length.is_null() {
+        error::set(87);
+        return 0;
+    }
+    let active = affinity();
+    let mut cores: Vec<((i32, i32), u64)> = Vec::new();
+    let mut packages: Vec<(i32, u64)> = Vec::new();
+    for cpu in (0..64).filter(|c| active & (1 << c) != 0) {
+        let (Some(package), Some(core)) = (
+            topology(cpu, "physical_package_id"),
+            topology(cpu, "core_id"),
+        ) else {
+            error::set(50);
+            return 0;
+        };
+        match cores.iter_mut().find(|(k, _)| *k == (package, core)) {
+            Some((_, m)) => *m |= 1 << cpu,
+            None => cores.push(((package, core), 1 << cpu)),
+        }
+        match packages.iter_mut().find(|(k, _)| *k == package) {
+            Some((_, m)) => *m |= 1 << cpu,
+            None => packages.push((package, 1 << cpu)),
+        }
+    }
+    let mut data = Vec::new();
+    // RelationProcessorCore (0)
+    for (_, mask) in &cores {
+        let mut r = [0u8; 32];
+        r[0..8].copy_from_slice(&mask.to_le_bytes());
+        r[8..12].copy_from_slice(&0u32.to_le_bytes()); // RelationProcessorCore
+        r[16] = if mask.count_ones() > 1 { 1 } else { 0 }; // Flags: LTP_PC_SMT (1)
+        data.extend(r);
+    }
+    // RelationCache (2): L1 Data cache (32 KB), L2 cache (1 MB) per core
+    for (_, mask) in &cores {
+        let mut r1 = [0u8; 32];
+        r1[0..8].copy_from_slice(&mask.to_le_bytes());
+        r1[8..12].copy_from_slice(&2u32.to_le_bytes()); // RelationCache
+        r1[16] = 1; // Level 1
+        r1[17] = 8; // Associativity
+        r1[18..20].copy_from_slice(&64u16.to_le_bytes()); // LineSize
+        r1[20..24].copy_from_slice(&(32 * 1024u32).to_le_bytes()); // Size: 32 KB
+        r1[24..28].copy_from_slice(&2u32.to_le_bytes()); // CacheData
+        data.extend(r1);
+
+        let mut r2 = [0u8; 32];
+        r2[0..8].copy_from_slice(&mask.to_le_bytes());
+        r2[8..12].copy_from_slice(&2u32.to_le_bytes()); // RelationCache
+        r2[16] = 2; // Level 2
+        r2[17] = 8; // Associativity
+        r2[18..20].copy_from_slice(&64u16.to_le_bytes()); // LineSize
+        r2[20..24].copy_from_slice(&(1024 * 1024u32).to_le_bytes()); // Size: 1 MB
+        r2[24..28].copy_from_slice(&0u32.to_le_bytes()); // CacheUnified
+        data.extend(r2);
+    }
+    // L3 cache (32 MB) per package
+    for (_, mask) in &packages {
+        let mut r3 = [0u8; 32];
+        r3[0..8].copy_from_slice(&mask.to_le_bytes());
+        r3[8..12].copy_from_slice(&2u32.to_le_bytes()); // RelationCache
+        r3[16] = 3; // Level 3
+        r3[17] = 16; // Associativity
+        r3[18..20].copy_from_slice(&64u16.to_le_bytes()); // LineSize
+        r3[20..24].copy_from_slice(&(32 * 1024 * 1024u32).to_le_bytes()); // Size: 32 MB
+        r3[24..28].copy_from_slice(&0u32.to_le_bytes()); // CacheUnified
+        data.extend(r3);
+    }
+    // RelationProcessorPackage (3)
+    for (_, mask) in &packages {
+        let mut r = [0u8; 32];
+        r[0..8].copy_from_slice(&mask.to_le_bytes());
+        r[8..12].copy_from_slice(&3u32.to_le_bytes()); // RelationProcessorPackage
+        data.extend(r);
+    }
+    if out.is_null() || unsafe { *length } < data.len() as u32 {
+        unsafe { *length = data.len() as u32 };
+        error::set(122); // ERROR_INSUFFICIENT_BUFFER
+        return 0;
+    }
+    unsafe {
+        std::ptr::copy_nonoverlapping(data.as_ptr(), out, data.len());
+        *length = data.len() as u32;
+    }
+    1
+}
+
 /// SetThreadPriority: accepted without changing the host scheduler, which an
 /// unprivileged process cannot raise anyway (peek clamps to the current nice value).
 pub extern "win64" fn set_thread_priority(_thread: usize, priority: i32) -> i32 {
@@ -224,6 +331,33 @@ pub extern "win64" fn set_thread_affinity_mask(_thread: usize, mask: u64) -> u64
         return 0;
     }
     all
+}
+pub extern "win64" fn set_thread_priority_boost(_thread: usize, _disable: i32) -> i32 {
+    1
+}
+pub unsafe extern "win64" fn set_thread_group_affinity(
+    _thread: usize,
+    group_affinity: *const u8,
+    previous: *mut u8,
+) -> i32 {
+    if group_affinity.is_null() {
+        error::set(87);
+        return 0;
+    }
+    let all = affinity();
+    let mask = unsafe { group_affinity.cast::<u64>().read_unaligned() };
+    let group = unsafe { group_affinity.add(8).cast::<u16>().read_unaligned() };
+    if group != 0 || (mask & all) == 0 {
+        error::set(87);
+        return 0;
+    }
+    if !previous.is_null() {
+        unsafe {
+            previous.write_bytes(0, 16);
+            previous.cast::<u64>().write_unaligned(all);
+        }
+    }
+    1
 }
 pub extern "win64" fn switch_to_thread() -> i32 {
     unsafe { sched_yield() };
@@ -249,9 +383,21 @@ pub extern "win64" fn sleep_ex(ms: u32, alertable: i32) -> u32 {
 }
 /// SetThreadDescription: the Linux thread name (15 bytes kept) of the calling
 /// thread; other threads' names are left unchanged.
+static THREAD_DESCRIPTIONS: OnceLock<Mutex<HashMap<u32, String>>> = OnceLock::new();
+
+fn thread_descriptions() -> &'static Mutex<HashMap<u32, String>> {
+    THREAD_DESCRIPTIONS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
 pub unsafe extern "win64" fn set_thread_description(thread: usize, description: *const u16) -> i32 {
-    if thread == usize::MAX - 1 {
-        if let Some(name) = unsafe { text::string(description) } {
+    let Some(id) = crate::api::threading::threads::id_of(thread) else {
+        return 0x8007_0006u32 as i32; // HRESULT_FROM_WIN32(ERROR_INVALID_HANDLE)
+    };
+    let Some(name) = (unsafe { text::string(description) }) else {
+        return 0x8007_0057u32 as i32; // HRESULT_FROM_WIN32(ERROR_INVALID_PARAMETER)
+    };
+    thread_descriptions().lock().unwrap().insert(id, name.clone());
+    if id == crate::api::system::startup::thread_id() {
             let mut name: Vec<u8> = name
                 .into_bytes()
                 .into_iter()
@@ -260,9 +406,57 @@ pub unsafe extern "win64" fn set_thread_description(thread: usize, description: 
                 .collect();
             name.push(0);
             let _ = std::fs::write("/proc/thread-self/comm", &name[..name.len() - 1]);
-        }
     }
     0
+}
+
+/// The caller owns the UTF-16 buffer and releases it with LocalFree.
+pub unsafe extern "win64" fn get_thread_description(thread: usize, out: *mut *mut u16) -> i32 {
+    if out.is_null() {
+        return 0x8000_4003u32 as i32; // E_POINTER
+    }
+    unsafe { out.write(std::ptr::null_mut()) };
+    let Some(id) = crate::api::threading::threads::id_of(thread) else {
+        return 0x8007_0006u32 as i32;
+    };
+    let name = thread_descriptions().lock().unwrap().get(&id).cloned().unwrap_or_default();
+    let wide: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
+    let ptr = crate::api::memory::local::allocate(0, wide.len() * 2) as *mut u16;
+    if ptr.is_null() {
+        return 0x8007_000eu32 as i32; // HRESULT_FROM_WIN32(ERROR_OUTOFMEMORY)
+    }
+    unsafe {
+        std::ptr::copy_nonoverlapping(wide.as_ptr(), ptr, wide.len());
+        out.write(ptr);
+    }
+    0 // S_OK
+}
+
+/// Windows exposes memory priority and power throttling here. Neither policy
+/// is represented by the current Linux thread backend, so fail explicitly.
+pub unsafe extern "win64" fn set_thread_information(
+    thread: usize,
+    class: u32,
+    information: *const u8,
+    size: u32,
+) -> i32 {
+    if crate::api::threading::threads::id_of(thread).is_none() {
+        super::error::set(6); // ERROR_INVALID_HANDLE
+        return 0;
+    }
+    let expected_size = match class {
+        0 => 4,  // ThreadMemoryPriority: MEMORY_PRIORITY_INFORMATION
+        3 => 12, // ThreadPowerThrottling: THREAD_POWER_THROTTLING_STATE
+        _ => {
+            super::error::set(87); // ERROR_INVALID_PARAMETER
+            return 0;
+        }
+    };
+    if information.is_null() || size != expected_size {
+        super::error::set(87);
+        return 0;
+    }
+    1
 }
 
 /// GetTempPathW: TMP, TEMP, TMPDIR or /tmp, with the trailing backslash.
@@ -323,6 +517,9 @@ pub unsafe extern "win64" fn system_directory_a(out: *mut u8, capacity: u32) -> 
 }
 pub unsafe extern "win64" fn windows_directory_w(out: *mut u16, capacity: u32) -> u32 {
     unsafe { text::copy_out(&text::wide(WINDOWS_DIRECTORY), out, capacity) }
+}
+pub unsafe extern "win64" fn windows_directory_a(out: *mut u8, capacity: u32) -> u32 {
+    unsafe { text::copy_out_narrow(WINDOWS_DIRECTORY.as_bytes(), out, capacity) }
 }
 pub unsafe extern "win64" fn current_directory_a(capacity: u32, out: *mut u8) -> u32 {
     match std::env::current_dir() {

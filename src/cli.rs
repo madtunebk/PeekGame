@@ -62,10 +62,11 @@ pub fn parse() -> Result<Option<Options>> {
         .map(|d| fs::canonicalize(&d).map_err(|e| format!("{}: {e}", d.display())))
         .collect::<Result<Vec<_>>>()?;
     let output = output.unwrap_or_else(|| {
+        if relink {
+            return exe.parent().unwrap_or(Path::new(".")).to_path_buf();
+        }
         Path::new(if package {
             "packages"
-        } else if relink {
-            "relinked"
         } else if run {
             "logs"
         } else {

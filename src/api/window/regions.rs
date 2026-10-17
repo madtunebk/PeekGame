@@ -1,0 +1,250 @@
+//! Rectangular GDI regions, copied from the old implementation's supported scope.
+use super::state;
+use crate::api::system::error;
+use std::{
+    collections::HashMap,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Mutex, OnceLock,
+    },
+};
+#[derive(Clone, Copy)]
+struct Rect {
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+}
+impl Rect {
+    fn empty(self) -> bool {
+        self.left >= self.right || self.top >= self.bottom
+    }
+}
+static NEXT: AtomicUsize = AtomicUsize::new(0x6d00_0000);
+static NEXT_BRUSH: AtomicUsize = AtomicUsize::new(0x6e00_0000);
+static REGIONS: OnceLock<Mutex<HashMap<usize, Rect>>> = OnceLock::new();
+static BRUSHES: OnceLock<Mutex<HashMap<usize, u32>>> = OnceLock::new();
+static FONTS: OnceLock<Mutex<HashMap<usize, [u8; 60]>>> = OnceLock::new();
+fn regions() -> &'static Mutex<HashMap<usize, Rect>> {
+    REGIONS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+fn brushes() -> &'static Mutex<HashMap<usize, u32>> {
+    BRUSHES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+fn fonts() -> &'static Mutex<HashMap<usize, [u8; 60]>> {
+    FONTS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+fn fail(code: u32) -> i32 {
+    error::set(code);
+    0
+}
+pub extern "win64" fn create_solid_brush(color: u32) -> usize {
+    let handle = NEXT_BRUSH.fetch_add(16, Ordering::Relaxed);
+    brushes().lock().unwrap().insert(handle, color);
+    handle
+}
+pub extern "win64" fn create_pen(_style: i32, _width: i32, color: u32) -> usize {
+    let handle = NEXT_BRUSH.fetch_add(16, Ordering::Relaxed);
+    brushes().lock().unwrap().insert(handle, color);
+    handle
+}
+fn default_logfont_a() -> [u8; 60] {
+    let mut lf = [0u8; 60];
+    unsafe {
+        lf.as_mut_ptr().cast::<i32>().write_unaligned(-12); // lfHeight
+        lf.as_mut_ptr().add(16).cast::<i32>().write_unaligned(400); // lfWeight
+    }
+    lf[28..36].copy_from_slice(b"Segoe UI");
+    lf
+}
+pub unsafe extern "win64" fn create_font_indirect_a(logfont: *const u8) -> usize {
+    let handle = NEXT_BRUSH.fetch_add(16, Ordering::Relaxed);
+    let mut lf = default_logfont_a();
+    if !logfont.is_null() {
+        unsafe { std::ptr::copy_nonoverlapping(logfont, lf.as_mut_ptr(), 60) };
+    }
+    fonts().lock().unwrap().insert(handle, lf);
+    handle
+}
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "win64" fn create_font_a(
+    height: i32,
+    width: i32,
+    escapement: i32,
+    orientation: i32,
+    weight: i32,
+    italic: u32,
+    underline: u32,
+    strike_out: u32,
+    char_set: u32,
+    out_precision: u32,
+    clip_precision: u32,
+    quality: u32,
+    pitch_and_family: u32,
+    face_name: *const std::ffi::c_char,
+) -> usize {
+    let mut lf = [0u8; 60];
+    unsafe {
+        lf.as_mut_ptr().cast::<i32>().write_unaligned(height);
+        lf.as_mut_ptr().add(4).cast::<i32>().write_unaligned(width);
+        lf.as_mut_ptr().add(8).cast::<i32>().write_unaligned(escapement);
+        lf.as_mut_ptr().add(12).cast::<i32>().write_unaligned(orientation);
+        lf.as_mut_ptr().add(16).cast::<i32>().write_unaligned(weight);
+        lf[20] = italic as u8;
+        lf[21] = underline as u8;
+        lf[22] = strike_out as u8;
+        lf[23] = char_set as u8;
+        lf[24] = out_precision as u8;
+        lf[25] = clip_precision as u8;
+        lf[26] = quality as u8;
+        lf[27] = pitch_and_family as u8;
+        if !face_name.is_null() {
+            let bytes = std::ffi::CStr::from_ptr(face_name).to_bytes();
+            let n = bytes.len().min(31);
+            lf[28..28 + n].copy_from_slice(&bytes[..n]);
+        }
+        create_font_indirect_a(lf.as_ptr())
+    }
+}
+pub extern "win64" fn get_stock_object(index: i32) -> usize {
+    if (0..=21).contains(&index) {
+        0x000f_0000 + index as usize
+    } else {
+        0
+    }
+}
+pub unsafe extern "win64" fn get_object_a(handle: usize, count: i32, out: *mut u8) -> i32 {
+    if let Some(lf) = fonts().lock().unwrap().get(&handle).copied().or_else(|| {
+        matches!(handle, 0x000f_000a..=0x000f_000e | 0x000f_0010 | 0x000f_0011)
+            .then(default_logfont_a)
+    }) {
+        if out.is_null() {
+            return 60;
+        }
+        let n = count.clamp(0, 60) as usize;
+        unsafe { std::ptr::copy_nonoverlapping(lf.as_ptr(), out, n) };
+        return n as i32;
+    }
+    if let Some(color) = brushes().lock().unwrap().get(&handle).copied().or_else(|| {
+        (0x000e_0000..=0x000f_0015).contains(&handle).then_some(0)
+    }) {
+        if out.is_null() {
+            return 16;
+        }
+        let mut lb = [0u8; 16];
+        unsafe { lb.as_mut_ptr().add(4).cast::<u32>().write_unaligned(color) };
+        let n = count.clamp(0, 16) as usize;
+        unsafe { std::ptr::copy_nonoverlapping(lb.as_ptr(), out, n) };
+        return n as i32;
+    }
+    0
+}
+pub extern "win64" fn select_object(_dc: usize, obj: usize) -> usize {
+    if let Some(r) = regions().lock().unwrap().get(&obj).copied() {
+        return if r.empty() { 1 } else { 2 };
+    }
+    if obj == 0 {
+        return 0;
+    }
+    0x000f_0000
+}
+pub extern "win64" fn create(left: i32, top: i32, right: i32, bottom: i32) -> usize {
+    let rect = Rect {
+        left: left.min(right),
+        top: top.min(bottom),
+        right: left.max(right),
+        bottom: top.max(bottom),
+    };
+    let handle = NEXT.fetch_add(16, Ordering::Relaxed);
+    regions().lock().unwrap().insert(handle, rect);
+    handle
+}
+pub extern "win64" fn delete(handle: usize) -> i32 {
+    if regions().lock().unwrap().remove(&handle).is_some()
+        || brushes().lock().unwrap().remove(&handle).is_some()
+        || fonts().lock().unwrap().remove(&handle).is_some()
+        || (0x000e_0000..=0x000f_0015).contains(&handle)
+    {
+        1
+    } else {
+        fail(6)
+    }
+}
+pub extern "win64" fn combine(dest: usize, source1: usize, source2: usize, mode: i32) -> i32 {
+    let mut map = regions().lock().unwrap();
+    if !map.contains_key(&dest) {
+        return fail(6);
+    }
+    let Some(mut rect) = map.get(&source1).copied() else {
+        return fail(6);
+    };
+    if mode != 5 {
+        let Some(b) = map.get(&source2).copied() else {
+            return fail(6);
+        };
+        if mode != 1 {
+            return fail(if (1..=5).contains(&mode) { 50 } else { 87 });
+        }
+        rect = Rect {
+            left: rect.left.max(b.left),
+            top: rect.top.max(b.top),
+            right: rect.right.min(b.right),
+            bottom: rect.bottom.min(b.bottom),
+        };
+    }
+    if rect.empty() {
+        rect = Rect {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        };
+    }
+    map.insert(dest, rect);
+    if rect.empty() {
+        1
+    } else {
+        2
+    }
+}
+pub unsafe extern "win64" fn bounds(handle: usize, out: *mut i32) -> i32 {
+    if out.is_null() {
+        return fail(87);
+    }
+    let map = regions().lock().unwrap();
+    let Some(rect) = map.get(&handle).copied() else {
+        return fail(6);
+    };
+    let values = if rect.empty() {
+        [0; 4]
+    } else {
+        [rect.left, rect.top, rect.right, rect.bottom]
+    };
+    unsafe {
+        std::ptr::copy_nonoverlapping(values.as_ptr(), out, 4);
+    }
+    if rect.empty() {
+        1
+    } else {
+        2
+    }
+}
+/// Existing X11 windows are rectangular. Only an unrestrictive full-window
+/// region can be applied without a shape backend; ownership transfers on success.
+pub extern "win64" fn set_window(hwnd: usize, region: usize, _redraw: i32) -> i32 {
+    let Some((width, height)) = state::windows().get(&hwnd).map(|w| (w.width, w.height)) else {
+        return fail(1400);
+    };
+    if region == 0 {
+        return 1;
+    }
+    let mut map = regions().lock().unwrap();
+    let Some(rect) = map.get(&region).copied() else {
+        return fail(6);
+    };
+    if rect.left > 0 || rect.top > 0 || rect.right < width || rect.bottom < height {
+        return fail(50);
+    }
+    map.remove(&region);
+    1
+}

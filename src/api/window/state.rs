@@ -34,8 +34,10 @@ pub(super) struct Window {
     pub visible: bool,
     pub minimized: bool,
     pub maximized: bool,
+    pub fullscreen_monitor:Option<u64>,
     pub destroying: bool,
     pub paint: bool,
+    pub icons: [usize; 2],
     pub track_leave: bool,
     /// Size set by PeekGame itself, whose X confirmation is not news.
     pub expected: Option<(i32, i32)>,

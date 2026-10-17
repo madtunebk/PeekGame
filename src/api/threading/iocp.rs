@@ -27,7 +27,7 @@ pub struct Port {
     state: Mutex<State>,
     changed: Condvar,
     handles: AtomicUsize,
-    limit: usize,
+    _limit: usize,
 }
 #[derive(Clone)]
 pub struct Binding {
@@ -48,7 +48,7 @@ impl Binding {
     }
 }
 impl Port {
-    fn post(&self, packet: Packet) -> bool {
+    pub fn post(&self, packet: Packet) -> bool {
         let mut state = self.state.lock().unwrap();
         if state.closed {
             return false;
@@ -120,7 +120,7 @@ pub extern "win64" fn create(file: usize, existing: usize, key: usize, threads: 
                 }),
                 changed: Condvar::new(),
                 handles: AtomicUsize::new(1),
-                limit: if threads == 0 {
+                _limit: if threads == 0 {
                     std::thread::available_parallelism().map_or(1, usize::from)
                 } else {
                     threads as usize
@@ -138,13 +138,17 @@ pub extern "win64" fn create(file: usize, existing: usize, key: usize, threads: 
         }
     };
     if file != usize::MAX {
-        let binding = Binding {
-            port: port.clone(),
-            key,
-        };
-        if let Err(code) = crate::api::filesystem::files::associate_completion(file, binding) {
-            error::set(code);
-            return 0;
+        if crate::api::network::afd::is_afd(file) {
+            crate::api::network::afd::associate(file, port.clone(), key);
+        } else {
+            let binding = Binding {
+                port: port.clone(),
+                key,
+            };
+            if let Err(code) = crate::api::filesystem::files::associate_completion(file, binding) {
+                error::set(code);
+                return 0;
+            }
         }
     }
     if created {
@@ -187,7 +191,7 @@ fn dequeue(
             super::apc::run();
             return Err(192);
         }
-        if state.active < port.limit && !state.queue.is_empty() {
+        if !state.queue.is_empty() {
             let n = out.len().min(state.queue.len());
             for item in &mut out[..n] {
                 *item = state.queue.pop_front().unwrap();
@@ -309,6 +313,10 @@ pub extern "win64" fn notification_modes(file: usize, modes: u8) -> i32 {
     if modes & !3 != 0 {
         error::set(87);
         return 0;
+    }
+    if crate::api::network::afd::is_afd(file) {
+        crate::api::network::afd::set_modes(file, modes);
+        return 1;
     }
     match crate::api::filesystem::files::set_completion_modes(file, modes) {
         Ok(()) => 1,

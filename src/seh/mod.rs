@@ -147,3 +147,6 @@ pub extern "win64" fn unhandled_exception_filter(pointers: *mut ExceptionPointer
         }
     }
 }
+
+pub(crate) mod backtrace;
+pub mod cxx;

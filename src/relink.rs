@@ -6,12 +6,25 @@
 //! linker binds it; the result links the runtime statically (`libgame_imports.a`).
 //! The PE machine code is unchanged: it still uses the Windows x64 ABI and still
 //! calls the Rust Win64 API implementations, just without a loader in between.
+mod runtime;
 use crate::{model::Result, pe};
 use std::{collections::BTreeMap, env, fmt::Write, fs, path::Path, process::Command};
 
 /// Host libraries the Rust static runtime needs (`--print native-static-libs`).
 const HOST_LIBS: &[&str] = &[
+    "-licui18n",
+    "-licuuc",
+    "-licudata",
     "-lX11",
+    "-lGL",
+    "-lfontconfig",
+    "-lpng16",
+    "-lXrandr",
+    "-lXinerama",
+    "-lcrypto",
+    "-lpulse",
+    "-lgio-2.0",
+    "-lglib-2.0",
     "-lgcc_s",
     "-lutil",
     "-lrt",
@@ -85,8 +98,8 @@ pub fn build(exe: &Path, output: &Path) -> Result<()> {
     fs::create_dir_all(output).map_err(|e| format!("cannot create {}: {e}", output.display()))?;
     let stem = exe.file_stem().ok_or("EXE has no name")?;
     let target = output.join(stem);
-    if target.exists() {
-        return Err(format!("{} already exists", target.display()));
+    if target == exe {
+        return Err(format!("refusing to overwrite input EXE {}", target.display()));
     }
     let work = output.join(format!("{}.relink", stem.to_string_lossy()));
     fs::create_dir_all(&work).map_err(|e| e.to_string())?;
@@ -122,7 +135,9 @@ pub fn build(exe: &Path, output: &Path) -> Result<()> {
             work.display()
         ));
     }
+    let _ = fs::remove_dir_all(&work);
 
+    runtime::stage_windows_dlls(&host, output)?;
     if graphics {
         let dxvk = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/dxvk-x11/prefix/lib");
         let directory = output.join("runtime");

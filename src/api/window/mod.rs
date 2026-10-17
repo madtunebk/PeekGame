@@ -43,3 +43,17 @@ pub(crate) fn surface(
 ) -> Option<std::sync::Arc<crate::host::graphics::surface::Surface>> {
     state::windows().get(&hwnd).and_then(|w| w.surface.clone())
 }
+
+pub(crate) mod hooks;
+
+pub(crate) mod drops;
+
+pub(crate) mod regions;
+
+pub(crate) mod icons;
+
+pub(crate) mod ole_drop;
+
+pub(crate) mod drop_data;
+
+pub(crate) mod menus;
