@@ -28,13 +28,39 @@ static SECTIONS: OnceLock<Mutex<HashMap<usize, Arc<Critical>>>> = OnceLock::new(
 fn sections() -> &'static Mutex<HashMap<usize, Arc<Critical>>> {
     SECTIONS.get_or_init(|| Mutex::new(HashMap::new()))
 }
-fn get(p: *mut c_void) -> Arc<Critical> {
-    sections()
-        .lock()
-        .unwrap()
-        .get(&(p as usize))
-        .cloned()
-        .unwrap_or_else(|| stop("critical section used before initialization or after deletion"))
+/// CRITICAL_SECTION fields: DebugInfo @0, LockCount @8, RecursionCount @12,
+/// OwningThread @16, LockSemaphore @24, SpinCount @32. LockSemaphore holds a pointer
+/// to our host mutex, so Enter/Leave need no global lookup; the table owns it (kept
+/// alive until DeleteCriticalSection or re-initialization).
+const LOCK_COUNT: usize = 8;
+const RECURSION: usize = 12;
+const OWNER: usize = 16;
+const HOST: usize = 24;
+fn get(p: *mut c_void) -> &'static Critical {
+    let host = unsafe { p.cast::<u8>().add(HOST).cast::<*const Critical>().read() };
+    if host.is_null() {
+        stop("critical section used before initialization or after deletion");
+    }
+    unsafe { &*host }
+}
+/// Ownership fields programs read (OwningThread == GetCurrentThreadId() checks);
+/// updated only while holding the lock. LockCount: -1 free, -2 held (Vista encoding).
+fn mark(p: *mut c_void, entered: bool) {
+    unsafe {
+        let base = p.cast::<u8>();
+        let depth = base.add(RECURSION).cast::<i32>();
+        if entered {
+            *depth += 1;
+            base.add(OWNER).cast::<usize>().write(crate::api::system::startup::thread_id() as usize);
+            base.add(LOCK_COUNT).cast::<i32>().write(-2);
+        } else {
+            *depth -= 1;
+            if *depth == 0 {
+                base.add(OWNER).cast::<usize>().write(0);
+                base.add(LOCK_COUNT).cast::<i32>().write(-1);
+            }
+        }
+    }
 }
 fn stop(message: &str) -> ! {
     eprintln!("STOP: {message}");
@@ -75,7 +101,8 @@ pub unsafe extern "win64" fn initialize_spin(p: *mut c_void, spin: u32) -> i32 {
     let mut map = sections().lock().unwrap();
     unsafe {
         std::ptr::write_bytes(p, 0, 40);
-        p.cast::<u8>().add(8).cast::<i32>().write(-1);
+        p.cast::<u8>().add(LOCK_COUNT).cast::<i32>().write(-1);
+        p.cast::<u8>().add(HOST).cast::<*const Critical>().write(Arc::as_ptr(&value));
         p.cast::<u8>().add(32).cast::<u64>().write(spin as u64);
     }
     map.insert(p as usize, value);
@@ -86,9 +113,11 @@ pub extern "win64" fn enter(p: *mut c_void) {
     if unsafe { pthread_mutex_lock(value.0.get().cast()) } != 0 {
         stop("EnterCriticalSection host lock failed");
     }
+    mark(p, true);
 }
 pub extern "win64" fn leave(p: *mut c_void) {
     let value = get(p);
+    mark(p, false);
     if unsafe { pthread_mutex_unlock(value.0.get().cast()) } != 0 {
         stop("LeaveCriticalSection without ownership");
     }
@@ -96,7 +125,10 @@ pub extern "win64" fn leave(p: *mut c_void) {
 pub extern "win64" fn try_enter(p: *mut c_void) -> i32 {
     let value = get(p);
     match unsafe { pthread_mutex_trylock(value.0.get().cast()) } {
-        0 => 1,
+        0 => {
+            mark(p, true);
+            1
+        }
         16 => 0,
         _ => stop("TryEnterCriticalSection host error"),
     }
@@ -105,4 +137,5 @@ pub extern "win64" fn delete(p: *mut c_void) {
     if sections().lock().unwrap().remove(&(p as usize)).is_none() {
         stop("DeleteCriticalSection on uninitialized/deleted object");
     }
+    unsafe { p.cast::<u8>().add(HOST).cast::<usize>().write(0) };
 }

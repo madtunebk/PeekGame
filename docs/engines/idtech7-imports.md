@@ -287,6 +287,29 @@
 - **Verification:** `python3 tests/test_fs_batch_a.py` **PASS**; files_sync,
   save_safety, iocp, iocp_pipe, read_scatter, case_paths, move_file, audit_fixes pass.
 
+## Audit batch B: threading follow-ups (shared)
+
+- CreateEvent rejected any SECURITY_ATTRIBUTES (ERROR_NOT_SUPPORTED); now accepted.
+  Named events (process-local, "Local\\" = no prefix, weak name table so a name
+  lives with its handles), ERROR_ALREADY_EXISTS for an existing name, collision with
+  a mutex/semaphore name is ERROR_INVALID_HANDLE; OpenEventA/W; CreateEventExW names.
+- Waitable timers: completion routines were never run (fake success); now queued
+  as APCs to the setting thread (alertable waits only). Each set spawned a thread
+  that slept out the old deadline; threads now leave as soon as the timer is set
+  again, cancelled or closed (300 re-arms: 1 thread left). Closing forgets the timer.
+- Critical sections: Enter/Leave used one global table lock; the host mutex pointer
+  now lives in LockSemaphore. OwningThread, RecursionCount and LockCount (-1/-2)
+  are maintained.
+- Exposed by named events: UnityPlayer now starts UnityCrashHandler64.exe.
+  InitializeProcThreadAttributeList/UpdateProcThreadAttribute/
+  DeleteProcThreadAttributeList implemented; CreateProcessA/W fail with
+  ERROR_NOT_SUPPORTED and log the command line (Unity continues).
+- Not changed: WaitForMultipleObjects(bWaitAll) atomicity (narrow race; a fix would
+  route every single-event wait through the global condition variable).
+- **Verification:** `python3 tests/test_threading_batch_b.py` **PASS**; hang_fixes,
+  crt_core, files_sync, iocp, tls_threads, endthread, seh, `cargo test` pass.
+  MarioVsLuigi 0 exceptions (crash handler refused, room joined); DOOM runs.
+
 ## Next
 
 - Done: `CloseWindow` (minimize); unbridged interfaces logged once; 720x576 came

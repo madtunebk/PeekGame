@@ -188,6 +188,11 @@ exports! {
         process::exit_process
     ),
     implemented!("SetStdHandle", "system", "implemented", "thread-safe process standard handle replacement", standard_handles::set_std_handle),
+    implemented!("InitializeProcThreadAttributeList", "system", "implemented", "size query and initialization of an attribute list", process::initialize_proc_thread_attribute_list),
+    implemented!("UpdateProcThreadAttribute", "system", "implemented", "records attributes for process creation", process::update_proc_thread_attribute),
+    implemented!("DeleteProcThreadAttributeList", "system", "implemented", "nothing to release", process::delete_proc_thread_attribute_list),
+    implemented!("CreateProcessW", "system", "partial", "child processes unsupported: ERROR_NOT_SUPPORTED, command line logged", process::create_process_w),
+    implemented!("CreateProcessA", "system", "partial", "child processes unsupported: ERROR_NOT_SUPPORTED, command line logged", process::create_process_a),
     implemented!("TerminateProcess", "system", "partial", "current process only; immediate termination without cleanup", process::terminate_process),
     implemented!("PowerCreateRequest", "system", "partial", "owned power-request handles; simple UTF-16 reason contexts", crate::api::system::power::create),
     implemented!("PowerSetRequest", "system", "partial", "validates request handles; host inhibition unavailable: ERROR_NOT_SUPPORTED", crate::api::system::power::set),

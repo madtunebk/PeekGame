@@ -445,17 +445,31 @@ exports! {
         threads::convert_fiber_to_thread
     ),
     implemented!(
+        "OpenEventW",
+        "threading",
+        "partial",
+        "process-local named events",
+        events::open_w
+    ),
+    implemented!(
+        "OpenEventA",
+        "threading",
+        "partial",
+        "process-local named events",
+        events::open_a
+    ),
+    implemented!(
         "CreateEventA",
         "threading",
         "partial",
-        "unnamed events; security descriptors and inheritance unsupported",
+        "unnamed and process-local named events; security attributes accepted (inheritance has no effect)",
         events::create_a
     ),
     implemented!(
         "CreateEventW",
         "threading",
         "partial",
-        "unnamed events; security descriptors and inheritance unsupported",
+        "unnamed and process-local named events; security attributes accepted (inheritance has no effect)",
         events::create_w
     ),
     implemented!(

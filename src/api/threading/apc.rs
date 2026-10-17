@@ -9,7 +9,13 @@ use std::{
 };
 pub const WAIT_IO_COMPLETION: u32 = 0xC0;
 type Routine = extern "win64" fn(usize);
-type Queues = HashMap<u32, VecDeque<(Routine, usize)>>;
+/// PTIMERAPCROUTINE: context, due time low and high parts.
+pub(crate) type TimerRoutine = extern "win64" fn(usize, u32, u32);
+enum Apc {
+    User(Routine, usize),
+    Timer(TimerRoutine, usize, u64),
+}
+type Queues = HashMap<u32, VecDeque<Apc>>;
 static QUEUES: Mutex<Option<Queues>> = Mutex::new(None);
 pub unsafe extern "win64" fn queue(routine: Option<Routine>, thread: usize, data: usize) -> u32 {
     let (Some(routine), Some(id)) = (routine, threads::id_of(thread)) else {
@@ -22,9 +28,20 @@ pub unsafe extern "win64" fn queue(routine: Option<Routine>, thread: usize, data
         .get_or_insert_with(HashMap::new)
         .entry(id)
         .or_default()
-        .push_back((routine, data));
+        .push_back(Apc::User(routine, data));
     objects::changed();
     1
+}
+/// Queues a waitable timer's completion routine for the thread that set the timer.
+pub(crate) fn queue_timer(thread: u32, routine: TimerRoutine, context: usize, due: u64) {
+    QUEUES
+        .lock()
+        .unwrap()
+        .get_or_insert_with(HashMap::new)
+        .entry(thread)
+        .or_default()
+        .push_back(Apc::Timer(routine, context, due));
+    objects::changed();
 }
 /// Does the calling thread have APCs queued?
 pub fn pending() -> bool {
@@ -47,10 +64,11 @@ pub fn run() -> bool {
             .as_mut()
             .and_then(|q| q.get_mut(&id))
             .and_then(|q| q.pop_front());
-        let Some((routine, data)) = next else {
-            return ran;
-        };
-        routine(data);
+        match next {
+            Some(Apc::User(routine, data)) => routine(data),
+            Some(Apc::Timer(routine, context, due)) => routine(context, due as u32, (due >> 32) as u32),
+            None => return ran,
+        }
         ran = true;
     }
 }

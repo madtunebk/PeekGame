@@ -242,3 +242,111 @@ pub extern "win64" fn assign_process_to_job_object(job: usize, process: usize) -
     }
     1
 }
+
+// ---- process creation ---------------------------------------------------------
+
+/// PROC_THREAD_ATTRIBUTE_LIST, laid out by us (the type is opaque): capacity and
+/// count (u32 each), then (attribute, value pointer, size) entries.
+const ATTRIBUTE_HEADER: usize = 8;
+const ATTRIBUTE_ENTRY: usize = 24;
+/// InitializeProcThreadAttributeList: with a NULL list it reports the size needed
+/// (FALSE, ERROR_INSUFFICIENT_BUFFER), as callers expect before allocating.
+pub unsafe extern "win64" fn initialize_proc_thread_attribute_list(
+    list: *mut u8,
+    count: u32,
+    flags: u32,
+    size: *mut usize,
+) -> i32 {
+    if size.is_null() || flags != 0 {
+        crate::api::system::error::set(87);
+        return 0;
+    }
+    let needed = ATTRIBUTE_HEADER + count as usize * ATTRIBUTE_ENTRY;
+    let given = unsafe { *size };
+    unsafe { *size = needed };
+    if list.is_null() || given < needed {
+        crate::api::system::error::set(122); // ERROR_INSUFFICIENT_BUFFER
+        return 0;
+    }
+    unsafe {
+        list.cast::<u32>().write_unaligned(count);
+        list.add(4).cast::<u32>().write_unaligned(0);
+    }
+    1
+}
+/// UpdateProcThreadAttribute: records the attribute (it only matters to the process
+/// creation that would consume it).
+pub unsafe extern "win64" fn update_proc_thread_attribute(
+    list: *mut u8,
+    flags: u32,
+    attribute: usize,
+    value: usize,
+    value_size: usize,
+    previous: usize,
+    return_size: usize,
+) -> i32 {
+    if list.is_null() || flags != 0 || previous != 0 || return_size != 0 {
+        crate::api::system::error::set(87);
+        return 0;
+    }
+    let (capacity, used) = unsafe { (list.cast::<u32>().read_unaligned(), list.add(4).cast::<u32>().read_unaligned()) };
+    if used >= capacity {
+        crate::api::system::error::set(122);
+        return 0;
+    }
+    unsafe {
+        let entry = list.add(ATTRIBUTE_HEADER + used as usize * ATTRIBUTE_ENTRY).cast::<usize>();
+        entry.write_unaligned(attribute);
+        entry.add(1).write_unaligned(value);
+        entry.add(2).write_unaligned(value_size);
+        list.add(4).cast::<u32>().write_unaligned(used + 1);
+    }
+    1
+}
+pub extern "win64" fn delete_proc_thread_attribute_list(_list: *mut u8) {}
+
+/// CreateProcess: Windows child processes cannot be started yet, so the call fails
+/// with ERROR_NOT_SUPPORTED (a crash handler or launcher is simply not started),
+/// and the requested command line is logged.
+fn create_process(application: Option<String>, command: Option<String>) -> i32 {
+    eprintln!(
+        "CreateProcess: {} {}: child processes are not supported",
+        application.as_deref().unwrap_or("-"),
+        command.as_deref().unwrap_or("")
+    );
+    crate::api::system::error::set(50);
+    0
+}
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "win64" fn create_process_w(
+    application: *const u16,
+    command: *const u16,
+    _process_attributes: usize,
+    _thread_attributes: usize,
+    _inherit: i32,
+    _flags: u32,
+    _environment: usize,
+    _directory: *const u16,
+    _startup: usize,
+    _information: usize,
+) -> i32 {
+    unsafe { create_process(crate::api::text::string(application), crate::api::text::string(command)) }
+}
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "win64" fn create_process_a(
+    application: *const std::ffi::c_char,
+    command: *const std::ffi::c_char,
+    _process_attributes: usize,
+    _thread_attributes: usize,
+    _inherit: i32,
+    _flags: u32,
+    _environment: usize,
+    _directory: *const std::ffi::c_char,
+    _startup: usize,
+    _information: usize,
+) -> i32 {
+    let narrow = |p: *const std::ffi::c_char| {
+        (!p.is_null()).then(|| unsafe { std::ffi::CStr::from_ptr(p) }.to_string_lossy().into_owned())
+    };
+    create_process(narrow(application), narrow(command))
+}

@@ -36,6 +36,10 @@ static GENERATION: Mutex<u64> = Mutex::new(0);
 static CHANGED: Condvar = Condvar::new();
 static NEXT: AtomicUsize = AtomicUsize::new(0x6700_0000);
 
+/// Is `name` used by a semaphore or mutex? (Kernel object names share one namespace.)
+pub fn name_taken(name: &str) -> bool {
+    with(|t| t.values().any(|n| n.name.as_deref() == Some(name)))
+}
 /// Wakes multi-object waiters: something may have become signalled.
 pub fn changed() {
     *GENERATION.lock().unwrap() += 1;
@@ -281,19 +285,8 @@ pub unsafe extern "win64" fn create_event_ex_w(
     flags: u32,
     _access: u32,
 ) -> usize {
-    if !name.is_null() {
-        eprintln!("CreateEventExW: named events are not supported");
-        error::set(50);
-        return 0;
-    }
-    unsafe {
-        events::create_w(
-            security as *const _,
-            (flags & 1) as i32,
-            (flags >> 1 & 1) as i32,
-            std::ptr::null(),
-        )
-    }
+    let _ = security;
+    events::create(flags & 1 != 0, flags & 2 != 0, unsafe { text::string(name) })
 }
 
 /// Is `handle` signalled? With `take`, acquire it (auto-reset events reset,
