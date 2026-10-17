@@ -13,6 +13,7 @@ pub(crate) mod control;
 pub(crate) mod format;
 pub(crate) mod math;
 pub(crate) mod numbers;
+pub(crate) mod cxx_support;
 pub(crate) mod streams;
 pub(crate) mod strings;
 pub(crate) mod time;
