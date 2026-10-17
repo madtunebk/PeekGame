@@ -565,6 +565,10 @@ enum Option_ {
     Ignored,
     /// IP_DONTFRAGMENT: IP_MTU_DISCOVER (DO when set, DONT when cleared).
     DontFragment,
+    /// SO_PROTOCOL_INFOA: WSAPROTOCOL_INFOA
+    ProtocolInfoA,
+    /// SO_PROTOCOL_INFOW: WSAPROTOCOL_INFOW
+    ProtocolInfoW,
 }
 fn option(level: i32, name: i32) -> Option<Option_> {
     use Option_::*;
@@ -584,6 +588,8 @@ fn option(level: i32, name: i32) -> Option<Option_> {
         (0xffff, 0x1006) => Timeout(20),         // SO_RCVTIMEO
         (0xffff, 0x1007) => Int(SOL_SOCKET, SO_ERROR),
         (0xffff, 0x1008) => Int(SOL_SOCKET, SO_TYPE),
+        (0xffff, 0x2004) => ProtocolInfoA,
+        (0xffff, 0x2005) => ProtocolInfoW,
         (0xffff, 0x80) => Linger,
         (0xffff, n) if n == !0x80 => DontLinger,
         (0xffff, n) if n == !4 => Ignored,
@@ -694,6 +700,10 @@ pub unsafe extern "win64" fn set_option(
             };
             unsafe { setsockopt(fd(s), 0, 10, (&v as *const i32).cast(), 4) }
         }
+        Option_::ProtocolInfoA | Option_::ProtocolInfoW => {
+            error::set(10042);
+            return -1;
+        }
     };
     if rc != 0 {
         fail()
@@ -793,6 +803,102 @@ pub unsafe extern "win64" fn get_option(
                 return fail();
             }
             out((v == 2) as u32, 4);
+        }
+        Option_::ProtocolInfoW => {
+            if unsafe { *length } < 628 {
+                error::set(10014);
+                return -1;
+            }
+            let mut sock_type = 0i32;
+            let mut proto = 0i32;
+            let mut domain = 0i32;
+            let mut l = 4u32;
+            unsafe {
+                getsockopt(fd(s), SOL_SOCKET, 3, (&mut sock_type as *mut i32).cast(), &mut l);
+                l = 4;
+                getsockopt(fd(s), SOL_SOCKET, 38, (&mut proto as *mut i32).cast(), &mut l);
+                l = 4;
+                getsockopt(fd(s), SOL_SOCKET, 39, (&mut domain as *mut i32).cast(), &mut l);
+            }
+            let af = match domain {
+                10 => 23, // AF_INET6 in Windows
+                other => other,
+            };
+            let mut info = [0u8; 628];
+            let sf1: u32 = if proto == 6 { 0x20066 } else { 0x600 };
+            info[0..4].copy_from_slice(&sf1.to_le_bytes());
+            info[24..28].copy_from_slice(&1001u32.to_le_bytes());
+            info[28..32].copy_from_slice(&1u32.to_le_bytes()); // ChainLen = 1
+            info[60..64].copy_from_slice(&2i32.to_le_bytes()); // Version = 2
+            info[64..68].copy_from_slice(&af.to_le_bytes());
+            let max_addr: i32 = if af == 23 { 28 } else { 16 };
+            info[68..72].copy_from_slice(&max_addr.to_le_bytes());
+            info[72..76].copy_from_slice(&16i32.to_le_bytes());
+            info[76..80].copy_from_slice(&sock_type.to_le_bytes());
+            info[80..84].copy_from_slice(&proto.to_le_bytes());
+            let name_str = match proto {
+                6 => "MSAFD Tcpip [TCP/IP]",
+                17 => "MSAFD Tcpip [UDP/IP]",
+                _ => "Unknown",
+            };
+            let utf16: Vec<u16> = name_str.encode_utf16().collect();
+            for (idx, ch) in utf16.iter().enumerate() {
+                if idx < 255 {
+                    let off = 116 + idx * 2;
+                    info[off..off + 2].copy_from_slice(&ch.to_le_bytes());
+                }
+            }
+            unsafe {
+                std::ptr::copy_nonoverlapping(info.as_ptr(), value.cast::<u8>(), 628);
+                *length = 628;
+            }
+        }
+        Option_::ProtocolInfoA => {
+            if unsafe { *length } < 372 {
+                error::set(10014);
+                return -1;
+            }
+            let mut sock_type = 0i32;
+            let mut proto = 0i32;
+            let mut domain = 0i32;
+            let mut l = 4u32;
+            unsafe {
+                getsockopt(fd(s), SOL_SOCKET, 3, (&mut sock_type as *mut i32).cast(), &mut l);
+                l = 4;
+                getsockopt(fd(s), SOL_SOCKET, 38, (&mut proto as *mut i32).cast(), &mut l);
+                l = 4;
+                getsockopt(fd(s), SOL_SOCKET, 39, (&mut domain as *mut i32).cast(), &mut l);
+            }
+            let af = match domain {
+                10 => 23, // AF_INET6 in Windows
+                other => other,
+            };
+            let mut info = [0u8; 372];
+            let sf1: u32 = if proto == 6 { 0x20066 } else { 0x600 };
+            info[0..4].copy_from_slice(&sf1.to_le_bytes());
+            info[24..28].copy_from_slice(&1001u32.to_le_bytes());
+            info[28..32].copy_from_slice(&1u32.to_le_bytes()); // ChainLen = 1
+            info[60..64].copy_from_slice(&2i32.to_le_bytes()); // Version = 2
+            info[64..68].copy_from_slice(&af.to_le_bytes());
+            let max_addr: i32 = if af == 23 { 28 } else { 16 };
+            info[68..72].copy_from_slice(&max_addr.to_le_bytes());
+            info[72..76].copy_from_slice(&16i32.to_le_bytes());
+            info[76..80].copy_from_slice(&sock_type.to_le_bytes());
+            info[80..84].copy_from_slice(&proto.to_le_bytes());
+            let name_str = match proto {
+                6 => "MSAFD Tcpip [TCP/IP]",
+                17 => "MSAFD Tcpip [UDP/IP]",
+                _ => "Unknown",
+            };
+            for (idx, b) in name_str.bytes().enumerate() {
+                if idx < 255 {
+                    info[116 + idx] = b;
+                }
+            }
+            unsafe {
+                std::ptr::copy_nonoverlapping(info.as_ptr(), value.cast::<u8>(), 372);
+                *length = 372;
+            }
         }
     }
     0

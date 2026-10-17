@@ -59,6 +59,95 @@ pub unsafe extern "win64" fn free_string(s: *mut u16) {
         unsafe { free(s.cast::<u8>().sub(4).cast()) };
     }
 }
+
+/// QueryPathOfRegTypeLib: retrieves the path of a registered type library.
+/// When not registered, returns TYPE_E_LIBNOTREGISTERED (0x8002801D).
+pub unsafe extern "win64" fn query_path_of_reg_type_lib(
+    _guid: *const u8,
+    _ver_major: u16,
+    _ver_minor: u16,
+    _lcid: u32,
+    path_name: *mut *mut u16,
+) -> i32 {
+    const TYPE_E_LIBNOTREGISTERED: i32 = 0x8002801Du32 as i32;
+    const E_INVALIDARG: i32 = 0x80070057u32 as i32;
+    if path_name.is_null() {
+        return E_INVALIDARG;
+    }
+    unsafe { *path_name = std::ptr::null_mut() };
+    TYPE_E_LIBNOTREGISTERED
+}
+
+pub unsafe extern "win64" fn register_type_lib(
+    _ptlib: *const std::ffi::c_void,
+    _sz_full_path: *const u16,
+    _sz_help_dir: *const u16,
+) -> i32 {
+    0 // S_OK
+}
+
+pub unsafe extern "win64" fn unregister_type_lib(
+    _lib_id: *const u8,
+    _ver_major: u16,
+    _ver_minor: u16,
+    _lcid: u32,
+    _syskind: u32,
+) -> i32 {
+    0 // S_OK
+}
+
+pub unsafe extern "win64" fn register_type_lib_for_user(
+    _ptlib: *const std::ffi::c_void,
+    _sz_full_path: *const u16,
+    _sz_help_dir: *const u16,
+) -> i32 {
+    0 // S_OK
+}
+
+pub unsafe extern "win64" fn unregister_type_lib_for_user(
+    _lib_id: *const u8,
+    _ver_major: u16,
+    _ver_minor: u16,
+    _lcid: u32,
+    _syskind: u32,
+) -> i32 {
+    0 // S_OK
+}
+
+pub unsafe extern "win64" fn load_reg_type_lib(
+    _rguid: *const u8,
+    _ver_major: u16,
+    _ver_minor: u16,
+    _lcid: u32,
+    pptlib: *mut *mut std::ffi::c_void,
+) -> i32 {
+    if !pptlib.is_null() {
+        unsafe { *pptlib = std::ptr::null_mut() };
+    }
+    0x8002801Du32 as i32 // TYPE_E_LIBNOTREGISTERED
+}
+
+pub unsafe extern "win64" fn load_type_lib(
+    _sz_file: *const u16,
+    pptlib: *mut *mut std::ffi::c_void,
+) -> i32 {
+    if !pptlib.is_null() {
+        unsafe { *pptlib = std::ptr::null_mut() };
+    }
+    0x80029C4Au32 as i32 // TYPE_E_CANTLOADLIBRARY
+}
+
+pub unsafe extern "win64" fn load_type_lib_ex(
+    _sz_file: *const u16,
+    _regkind: u32,
+    pptlib: *mut *mut std::ffi::c_void,
+) -> i32 {
+    if !pptlib.is_null() {
+        unsafe { *pptlib = std::ptr::null_mut() };
+    }
+    0x80029C4Au32 as i32 // TYPE_E_CANTLOADLIBRARY
+}
+
 pub unsafe extern "win64" fn string_byte_len(s: *const u16) -> u32 {
     if s.is_null() {
         0

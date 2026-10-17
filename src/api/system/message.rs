@@ -32,6 +32,16 @@ fn system_message(code: u32) -> Option<&'static str> {
         1410 => "Class already exists.",
         1460 => "This operation returned because the timeout period expired.",
         2000 => "The pixel format is invalid.",
+        0x8000_4001 => "Not implemented.",
+        0x8000_4002 => "No such interface supported.",
+        0x8000_4003 => "Invalid pointer.",
+        0x8000_4004 => "Operation aborted.",
+        0x8000_4005 => "Unspecified error.",
+        0x8004_0154 => "Class not registered.",
+        0x8007_0005 => "Access is denied.",
+        0x8007_0057 => "The parameter is incorrect.",
+        0x887a_0001 => "The application made a call that is invalid.",
+        0x887a_0004 => "The specified device interface or feature level is not supported on this system.",
         _ => return None,
     })
 }
@@ -54,7 +64,9 @@ fn format(flags: u32, source: Option<String>, id: u32) -> Option<String> {
             error::set(317);
             return None;
         };
-        eprintln!("FormatMessage({id}): {text}");
+        if std::env::var_os("PEEKGAME_TRACE_ERRORS").is_some() {
+            eprintln!("FormatMessage({id}): {text}");
+        }
         // System messages end with CR LF, like Windows' message table entries.
         return Some(format!("{text}\r\n"));
     }

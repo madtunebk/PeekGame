@@ -1,12 +1,6 @@
-//! The process heap (GetProcessHeap/HeapAlloc/HeapFree/HeapReAlloc/HeapSize/
-//! HeapQueryInformation), ported from peek's heap.inc. Blocks come from malloc; a
-//! table from block address to requested size answers HeapSize and tells our blocks
-//! from foreign pointers (HeapFree of a foreign pointer fails with
-//! ERROR_INVALID_PARAMETER). Supported flags: HEAP_NO_SERIALIZE (the heap is always
-//! serialized), HEAP_GENERATE_EXCEPTIONS, HEAP_ZERO_MEMORY and
-//! HEAP_REALLOC_IN_PLACE_ONLY. Other heaps stop explicitly.
+//! Process and private growable heaps backed by libc, with per-heap ownership.
 use crate::api::system::error;
-use std::{collections::HashMap, ffi::c_void, sync::Mutex};
+use std::{collections::HashMap, ffi::c_void, sync::{Mutex, LazyLock, atomic::{AtomicUsize, Ordering}}};
 unsafe extern "C" {
     fn malloc(n: usize) -> *mut c_void;
     fn calloc(count: usize, n: usize) -> *mut c_void;
@@ -20,16 +14,37 @@ const ZERO_MEMORY: u32 = 0x8;
 const REALLOC_IN_PLACE_ONLY: u32 = 0x10;
 
 static PROCESS_HEAP: u8 = 0;
-static BLOCKS: Mutex<Option<HashMap<usize, usize>>> = Mutex::new(None);
-
-fn process_heap() -> usize {
-    &PROCESS_HEAP as *const u8 as usize
+struct Heap { blocks: HashMap<usize, usize>, initial: usize }
+static NEXT: AtomicUsize = AtomicUsize::new(0x50480000);
+static HEAPS: LazyLock<Mutex<HashMap<usize, Heap>>> = LazyLock::new(|| {
+    Mutex::new(HashMap::from([(process_heap(), Heap { blocks: HashMap::new(), initial: 0 })]))
+});
+fn process_heap() -> usize { &PROCESS_HEAP as *const u8 as usize }
+pub extern "win64" fn create(options: u32, initial: usize, maximum: usize) -> usize {
+    // Fixed-size arenas, executable allocations and allocation exceptions need
+    // different backends. Do not silently substitute a growable ordinary heap.
+    if options & !NO_SERIALIZE != 0 || maximum != 0 { error::set(50); return 0; }
+    let Some(bytes) = initial.max(1).checked_add(4095).map(|n| n & !4095) else {
+        error::set(8); return 0;
+    };
+    let reserve = unsafe { calloc(1, bytes) };
+    if reserve.is_null() { error::set(8); return 0; }
+    let handle = NEXT.fetch_add(16, Ordering::Relaxed);
+    HEAPS.lock().unwrap().insert(handle, Heap { blocks: HashMap::new(), initial: reserve as usize });
+    handle
 }
-fn check(heap: usize, api: &str) {
-    if heap != process_heap() {
-        eprintln!("STOP: {api} on heap {heap:#x}: only the process heap exists");
-        std::process::exit(78);
-    }
+pub extern "win64" fn destroy(heap: usize) -> i32 {
+    if heap == process_heap() { error::set(87); return 0; }
+    let Some(owned) = HEAPS.lock().unwrap().remove(&heap) else { error::set(6); return 0; };
+    for p in owned.blocks.keys() { unsafe { free(*p as *mut c_void) }; }
+    unsafe { free(owned.initial as *mut c_void) };
+    1
+}
+/// No Windows LFH or termination policy is claimed for the libc backend.
+pub extern "win64" fn set_information(heap: usize, _class: u32, _info: *const c_void, _length: usize) -> i32 {
+    if heap != 0 && !HEAPS.lock().unwrap().contains_key(&heap) { error::set(6); }
+    else { error::set(50); }
+    0
 }
 fn stop_flags(api: &str, flags: u32) -> ! {
     eprintln!("STOP: {api}: unsupported flags {flags:#x}");
@@ -40,7 +55,8 @@ pub extern "win64" fn get_process_heap() -> usize {
     process_heap()
 }
 pub extern "win64" fn alloc(heap: usize, flags: u32, n: usize) -> *mut c_void {
-    check(heap, "HeapAlloc");
+    let mut heaps = HEAPS.lock().unwrap();
+    let Some(owned) = heaps.get_mut(&heap) else { error::set(6); return std::ptr::null_mut(); };
     if flags & !(NO_SERIALIZE | GENERATE_EXCEPTIONS | ZERO_MEMORY) != 0 {
         stop_flags("HeapAlloc", flags);
     }
@@ -55,27 +71,19 @@ pub extern "win64" fn alloc(heap: usize, flags: u32, n: usize) -> *mut c_void {
         error::set(8);
         return p;
     }
-    BLOCKS
-        .lock()
-        .unwrap()
-        .get_or_insert_with(HashMap::new)
-        .insert(p as usize, n);
+    owned.blocks.insert(p as usize, n);
     p
 }
 pub extern "win64" fn release(heap: usize, flags: u32, p: *mut c_void) -> i32 {
-    check(heap, "HeapFree");
+    let mut heaps = HEAPS.lock().unwrap();
+    let Some(owned) = heaps.get_mut(&heap) else { error::set(6); return 0; };
     if flags & !NO_SERIALIZE != 0 {
         stop_flags("HeapFree", flags);
     }
     if p.is_null() {
         return 1;
     }
-    let known = BLOCKS
-        .lock()
-        .unwrap()
-        .as_mut()
-        .and_then(|b| b.remove(&(p as usize)))
-        .is_some();
+    let known = owned.blocks.remove(&(p as usize)).is_some();
     if !known {
         error::set(87);
         return 0;
@@ -84,15 +92,12 @@ pub extern "win64" fn release(heap: usize, flags: u32, p: *mut c_void) -> i32 {
     1
 }
 pub extern "win64" fn size(heap: usize, flags: u32, p: *const c_void) -> usize {
-    check(heap, "HeapSize");
+    let heaps = HEAPS.lock().unwrap();
+    let Some(owned) = heaps.get(&heap) else { error::set(6); return usize::MAX; };
     if flags & !NO_SERIALIZE != 0 {
         stop_flags("HeapSize", flags);
     }
-    match BLOCKS
-        .lock()
-        .unwrap()
-        .as_ref()
-        .and_then(|b| b.get(&(p as usize)).copied())
+    match owned.blocks.get(&(p as usize)).copied()
     {
         Some(n) => n,
         None => {
@@ -102,15 +107,13 @@ pub extern "win64" fn size(heap: usize, flags: u32, p: *const c_void) -> usize {
     }
 }
 pub extern "win64" fn reallocate(heap: usize, flags: u32, p: *mut c_void, n: usize) -> *mut c_void {
-    check(heap, "HeapReAlloc");
+
     if flags & !(NO_SERIALIZE | GENERATE_EXCEPTIONS | ZERO_MEMORY | REALLOC_IN_PLACE_ONLY) != 0 {
         stop_flags("HeapReAlloc", flags);
     }
-    let mut blocks = BLOCKS.lock().unwrap();
-    let Some(table) = blocks.as_mut() else {
-        error::set(87);
-        return std::ptr::null_mut();
-    };
+    let mut heaps = HEAPS.lock().unwrap();
+    let Some(owned) = heaps.get_mut(&heap) else { error::set(6); return std::ptr::null_mut(); };
+    let table = &mut owned.blocks;
     let Some(&old) = table.get(&(p as usize)) else {
         error::set(87);
         return std::ptr::null_mut();
@@ -144,7 +147,7 @@ pub extern "win64" fn reallocate(heap: usize, flags: u32, p: *mut c_void, n: usi
     q
 }
 /// HeapQueryInformation: only HeapCompatibilityInformation (class 0), which
-/// reports the low-fragmentation heap (2) as Windows does by default.
+/// reports standard compatibility (0); this backend does not implement LFH.
 pub unsafe extern "win64" fn query_information(
     heap: usize,
     class: u32,
@@ -152,7 +155,8 @@ pub unsafe extern "win64" fn query_information(
     length: usize,
     returned: *mut usize,
 ) -> i32 {
-    check(heap, "HeapQueryInformation");
+    let heaps = HEAPS.lock().unwrap();
+    if !heaps.contains_key(&heap) { error::set(6); return 0; }
     if class != 0 {
         error::set(87);
         return 0;
@@ -164,6 +168,6 @@ pub unsafe extern "win64" fn query_information(
         error::set(122);
         return 0;
     }
-    unsafe { out.cast::<u32>().write_unaligned(2) };
+    unsafe { out.cast::<u32>().write_unaligned(0) };
     1
 }

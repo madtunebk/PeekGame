@@ -356,3 +356,31 @@ impl Certificate {
         })
     }
 }
+
+impl Certificate {
+    /// EKU OIDs, or None when the certificate does not constrain extended usage.
+    pub fn usages(&self) -> Result<Option<Vec<String>>, ()> {
+        for extension in self._extensions.iter() {
+            if unsafe { std::ffi::CStr::from_ptr(extension.oid) }.to_bytes() != b"2.5.29.37" {
+                continue;
+            }
+            let mut encoded = unsafe {
+                std::slice::from_raw_parts(extension.value.data, extension.value.size as usize)
+            };
+            let mut body = tagged(&mut encoded, 0x30)?.body;
+            if !encoded.is_empty() {
+                return Err(());
+            }
+            let mut result = Vec::new();
+            while !body.is_empty() {
+                result.push(
+                    oid(tagged(&mut body, 6)?.body)?
+                        .into_string()
+                        .map_err(|_| ())?,
+                );
+            }
+            return Ok(Some(result));
+        }
+        Ok(None)
+    }
+}

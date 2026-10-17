@@ -289,3 +289,19 @@ pub extern "win64" fn uia_return_raw_element_provider(
 ) -> isize {
     0
 }
+
+/// No UI Automation identifier registry is exposed by this backend.
+/// Zero means lookup unavailable/unrecognized; never invent a valid identifier.
+pub extern "win64" fn uia_lookup_id(_kind: i32, _guid: *const std::ffi::c_void) -> i32 {
+    0
+}
+
+pub unsafe extern "win64" fn uia_get_reserved_not_supported_value(out: *mut usize) -> i32 {
+    if out.is_null() {
+        return 0x80004003u32 as i32; // E_POINTER
+    }
+    static SENTINEL: usize = 0;
+    unsafe { *out = &SENTINEL as *const _ as usize };
+    0 // S_OK
+}
+

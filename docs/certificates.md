@@ -52,3 +52,11 @@ is a startup smoke check, not a complete online-play or platform security audit.
 
 Contracts follow [Microsoft's certificate-chain API](https://learn.microsoft.com/en-us/windows/win32/api/wincrypt/nf-wincrypt-certgetcertificatechain)
 and [OpenSSL verification](https://docs.openssl.org/3.0/man3/X509_verify_cert/).
+
+## Context properties
+
+`CertGetCertificateContextProperty` computes SHA-1 (3), MD5 (4) and SHA-256
+(107) over the actual DER certificate using host OpenSSL. It supports size-only
+queries and ERROR_MORE_DATA, and validates context lifetime. Unattached extended
+properties return CRYPT_E_NOT_FOUND. The store test compares these hashes with
+Python's hashlib. This does not change certificate trust or signature validation.

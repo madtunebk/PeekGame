@@ -10,3 +10,9 @@ pub(crate) mod teb;
 pub(crate) mod thread_template;
 
 pub(crate) mod thread_entry;
+
+pub(crate) mod pulse;
+
+pub(crate) mod png;
+
+pub(crate) mod nls;

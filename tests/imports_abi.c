@@ -35,6 +35,22 @@ int main(int argc, char **argv) {
     void (WIN *debug)(const char *) = (void *)resolve("kernel32.dll", "OutputDebugStringA");
     void (WIN *exit_process)(uint32_t) = (void *)resolve("kernel32.dll", "ExitProcess");
     assert(error && standard && command && module && write_file && debug && exit_process);
+    const char *registry_names[] = {"RegCloseKey", "RegEnumKeyExW", "RegEnumValueW",
+        "RegGetValueW", "RegOpenKeyExW", "RegQueryInfoKeyW", "RegQueryValueExW", "RegSetValueExW"};
+    for (unsigned i = 0; i < sizeof registry_names / sizeof *registry_names; ++i) {
+        const void *direct = resolve("advapi32.dll", registry_names[i]);
+        assert(direct && resolve("api-ms-win-core-registry-l1-1-0.dll", registry_names[i]) == direct);
+    }
+    assert(resolve("api-ms-win-core-processthreads-l1-1-0.dll", "OpenProcessToken") ==
+        resolve("advapi32.dll", "OpenProcessToken"));
+    const char *security_names[] = {"GetTokenInformation", "GetSidSubAuthority", "GetSidSubAuthorityCount"};
+    for (unsigned i = 0; i < sizeof security_names / sizeof *security_names; ++i) {
+        const void *direct = resolve("advapi32.dll", security_names[i]);
+        assert(direct && resolve("api-ms-win-security-base-l1-1-0.dll", security_names[i]) == direct);
+    }
+    assert(!resolve("api-ms-win-core-registry-l1-1-0.dll", "NotAnExport"));
+    assert(!resolve("kernel32.dll", "RegCloseKey"));
+    assert(!resolve("imaginary.dll", "RegCloseKey"));
     assert(!resolve("d3d11.dll", "NotAnExport"));
     assert(!resolve("imaginary.dll", "GetLastError"));
     assert(!resolve("kernel32.dll", "getlasterror"));

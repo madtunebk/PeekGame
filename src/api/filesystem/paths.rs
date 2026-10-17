@@ -70,6 +70,40 @@ pub unsafe extern "win64" fn full_w(
         Err(e) => fail(e),
     }
 }
+pub unsafe extern "win64" fn full_a(
+    input: *const c_char,
+    size: u32,
+    out: *mut u8,
+    part: *mut *mut u8,
+) -> u32 {
+    if !part.is_null() {
+        unsafe { *part = std::ptr::null_mut() };
+    }
+    let path = unsafe { paths::narrow(input) }.and_then(|s| paths::full(&s));
+    match path {
+        Ok(path) => {
+            let text = paths::windows(&path);
+            let bytes = text.as_bytes();
+            let needed = bytes.len() + 1;
+            if needed > size as usize {
+                return needed as u32;
+            }
+            if out.is_null() {
+                return fail(87);
+            }
+            unsafe {
+                std::ptr::copy_nonoverlapping(bytes.as_ptr(), out, bytes.len());
+                *out.add(bytes.len()) = 0;
+                if !part.is_null() {
+                    let offset = text.rfind('\\').map_or(0, |i| i + 1);
+                    *part = out.add(offset);
+                }
+            }
+            bytes.len() as u32
+        }
+        Err(e) => fail(e),
+    }
+}
 pub unsafe extern "win64" fn attributes_w(input: *const u16) -> u32 {
     match unsafe { paths::wide(input) }.and_then(|s| paths::host(&s)) {
         Ok(path) => match std::fs::metadata(path) {

@@ -146,3 +146,42 @@ pub fn matches_name(leaf: &[u8], name: &str) -> Result<bool, u32> {
         Ok(result == 1)
     }
 }
+
+#[link(name = "crypto")]
+unsafe extern "C" {
+    fn EVP_Q_digest(
+        context: *mut c_void,
+        name: *const c_char,
+        properties: *const c_char,
+        data: *const u8,
+        length: usize,
+        out: *mut u8,
+        size: *mut usize,
+    ) -> i32;
+}
+pub(super) fn digest(bytes: &[u8], kind: u32) -> Result<Vec<u8>, u32> {
+    let name = match kind {
+        3 => c"SHA1",
+        4 => c"MD5",
+        107 => c"SHA256",
+        _ => return Err(0x80092004),
+    };
+    let mut out = vec![0u8; 64];
+    let mut size = out.len();
+    if unsafe {
+        EVP_Q_digest(
+            ptr::null_mut(),
+            name.as_ptr(),
+            ptr::null(),
+            bytes.as_ptr(),
+            bytes.len(),
+            out.as_mut_ptr(),
+            &mut size,
+        )
+    } != 1
+    {
+        return Err(50);
+    }
+    out.truncate(size);
+    Ok(out)
+}

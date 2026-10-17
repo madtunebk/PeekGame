@@ -31,6 +31,22 @@ struct Stream {
     _layout: Box<[u64; 6]>,
     host: usize,
 }
+// Includes stdin/stdout/stderr. Changes and stream registration share STREAMS' lock.
+static MAX_STDIO: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(512);
+pub extern "win64" fn get_max_stdio() -> i32 {
+    MAX_STDIO.load(std::sync::atomic::Ordering::Relaxed) as i32
+}
+pub extern "win64" fn set_max_stdio(limit: i32) -> i32 {
+    let map = streams().lock().unwrap();
+    if !(20..=8192).contains(&limit) || (limit as usize) < map.len() + 3 {
+        unsafe {
+            *errno() = 22;
+        }
+        return -1;
+    }
+    MAX_STDIO.store(limit as usize, std::sync::atomic::Ordering::Relaxed);
+    limit
+}
 static STREAMS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<usize, Stream>>> =
     std::sync::OnceLock::new();
 fn streams() -> &'static std::sync::Mutex<std::collections::HashMap<usize, Stream>> {
@@ -77,7 +93,7 @@ pub extern "win64" fn os_handle(fd: i32) -> isize {
     }
     crate::host::process::PROCESS
         .get()
-        .map(|p| p.standard_handles[fd as usize] as isize)
+        .map(|p| p.standard_handles[fd as usize].load(std::sync::atomic::Ordering::SeqCst) as isize)
         .unwrap_or(-1)
 }
 
@@ -111,6 +127,13 @@ fn failure(code: i32) -> *mut c_void {
 }
 /// Registers a host stream as a Windows FILE.
 pub(super) fn register(file: *mut c_void) -> *mut c_void {
+    let mut map = streams().lock().unwrap();
+    if map.len() + 3 >= MAX_STDIO.load(std::sync::atomic::Ordering::Relaxed) {
+        unsafe {
+            host_fclose(file);
+        }
+        return failure(24); // EMFILE: the CRT stream table is full.
+    }
     let mut layout = Box::new([0u64; 6]);
     unsafe {
         layout
@@ -121,7 +144,7 @@ pub(super) fn register(file: *mut c_void) -> *mut c_void {
             .write(fileno(file))
     };
     let pointer = layout.as_mut_ptr() as usize;
-    streams().lock().unwrap().insert(
+    map.insert(
         pointer,
         Stream {
             _layout: layout,
@@ -164,24 +187,7 @@ pub unsafe extern "win64" fn open(
     if file.is_null() {
         return file;
     }
-    let mut layout = Box::new([0u64; 6]);
-    unsafe {
-        layout
-            .as_mut_ptr()
-            .cast::<u8>()
-            .add(24)
-            .cast::<i32>()
-            .write(fileno(file));
-    }
-    let pointer = layout.as_mut_ptr() as usize;
-    streams().lock().unwrap().insert(
-        pointer,
-        Stream {
-            _layout: layout,
-            host: file as usize,
-        },
-    );
-    pointer as *mut c_void
+    register(file)
 }
 pub unsafe extern "win64" fn open_w(path: *const u16, mode: *const u16) -> *mut c_void {
     let (Ok(path), Ok(mode)) = (unsafe { crate::host::paths::wide(path) }, unsafe {
@@ -293,4 +299,12 @@ pub unsafe extern "win64" fn setpos(file: *mut c_void, pos: *const i64) -> i32 {
         return -1;
     }
     seek64(file, unsafe { *pos }, 0)
+}
+
+pub(super) fn replace_host(file: *mut c_void, replacement: *mut c_void) {
+    let mut map = streams().lock().unwrap();
+    if let Some(stream) = map.get_mut(&(file as usize)) {
+        stream.host = replacement as usize;
+    }
+    // For stdin/out/err, freopen updates the C library's original FILE in place.
 }

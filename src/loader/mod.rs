@@ -14,12 +14,24 @@ pub fn run_with(
     let bytes = fs::read(path).map_err(|e| e.to_string())?;
     let image = pe::parse(&bytes)?;
     let mapped = images::map::Mapping::new(&bytes, &image)?;
-    let trace = output.join("dynamic-imports.tsv");
-    fs::create_dir_all(output).map_err(|e| e.to_string())?;
+    let output_abs = if output.is_absolute() {
+        output.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| Path::new(".").to_path_buf())
+            .join(output)
+    };
+    let trace = output_abs.join("dynamic-imports.tsv");
+    fs::create_dir_all(&output_abs).map_err(|e| e.to_string())?;
     if let Some(backend) = backend {
         backend.trace(&trace)?;
     } else {
         game_imports::start_import_trace(&trace).map_err(|e| e.to_string())?;
+    }
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            let _ = std::env::set_current_dir(parent);
+        }
     }
     let line = std::iter::once(path.to_string_lossy().into_owned())
         .chain(args.iter().cloned())

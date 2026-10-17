@@ -13,7 +13,7 @@ type Callback = extern "win64" fn();
 static CALLBACKS: Mutex<Vec<Callback>> = Mutex::new(Vec::new());
 static REGISTERED: OnceLock<bool> = OnceLock::new();
 #[export_name = "peekgame.msvcrt.dll._fmode"]
-pub static FMODE: AtomicI32 = AtomicI32::new(0);
+pub static FMODE: AtomicI32 = AtomicI32::new(0x4000);
 #[export_name = "peekgame.msvcrt.dll._commode"]
 pub static COMMODE: AtomicI32 = AtomicI32::new(0);
 static APP_TYPE: AtomicI32 = AtomicI32::new(0);
@@ -56,10 +56,14 @@ pub unsafe extern "win64" fn init_term(
     }
 }
 pub extern "win64" fn cexit() {
+    run_thread_local_callbacks(0);
     run_callbacks();
     unsafe {
         fflush(std::ptr::null_mut());
     }
+}
+pub extern "win64" fn c_exit() {
+    // Quick exit cleanup without running atexit / termination callbacks.
 }
 pub extern "win64" fn exit(code: i32) -> ! {
     cexit();
@@ -76,8 +80,37 @@ pub extern "win64" fn app_type(kind: i32) {
     }
     APP_TYPE.store(kind, Ordering::Relaxed);
 }
+pub extern "win64" fn query_app_type() -> i32 {
+    APP_TYPE.load(Ordering::Relaxed)
+}
 pub extern "win64" fn matherr(callback: usize) {
     *MATHERR.lock().unwrap() = callback;
+}
+pub extern "win64" fn seh_filter_exe(_code: u32, _info: usize) -> i32 {
+    0 // EXCEPTION_CONTINUE_SEARCH
+}
+pub type TlsCallback = extern "win64" fn(*mut c_void, u32, *mut c_void);
+static TLS_CALLBACKS: Mutex<Vec<TlsCallback>> = Mutex::new(Vec::new());
+
+pub extern "win64" fn register_thread_local_exe_atexit_callback(
+    callback: Option<TlsCallback>,
+) -> i32 {
+    let Some(callback) = callback else {
+        return -1;
+    };
+    TLS_CALLBACKS.lock().unwrap().push(callback);
+    0
+}
+
+pub fn run_thread_local_callbacks(reason: u32) {
+    let callbacks: Vec<TlsCallback> = TLS_CALLBACKS.lock().unwrap().clone();
+    let base = crate::host::process::PROCESS
+        .get()
+        .map(|p| p.image_base as *mut c_void)
+        .unwrap_or(std::ptr::null_mut());
+    for callback in callbacks.iter().rev() {
+        callback(base, reason, std::ptr::null_mut());
+    }
 }
 struct Args {
     strings: Vec<CString>,
@@ -180,4 +213,42 @@ pub unsafe extern "win64" fn mainargs(
         *env = args.envp.as_ptr().cast();
     }
     0
+}
+
+/// Stable, NUL-terminated snapshot created with the CRT argument/environment state.
+pub extern "win64" fn initial_narrow_environment() -> *const *const c_char {
+    args().envp.as_ptr().cast()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    static LOG: Mutex<Vec<(usize, u32)>> = Mutex::new(Vec::new());
+
+    extern "win64" fn cb1(_base: *mut c_void, reason: u32, _res: *mut c_void) {
+        LOG.lock().unwrap().push((1, reason));
+    }
+    extern "win64" fn cb2(_base: *mut c_void, reason: u32, _res: *mut c_void) {
+        LOG.lock().unwrap().push((2, reason));
+    }
+
+    #[test]
+    fn test_tls_callback_order_and_c_exit() {
+        assert_eq!(register_thread_local_exe_atexit_callback(None), -1);
+        assert_eq!(register_thread_local_exe_atexit_callback(Some(cb1)), 0);
+        assert_eq!(register_thread_local_exe_atexit_callback(Some(cb2)), 0);
+
+        // c_exit must not invoke callbacks
+        c_exit();
+        assert!(LOG.lock().unwrap().is_empty());
+
+        // DLL_THREAD_DETACH = 3 executed in LIFO order (cb2 before cb1)
+        run_thread_local_callbacks(3);
+        let log = LOG.lock().unwrap().clone();
+        let entries: Vec<(usize, u32)> = log.into_iter().filter(|(id, _)| *id == 1 || *id == 2).collect();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0], (2, 3));
+        assert_eq!(entries[1], (1, 3));
+    }
 }

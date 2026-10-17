@@ -96,3 +96,10 @@ pub extern "win64" fn size(handle: usize) -> usize {
         }
     }
 }
+
+/// Bounded snapshot for DROPFILES consumers; handles and locked data pointers
+/// both identify the allocation, without retaining a host pointer across calls.
+pub(crate) fn snapshot(handle:usize)->Option<Vec<u8>>{
+ let blocks=BLOCKS.lock().unwrap();
+ blocks.iter().find(|b|b.handle==handle||b.data.as_ptr() as usize==handle).map(|b|b.data.to_vec())
+}

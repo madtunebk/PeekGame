@@ -61,8 +61,6 @@ unsafe extern "C" {
     fn host_getrandom(buffer: *mut u8, length: usize, flags: u32) -> isize;
     #[link_name = "_exit"]
     fn host_exit(code: i32) -> !;
-    #[link_name = "pthread_exit"]
-    fn host_pthread_exit(value: *mut c_void) -> !;
     static daylight: i32;
     static timezone: i64;
     static tzname: [*mut c_char; 2];
@@ -544,6 +542,15 @@ pub unsafe extern "win64" fn fdopen(fd: i32, mode: *const c_char) -> *mut c_void
     }
     stdio::register(host)
 }
+/// Descriptor metadata query: does not seek or disturb a buffered stream.
+pub extern "win64" fn filelengthi64(fd: i32) -> i64 {
+    // Linux x86-64 struct stat, shared with fstat64 below: st_size at byte 48.
+    let mut st = [0u64; 18];
+    if unsafe { host_fstat(fd, st.as_mut_ptr().cast()) } != 0 {
+        return -1; // host errno is the thread's CRT errno (EBADF is 9 on both).
+    }
+    st[6] as i64
+}
 pub extern "win64" fn lseeki64(fd: i32, offset: i64, whence: i32) -> i64 {
     unsafe { host_lseek(fd, offset, whence) }
 }
@@ -742,13 +749,17 @@ pub extern "win64" fn p_wenviron() -> *const *const *const u16 {
     &e.2
 }
 pub extern "win64" fn end_thread(code: u32) -> ! {
-    unsafe { host_pthread_exit(code as usize as *mut c_void) }
+    crate::host::thread_entry::exit(code)
 }
 pub extern "win64" fn exit_now(code: i32) -> ! {
     unsafe { host_exit(code) }
 }
 pub extern "win64" fn abort() -> ! {
     eprintln!("CRT abort() called");
+    unsafe { host_exit(3) }
+}
+pub extern "win64" fn terminate() -> ! {
+    eprintln!("CRT terminate() called");
     unsafe { host_exit(3) }
 }
 /// signal: handlers are accepted and never called (SIG_DFL returned).
@@ -1050,6 +1061,13 @@ struct Zone {
     names: [*mut c_char; 2],
 }
 unsafe impl Send for Zone {}
+#[export_name = "peekgame.msvcrt.dll._timezone"]
+pub static CRT_TIMEZONE: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+#[export_name = "peekgame.msvcrt.dll._tzname"]
+pub static CRT_TZNAME: [std::sync::atomic::AtomicUsize; 2] = [
+    std::sync::atomic::AtomicUsize::new(0),
+    std::sync::atomic::AtomicUsize::new(0),
+];
 static ZONE: Mutex<Zone> = Mutex::new(Zone {
     daylight: 0,
     timezone: 0,
@@ -1062,6 +1080,9 @@ pub extern "win64" fn tzset() {
         z.daylight = daylight;
         z.timezone = timezone as i32;
         z.names = tzname;
+        CRT_TIMEZONE.store(z.timezone, std::sync::atomic::Ordering::Relaxed);
+        CRT_TZNAME[0].store(z.names[0] as usize, std::sync::atomic::Ordering::Relaxed);
+        CRT_TZNAME[1].store(z.names[1] as usize, std::sync::atomic::Ordering::Relaxed);
     }
 }
 fn zone_field<T>(f: impl FnOnce(&mut Zone) -> *mut T) -> *mut T {
@@ -1077,10 +1098,16 @@ pub extern "win64" fn p_daylight() -> *mut i32 {
     zone_field(|z| &mut z.daylight as *mut i32)
 }
 pub extern "win64" fn p_timezone() -> *mut i32 {
-    zone_field(|z| &mut z.timezone as *mut i32)
+    {
+        zone_field(|z| &mut z.timezone as *mut i32);
+        CRT_TIMEZONE.as_ptr()
+    }
 }
 pub extern "win64" fn p_tzname() -> *mut *mut c_char {
-    zone_field(|z| z.names.as_mut_ptr())
+    {
+        zone_field(|z| z.names.as_mut_ptr());
+        CRT_TZNAME.as_ptr().cast_mut().cast()
+    }
 }
 
 // ---- setjmp/longjmp (_JUMP_BUFFER layout) ------------------------------------------------------
@@ -1153,4 +1180,11 @@ unsafe extern "win64" {
     pub fn setjmp(buffer: *mut u8, frame: usize) -> i32;
     #[link_name = "peekgame_crt_longjmp"]
     pub fn longjmp(buffer: *mut u8, value: i32) -> !;
+}
+
+pub(super) unsafe fn render_narrow(fmt: *const c_char, args: *const u64) -> String {
+    self::format(&narrow_spec(fmt), &mut Args(args), false)
+}
+pub(super) unsafe fn render_wide(fmt: *const u16, args: *const u64) -> String {
+    self::format(&wide_spec(fmt), &mut Args(args), true)
 }

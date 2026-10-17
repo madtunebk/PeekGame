@@ -26,10 +26,15 @@ pub unsafe extern "C" fn peekgame_configure_process(
     let process = Process {
         image_base,
         command_line: unsafe { CStr::from_ptr(command_line) }.to_owned(),
-        standard_handles: stdio::inherited_handles(),
+        standard_handles: stdio::inherited_handles().map(std::sync::atomic::AtomicUsize::new),
     };
     match PROCESS.set(process) {
         Ok(()) => {
+            // Godot reads APPDATA directly before it ever calls shell known-folder APIs.
+            if crate::api::shell::folders::appdata().is_none() {
+                return 5; // The data directory could not be created/resolved.
+            }
+            crate::api::crt::ucrt::tzset();
             // Faults in program code become Windows exceptions from here on.
             crate::seh::install_fault_handlers();
             0

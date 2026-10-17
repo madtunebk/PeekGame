@@ -52,3 +52,5 @@ pub(crate) unsafe fn copy_out_narrow(text: &[u8], out: *mut u8, capacity: u32) -
     }
     text.len() as u32
 }
+
+pub(crate) mod dwrite;

@@ -13,3 +13,7 @@ pub(crate) mod timers;
 pub(crate) mod tls;
 
 pub(crate) mod iocp;
+
+pub(crate) mod avrt;
+
+pub(crate) mod thread_times;

@@ -4,10 +4,12 @@
 void test_native_events(uintptr_t hwnd,struct Native native) {
     struct Msg message;
     while(peek(&message,0,0,0,1)) { dispatch(&message); }
+    uint32_t before=observed_size_count;
     XResizeWindow(native.display,native.window,321,123);
     XSync(native.display,False);
-    assert(peek(&message,hwnd,5,5,1));
-    assert(message.message==5 && (message.lp&0xffff)==321 && ((message.lp>>16)&0xffff)==123);
+    while(peek(&message,0,0,0,1))dispatch(&message);
+    assert(observed_size_count==before+1);
+    assert((observed_size&0xffff)==321 && ((observed_size>>16)&0xffff)==123);
     assert(post(hwnd,0x8002,11,22));
     assert(peek(&message,hwnd,0x8002,0x8002,0));
     assert(message.wp==11 && message.lp==22);

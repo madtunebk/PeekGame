@@ -156,7 +156,15 @@ pub enum Provider {
 /// Finds the provider for imports from `dll` (loading it if it is a PE DLL).
 /// Must be called with the loader lock held (see [`with_loader_lock`]).
 pub fn provider(dll: &str) -> Provider {
+    if crate::api::steam::recognizes(dll) {
+        if crate::api::steam::open() {
+            crate::api::system::dynamic::builtin_handle("steamclient64.dll");
+            return Provider::Builtin;
+        }
+        return Provider::Missing;
+    }
     if builtin(dll) {
+        crate::api::system::dynamic::builtin_handle(dll);
         return Provider::Builtin;
     }
     match load_locked(dll, None) {
@@ -177,6 +185,9 @@ pub fn lookup(
     ordinal: Option<u16>,
 ) -> Option<usize> {
     match provider {
+        Provider::Builtin if crate::api::steam::recognizes(dll) => {
+            if ordinal.is_some() { None } else { name.and_then(crate::api::steam::export) }
+        }
         Provider::Builtin => registry::find_import(dll, name, ordinal)
             .and_then(|e| e.address)
             .map(|get| get() as usize),

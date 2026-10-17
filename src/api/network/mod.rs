@@ -5,8 +5,9 @@
 //! family numbers (AF_INET6 23 <-> 10), ADDRINFO layout, AI_/NI_ flags, option
 //! numbers, SO_RCVTIMEO/SNDTIMEO in milliseconds, fd_set as count + SOCKET array,
 //! 32-bit timeval, WSAEWOULDBLOCK for connects in progress, no SIGPIPE.
-pub(crate) mod events;
+pub(crate) mod afd;
 pub(crate) mod certificates;
+pub(crate) mod events;
 pub(crate) mod resolve;
 pub(crate) mod sockets;
 pub(crate) mod sspi;
@@ -204,3 +205,62 @@ pub extern "win64" fn ntohl(v: u32) -> u32 {
 pub extern "win64" fn ntohs(v: u16) -> u16 {
     u16::from_be(v)
 }
+
+pub unsafe extern "win64" fn get_adapters_info(info: *mut u8, size: *mut u32) -> u32 {
+    if size.is_null() {
+        return 87; // ERROR_INVALID_PARAMETER
+    }
+    const ADAPTER_SIZE: u32 = 704;
+    if info.is_null() || unsafe { size.read_unaligned() } < ADAPTER_SIZE {
+        unsafe { size.write_unaligned(ADAPTER_SIZE) };
+        return 111; // ERROR_BUFFER_OVERFLOW
+    }
+    let mut mac = [0x02u8, 0x00, 0x00, 0x00, 0x00, 0x01];
+    if let Ok(entries) = std::fs::read_dir("/sys/class/net") {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            if name.to_string_lossy() == "lo" {
+                continue;
+            }
+            if let Ok(addr) = std::fs::read_to_string(entry.path().join("address")) {
+                let parts: Vec<u8> = addr
+                    .trim()
+                    .split(':')
+                    .filter_map(|p| u8::from_str_radix(p, 16).ok())
+                    .collect();
+                if parts.len() == 6 && parts.iter().any(|&b| b != 0) {
+                    mac.copy_from_slice(&parts);
+                    break;
+                }
+            }
+        }
+    }
+    unsafe {
+        info.write_bytes(0, ADAPTER_SIZE as usize);
+        let name = b"{00000000-0000-0000-0000-000000000001}";
+        std::ptr::copy_nonoverlapping(name.as_ptr(), info.add(12), name.len());
+        let desc = b"Ethernet";
+        std::ptr::copy_nonoverlapping(desc.as_ptr(), info.add(272), desc.len());
+        info.add(404).cast::<u32>().write_unaligned(6); // AddressLength
+        std::ptr::copy_nonoverlapping(mac.as_ptr(), info.add(408), 6); // Address
+        info.add(416).cast::<u32>().write_unaligned(1); // Index
+        info.add(420).cast::<u32>().write_unaligned(6); // MIB_IF_TYPE_ETHERNET
+        info.add(424).cast::<u32>().write_unaligned(1); // DhcpEnabled
+        std::ptr::copy_nonoverlapping(b"192.168.1.100".as_ptr(), info.add(448), 13);
+        std::ptr::copy_nonoverlapping(b"255.255.255.0".as_ptr(), info.add(464), 13);
+        std::ptr::copy_nonoverlapping(b"192.168.1.1".as_ptr(), info.add(496), 11);
+        std::ptr::copy_nonoverlapping(b"255.255.255.255".as_ptr(), info.add(512), 15);
+        size.write_unaligned(ADAPTER_SIZE);
+    }
+    0
+}
+
+pub unsafe extern "win64" fn get_best_interface(_dest_ip: u32, best_if_index: *mut u32) -> u32 {
+    if best_if_index.is_null() {
+        return 87; // ERROR_INVALID_PARAMETER
+    }
+    unsafe { best_if_index.write_unaligned(1) };
+    0
+}
+
+pub(crate) mod crypt_strings;

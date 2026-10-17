@@ -91,12 +91,15 @@ pub fn duplicate(handle: usize) -> Option<usize> {
     Some(target)
 }
 pub extern "win64" fn close(handle: usize) -> i32 {
-    if super::iocp::close(handle)
+    if handle == crate::api::system::compat::STEAM_PROCESS_HANDLE
+        || crate::api::network::afd::close(handle)
+        || super::iocp::close(handle)
         || events().lock().unwrap().remove(&handle).is_some()
         || super::threads::close(handle)
         || crate::api::filesystem::files::close(handle)
         || super::objects::close(handle)
         || crate::api::system::toolhelp::close(handle)
+        || crate::api::system::power::close(handle)
         || crate::api::system::security::close(handle)
         || crate::api::memory::mapping::close(handle)
     {

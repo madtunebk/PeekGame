@@ -248,6 +248,51 @@ pub unsafe extern "win64" fn query(address: usize, out: *mut MemoryInfo, n: usiz
     unsafe { out.write(info) };
     size_of::<MemoryInfo>()
 }
+pub unsafe extern "win64" fn query_ex(
+    process: usize,
+    address: usize,
+    out: *mut MemoryInfo,
+    n: usize,
+) -> usize {
+    if process != !0 && process != 1 && process != std::process::id() as usize {
+        error::set(6);
+        return 0;
+    }
+    unsafe { query(address, out, n) }
+}
+pub unsafe extern "win64" fn read_process_memory(
+    process: usize,
+    base: *const c_void,
+    buffer: *mut c_void,
+    size: usize,
+    bytes_read: *mut usize,
+) -> i32 {
+    if process != !0 && process != 1 && process != std::process::id() as usize {
+        error::set(6);
+        return 0;
+    }
+    if size == 0 {
+        if !bytes_read.is_null() {
+            unsafe { *bytes_read = 0 };
+        }
+        return 1;
+    }
+    if base.is_null() || buffer.is_null() {
+        error::set(87);
+        return 0;
+    }
+    if region(base as usize).is_none() {
+        error::set(998);
+        return 0;
+    }
+    unsafe {
+        std::ptr::copy_nonoverlapping(base as *const u8, buffer as *mut u8, size);
+        if !bytes_read.is_null() {
+            *bytes_read = size;
+        }
+    }
+    1
+}
 pub unsafe extern "win64" fn protect(
     address: usize,
     n: usize,

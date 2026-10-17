@@ -10,7 +10,7 @@ struct Timespec {
 }
 #[repr(C)]
 #[derive(Default)]
-struct Tm {
+pub(crate) struct Tm {
     second: i32,
     minute: i32,
     hour: i32,
@@ -45,6 +45,15 @@ pub extern "win64" fn tick_count64() -> u64 {
 }
 pub extern "win64" fn tick_count() -> u32 {
     tick_count64() as u32
+}
+pub unsafe extern "win64" fn query_unbiased_interrupt_time(out: *mut u64) -> i32 {
+    if out.is_null() {
+        error::set(87);
+        return 0;
+    }
+    let t = now(1); // CLOCK_MONOTONIC
+    unsafe { out.write_unaligned(t.seconds as u64 * 10_000_000 + t.nanoseconds as u64 / 100) };
+    1
 }
 /// GetSystemTimePreciseAsFileTime.
 pub unsafe extern "win64" fn precise_file_time(out: *mut u64) {

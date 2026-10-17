@@ -89,6 +89,15 @@ fn load(name: &str, flags: u32) -> usize {
         error::set(50);
         return 0;
     }
+    if crate::api::steam::recognizes(name) {
+        if crate::api::steam::open() {
+            record("<LoadLibrary>", "steam_bridge");
+            return builtin_handle("steamclient64.dll");
+        }
+        record("<LoadLibrary>", "module_not_found");
+        error::set(images::ERROR_MOD_NOT_FOUND);
+        return 0;
+    }
     if images::builtin(name) {
         record("<LoadLibrary>", "runtime_module");
         return builtin_handle(name);
@@ -171,13 +180,15 @@ pub unsafe extern "win64" fn get_proc_address(module: usize, name: *const c_char
         },
     };
     let (dll, address) = if let Some(dll) = builtin_name(module) {
-        let address = registry::find_import(
+        let address = if crate::api::steam::recognizes(&dll) {
+            ordinal.is_none().then(|| crate::api::steam::export(&text)).flatten()
+        } else { registry::find_import(
             &dll,
             ordinal.is_none().then_some(text.as_str()),
             ordinal.map(|o| o as u16),
         )
         .and_then(|e| e.address)
-        .map(|get| get() as usize);
+        .map(|get| get() as usize) };
         (dll, address)
     } else if let Some(pe) = images::by_handle(module) {
         let address =
@@ -276,4 +287,12 @@ pub extern "win64" fn set_default_dll_directories(flags: u32) -> i32 {
         return 0;
     }
     1
+}
+
+/// Builtin providers already loaded through static imports or LoadLibrary.
+/// Their handles belong in EnumProcessModules, just like mapped PE modules.
+pub(crate) fn loaded_builtin_handles() -> Vec<usize> {
+    (0..modules().lock().unwrap().len())
+        .map(|index| BUILTIN_HANDLES + index * 16)
+        .collect()
 }

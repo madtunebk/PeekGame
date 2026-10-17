@@ -20,6 +20,7 @@ pub(super) struct Reply {
 struct Sent {
     message: Message,
     reply: Option<Arc<Reply>>,
+    position: Option<WindowPos>,
 }
 struct Timer {
     window: usize,
@@ -45,7 +46,7 @@ fn with<T>(thread: u32, f: impl FnOnce(&mut Queue) -> T) -> T {
         .entry(thread)
         .or_default())
 }
-fn notify() {
+pub(super) fn notify() {
     SIGNAL.notify_all();
 }
 pub(super) fn owner(hwnd: usize) -> Option<u32> {
@@ -54,6 +55,17 @@ pub(super) fn owner(hwnd: usize) -> Option<u32> {
 /// Posts to `thread`'s queue. Successive mouse moves to one window coalesce, as on
 /// Windows.
 pub(super) fn post_to(thread: u32, message: Message) {
+    if matches!(message.message, 0xff | 0x200..=0x209) {
+        super::input::trace_input(format_args!(
+            "post thread={thread} hwnd={:#x} msg={:#x} wp={:#x} lp={:#x} time={} now={}",
+            message.window,
+            message.message,
+            message.wparam,
+            message.lparam,
+            message.time,
+            time::milliseconds()
+        ));
+    }
     with(thread, |q| {
         if message.message == WM_MOUSEMOVE {
             if let Some(last) = q.posted.back_mut() {
@@ -66,6 +78,13 @@ pub(super) fn post_to(thread: u32, message: Message) {
         q.posted.push_back(message);
     });
     notify();
+}
+/// Buffered raw reads consume only their WM_INPUT messages on the calling thread.
+pub(super) fn consume_raw(handles: &[usize]) {
+    with(state::current_thread(), |q| {
+        q.posted
+            .retain(|m| m.message != WM_INPUT || !handles.contains(&(m.lparam as usize)))
+    });
 }
 pub(super) fn message(hwnd: usize, message: u32, wparam: usize, lparam: isize) -> Message {
     Message {
@@ -87,8 +106,20 @@ pub(super) fn notify_window(hwnd: usize, msg: u32, wparam: usize, lparam: isize)
         q.sent.push_back(Sent {
             message: message(hwnd, msg, wparam, lparam),
             reply: None,
+            position: None,
         })
     });
+    notify();
+}
+/// Own WINDOWPOS until the owner thread invokes its procedure. Never queue a
+/// pointer into the event pump's stack or invoke game code under its mutex.
+pub(super) fn notify_position(hwnd: usize, position: WindowPos) {
+    let Some(thread) = owner(hwnd) else { return; };
+    with(thread, |q| q.sent.push_back(Sent {
+        message: message(hwnd, WM_WINDOWPOSCHANGED, 0, 0),
+        reply: None,
+        position: Some(position),
+    }));
     notify();
 }
 pub(super) fn procedure(hwnd: usize) -> Option<WndProc> {
@@ -104,13 +135,16 @@ pub(super) fn call(hwnd: usize, msg: u32, wparam: usize, lparam: isize) -> isize
 /// Runs the messages other threads sent to this one.
 pub(super) fn run_sent() -> bool {
     let me = state::current_thread();
-    let mut ran = false;
+    let mut ran = super::ole_drop::run_pending();
     loop {
-        let Some(sent) = with(me, |q| q.sent.pop_front()) else {
+        let Some(mut sent) = with(me, |q| q.sent.pop_front()) else {
             return ran;
         };
         ran = true;
-        let m = sent.message;
+        let mut m = sent.message;
+        if let Some(position) = sent.position.as_mut() {
+            m.lparam = position as *mut WindowPos as isize;
+        }
         let result = call(m.window, m.message, m.wparam, m.lparam);
         if let Some(reply) = sent.reply {
             *reply.value.lock().unwrap() = Some(result);
@@ -139,6 +173,7 @@ pub(super) fn send(
         q.sent.push_back(Sent {
             message: message(hwnd, msg, wparam, lparam),
             reply: Some(reply.clone()),
+            position: None,
         })
     });
     notify();
@@ -194,17 +229,25 @@ pub(super) fn retrieve(hwnd: usize, min: u32, max: u32, remove: bool) -> Option<
     pump::pump();
     run_sent();
     let me = state::current_thread();
-    let found = with(me, |q| {
-        let index = q.posted.iter().position(|m| matches(m, hwnd, min, max))?;
-        let m = if remove {
-            q.posted.remove(index)?
-        } else {
-            q.posted[index]
-        };
-        q.last_time = m.time;
-        q.last_point = m.point;
-        Some(m)
-    });
+    let found = loop {
+        let candidate = with(me, |q| {
+            let index = q.posted.iter().position(|m| matches(m, hwnd, min, max))?;
+            let m = if remove {
+                q.posted.remove(index)?
+            } else {
+                q.posted[index]
+            };
+            q.last_time = m.time;
+            q.last_point = m.point;
+            Some(m)
+        });
+        if let Some(m) = candidate {
+            if super::hooks::mouse(&m, remove) {
+                continue;
+            }
+        }
+        break candidate;
+    };
     if let Some(m) = found {
         if remove && m.message == WM_INPUT {
             super::input::raw_read(m.lparam as usize);
@@ -227,7 +270,7 @@ pub(super) fn retrieve(hwnd: usize, min: u32, max: u32, remove: bool) -> Option<
     if hwnd != usize::MAX && in_range(WM_PAINT, min, max) {
         let painting = state::windows()
             .iter()
-            .find(|(&h, w)| w.owner == me && w.paint && w.visible && (hwnd == 0 || hwnd == h))
+            .find(|(&h, w)| w.owner == me && w.paint && (hwnd == 0 || hwnd == h))
             .map(|(&h, _)| h);
         if let Some(h) = painting {
             return Some(message(h, WM_PAINT, 0, 0));
@@ -276,13 +319,13 @@ pub(super) fn has_input(mask: u32) -> bool {
             || q.posted
                 .iter()
                 .any(|m| mask == 0 || mask & category(m.message) != 0)
-            || (mask & 0x10 != 0 && q.timers.iter().any(|t| t.due <= Instant::now()))
+            || ((mask == 0 || mask & 0x10 != 0) && q.timers.iter().any(|t| t.due <= Instant::now()))
     });
     posted
-        || (mask & 0x20 != 0
+        || ((mask == 0 || mask & 0x20 != 0)
             && state::windows()
                 .values()
-                .any(|w| w.owner == me && w.paint && w.visible))
+                .any(|w| w.owner == me && w.paint))
 }
 /// QS_* category of a message.
 fn category(message: u32) -> u32 {
@@ -468,15 +511,7 @@ pub(crate) unsafe extern "win64" fn dispatch_message_w(message: *const Message) 
         return 0;
     }
     match procedure(m.window) {
-        Some(p) => {
-            let result = unsafe { p(m.window, m.message, m.wparam, m.lparam) };
-            if m.message == WM_PAINT {
-                // A window that does not validate keeps getting WM_PAINT; Windows
-                // validates after the procedure ran BeginPaint. Treat it as painted.
-                let _ = state::with_window(m.window, |w| w.paint = false);
-            }
-            result
-        }
+        Some(p) => unsafe { p(m.window, m.message, m.wparam, m.lparam) },
         None => fail(ERROR_WINDOW, 0),
     }
 }
@@ -485,6 +520,11 @@ pub(crate) extern "win64" fn get_message_time() -> i32 {
 }
 pub(crate) extern "win64" fn get_message_pos() -> u32 {
     let (_, p) = last_message();
+    static LAST: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(i64::MIN);
+    let point = (p.x as u32 as u64 | ((p.y as u32 as u64) << 32)) as i64;
+    if LAST.swap(point, std::sync::atomic::Ordering::Relaxed) != point {
+        super::input::trace_input(format_args!("GetMessagePos {},{}", p.x, p.y));
+    }
     pack(p.x, p.y) as u32
 }
 pub(crate) extern "win64" fn get_message_extra_info() -> isize {
@@ -596,11 +636,19 @@ pub(crate) unsafe extern "win64" fn msg_wait(
 }
 /// RegisterWindowMessage: one id (0xC000..0xFFFF) per name, case-insensitively.
 pub(crate) fn register_message(name: &str) -> u32 {
+    if name.is_empty() || name.encode_utf16().count() > 255 {
+        error::set(87);
+        return 0;
+    }
     static NAMES: Mutex<Vec<String>> = Mutex::new(Vec::new());
     let mut names = NAMES.lock().unwrap();
     let index = match names.iter().position(|n| n.eq_ignore_ascii_case(name)) {
         Some(i) => i,
         None => {
+            if names.len() >= 0x4000 {
+                error::set(8);
+                return 0;
+            }
             names.push(name.to_owned());
             names.len() - 1
         }

@@ -92,6 +92,7 @@ pub union Event {
     pub focus: Focus,
     pub configure: Configure,
     pub client: Client,
+    pub selection: Selection,
     pub pad: [c_long; 24],
 }
 const _: () = assert!(std::mem::size_of::<Event>() == 192);
@@ -124,3 +125,47 @@ pub struct SizeHints {
     pub base_height: c_int,
     pub win_gravity: c_int,
 }
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct Selection {
+    pub kind: c_int,
+    pub serial: c_ulong,
+    pub send_event: c_int,
+    pub display: *mut Display,
+    pub requestor: c_ulong,
+    pub selection: c_ulong,
+    pub target: c_ulong,
+    pub property: c_ulong,
+    pub time: c_ulong,
+}
+
+/// Native XWindowAttributes (LP64 Xlib layout).
+#[repr(C)]
+#[derive(Default)]
+pub struct Attributes {
+    pub x: i32,
+    pub y: i32,
+    pub width: i32,
+    pub height: i32,
+    pub border: i32,
+    pub depth: i32,
+    pub visual: usize,
+    pub root: u64,
+    pub class: i32,
+    pub bit_gravity: i32,
+    pub win_gravity: i32,
+    pub backing_store: i32,
+    pub backing_planes: u64,
+    pub backing_pixel: u64,
+    pub save_under: i32,
+    pub colormap: u64,
+    pub map_installed: i32,
+    pub map_state: i32,
+    pub all_events: i64,
+    pub your_events: i64,
+    pub do_not_propagate: i64,
+    pub override_redirect: i32,
+    pub screen: usize,
+}
+const _: () = assert!(std::mem::size_of::<Attributes>() == 136);

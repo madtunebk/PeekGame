@@ -9,9 +9,10 @@ In rough order of what the game hits next.
    Socket overlapped WSARecv/WSASend,
    AcceptEx/ConnectEx and AFD polling are still missing; unsupported calls fail.
    See `docs/discord-iocp.md`. Certificate-store/chain stops have since been fixed.
-2. **Audio**: WASAPI (MMDevAPI `IMMDeviceEnumerator`, `IAudioClient`,
-   `IAudioRenderClient`) on a host backend (PulseAudio/PipeWire). peek has
-   `wasapi.inc`. Without it the game runs silent or fails audio init.
+2. **Audio follow-up**: shared WASAPI playback through PulseAudio/PipeWire is
+   implemented and tested with captured float32/PCM16 samples and actual Unity menu
+   music. Capture, exclusive mode, session/endpoint volume, surround and device
+   notifications remain. See `docs/audio.md`.
 3. **Online play**: CRYPT32 ROOT/memory stores and OpenSSL BASE/SSL validation
    are implemented (see `docs/certificates.md`). Online revocation/AIA retrieval,
    richer certificate policies, WinHTTP requests if used, and async sockets
@@ -32,3 +33,11 @@ In rough order of what the game hits next.
    input/raw input, UCRT printf formatting, waitable timers, SuspendThread.
 9. **`--relink`** of a Unity game end to end (the relinked runtime shares all
    of the above; not tried with DXVK yet).
+
+## Native OpenGL update
+
+Native X11/GLX WGL and typed GL adapters are implemented. Gundam renders its main
+menu on private llvmpipe; PE and ELF GLSL/readback/context tests pass. See
+`docs/opengl.md`. Remaining: desktop window sizing confirmation, GL debug callback
+adapters, broader WGL formats, and the separate Godot WASAPI flags issue.
+MoveFileW now supports atomic same-filesystem moves without replacement.

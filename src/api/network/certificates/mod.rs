@@ -46,6 +46,9 @@ fn registry() -> &'static Mutex<Registry> {
     REGISTRY.get_or_init(|| Mutex::new(Registry::default()))
 }
 fn fail<T>(code: u32, value: T) -> T {
+    if std::env::var_os("PEEKGAME_TRACE_CERTS").is_some() {
+        eprintln!("crypt32: API failure {code:#x}");
+    }
     error::set(code);
     value
 }
@@ -308,3 +311,5 @@ fn same_identity(a: &Certificate, b: &Certificate) -> bool {
                 == std::slice::from_raw_parts(b.info.issuer.data, b.info.issuer.size as usize)
     }
 }
+
+pub(crate) mod properties;

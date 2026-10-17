@@ -8,6 +8,13 @@ use crate::api::threading::timers;
 use crate::api::threading::{address, fls, once, slist, srw};
 use crate::api::threading::{critical, tls};
 exports! {
+    implemented!("GetThreadTimes", "threading", "partial", "real task creation/CPU times; retained accounting after runtime thread exit", crate::api::threading::thread_times::get),
+    export!("avrt.dll", "AvSetMmThreadCharacteristicsW", "threading", "partial", "MMCSS unavailable: NULL/ERROR_NOT_SUPPORTED; normal scheduling preserved", crate::api::threading::avrt::characteristics),
+    export!("avrt.dll", "AvSetMmThreadCharacteristicsA", "threading", "partial", "MMCSS unavailable: NULL/ERROR_NOT_SUPPORTED; normal scheduling preserved", crate::api::threading::avrt::characteristics),
+    export!("avrt.dll", "AvRevertMmThreadCharacteristics", "threading", "partial", "no registered MMCSS handles: ERROR_INVALID_HANDLE", crate::api::threading::avrt::revert),
+    export!("avrt.dll", "AvSetMmThreadPriority", "threading", "partial", "no registered MMCSS handles: ERROR_INVALID_HANDLE", crate::api::threading::avrt::priority),
+
+    implemented!("OpenMutexW", "threading", "partial", "process-local named mutexes with independent handle lifetimes", crate::api::threading::objects::open_mutex_w),
     implemented!("ExitThread", "threading", "partial", "Windows-created threads; TLS detach and exit status", crate::host::thread_entry::exit),
     implemented!("FreeLibraryAndExitThread", "threading", "partial", "release module reference then terminate calling Windows thread", crate::host::thread_entry::free_and_exit),
     implemented!(
@@ -417,6 +424,27 @@ exports! {
         threads::get_exit_code
     ),
     implemented!(
+        "ConvertThreadToFiber",
+        "threading",
+        "partial",
+        "converts calling thread to fiber and sets gs:0x20",
+        threads::convert_thread_to_fiber
+    ),
+    implemented!(
+        "ConvertThreadToFiberEx",
+        "threading",
+        "partial",
+        "converts calling thread to fiber and sets gs:0x20",
+        threads::convert_thread_to_fiber_ex
+    ),
+    implemented!(
+        "ConvertFiberToThread",
+        "threading",
+        "partial",
+        "clears fiber state at gs:0x20",
+        threads::convert_fiber_to_thread
+    ),
+    implemented!(
         "CreateEventA",
         "threading",
         "partial",
@@ -534,5 +562,19 @@ exports! {
         "partial",
         "retires initialized critical section",
         critical::delete
+    ),
+    implemented!(
+        "FlushProcessWriteBuffers",
+        "threading",
+        "implemented",
+        "SeqCst memory fence",
+        threads::flush_process_write_buffers
+    ),
+    implemented!(
+        "GetCurrentProcessorNumber",
+        "threading",
+        "implemented",
+        "sched_getcpu",
+        threads::current_processor_number
     ),
 }
