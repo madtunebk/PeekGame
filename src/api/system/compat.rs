@@ -541,12 +541,10 @@ pub unsafe extern "win64" fn path_append_w(path: *mut u16, more: *const u16) -> 
             }
         }
         if p_len > 0 && *path.add(p_len - 1) != b'\\' as u16 && *path.add(p_len - 1) != b'/' as u16
-        {
-            if p_len + 1 < 260 {
+            && p_len + 1 < 260 {
                 *path.add(p_len) = b'\\' as u16;
                 p_len += 1;
             }
-        }
         let copy_len = m_slice.len().min(259usize.saturating_sub(p_len));
         std::ptr::copy_nonoverlapping(m_slice.as_ptr(), path.add(p_len), copy_len);
         *path.add(p_len + copy_len) = 0;

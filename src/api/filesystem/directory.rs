@@ -134,7 +134,7 @@ pub unsafe extern "win64" fn query(
         } else {
             let bytes = unsafe { mask.cast::<u16>().read_unaligned() } as usize;
             let text = unsafe { mask.add(8).cast::<*const u16>().read_unaligned() };
-            if bytes % 2 != 0 || text.is_null() {
+            if !bytes.is_multiple_of(2) || text.is_null() {
                 return finish(io, 0xc000000d, 0);
             }
             match String::from_utf16(unsafe { std::slice::from_raw_parts(text, bytes / 2) }) {

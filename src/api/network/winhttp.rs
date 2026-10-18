@@ -638,11 +638,10 @@ pub extern "win64" fn send_request(
     if method == "POST" {
         for header in &all_headers {
             if let Some((name, value)) = header.split_once(':') {
-                if name.trim().eq_ignore_ascii_case("Content-Length") {
-                    if value.trim().parse::<u32>().ok() != Some(total_length) {
+                if name.trim().eq_ignore_ascii_case("Content-Length")
+                    && value.trim().parse::<u32>().ok() != Some(total_length) {
                         return fail(ERROR_INVALID_PARAMETER, 0);
                     }
-                }
             }
         }
     }
@@ -825,9 +824,9 @@ pub unsafe extern "win64" fn query_data_available(handle: usize, available: usiz
 pub unsafe extern "win64" fn read_data(handle: usize, buffer: usize, length: u32, read: usize) -> i32 {
     if buffer == 0 && length != 0 { return fail(ERROR_INVALID_PARAMETER, 0); }
     let result = with(|h| {
-        let Some(e) = h.get_mut(&handle) else { return None; };
+        let e = h.get_mut(&handle)?;
         if !e.asynchronous && read == 0 { return Some(Err(ERROR_INVALID_PARAMETER)); }
-        let Some(r) = e.response.as_mut() else { return None; };
+        let r = e.response.as_mut()?;
         let n = (length as usize).min(r.body.len() - r.cursor);
         if n != 0 { unsafe { std::ptr::copy_nonoverlapping(r.body.as_ptr().add(r.cursor), buffer as *mut u8, n) }; }
         r.cursor += n;

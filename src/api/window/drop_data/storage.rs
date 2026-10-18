@@ -40,7 +40,7 @@ pub(crate) unsafe extern "win64" fn query_file(
     }
     let offset = u32::from_le_bytes(bytes[..4].try_into().unwrap()) as usize;
     if offset < 20
-        || offset % 2 != 0
+        || !offset.is_multiple_of(2)
         || offset > bytes.len() - 4
         || u32::from_le_bytes(bytes[16..20].try_into().unwrap()) != 1
     {

@@ -887,7 +887,7 @@ pub(crate) unsafe extern "win64" fn screen_to_client(hwnd: usize, point: *mut Po
         return fail(87, 0);
     }
     unsafe {
-        let before = (*point).clone();
+        let before = *point;
         (*point).x -= r.left;
         (*point).y -= r.top;
         static LAST: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(i64::MIN);

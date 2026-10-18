@@ -23,7 +23,7 @@ static STEAMCLIENT_MAPPING: OnceLock<(usize, usize)> = OnceLock::new();
 
 pub(crate) fn recognizes(name: &str) -> bool {
     let clean = name.trim_end_matches('.');
-    let file = clean.rsplit(|c| c == '/' || c == '\\').next().unwrap_or(clean);
+    let file = clean.rsplit(['/', '\\']).next().unwrap_or(clean);
     file.eq_ignore_ascii_case("steamclient64.dll") || file.eq_ignore_ascii_case("steamclient64")
 }
 

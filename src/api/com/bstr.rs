@@ -208,7 +208,7 @@ pub unsafe extern "win64" fn variant_copy(dest: *mut u8, src: *const u8) -> i32 
     if dest.is_null() || src.is_null() {
         return 0x8007_0057u32 as i32;
     }
-    if dest as *const u8 == src {
+    if std::ptr::eq(dest, src) {
         return 0;
     }
     unsafe {

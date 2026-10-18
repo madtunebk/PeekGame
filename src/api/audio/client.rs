@@ -42,7 +42,7 @@ unsafe extern "win64" fn initialize(
     if flags & !0x881c0000 != 0 {
         return 0x88890021u32 as H;
     }
-    if duration < 0 || duration > 20_000_000 {
+    if !(0..=20_000_000).contains(&duration) {
         return ARG;
     }
     let Some(f) = (unsafe { format::parse(wave) }) else {

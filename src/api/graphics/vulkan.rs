@@ -620,7 +620,7 @@ fn wrap_messenger(
     win: &DebugUtilsMessengerCreateInfo,
 ) -> (DebugUtilsMessengerCreateInfo, *mut DebugWrap) {
     let wrap = Box::into_raw(Box::new(DebugWrap {
-        callback: unsafe { std::mem::transmute(win.callback) },
+        callback: unsafe { std::mem::transmute::<usize, WinDebugCallback>(win.callback) },
         user: win.user_data,
     }));
     let mut host = *win;

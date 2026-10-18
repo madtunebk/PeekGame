@@ -74,6 +74,7 @@ impl Drop for Easy {
 }
 
 /// Returns a Windows WinHTTP error on failure.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn fetch(host: &str, port: u16, method: &str, path: &str, secure: bool, connect_ms: i32, receive_ms: i32, headers: &[String], request_body: &[u8]) -> Result<Response, u32> {
     static INIT: OnceLock<i32> = OnceLock::new();
     if *INIT.get_or_init(|| unsafe { curl_global_init(3) }) != 0 { return Err(12029); }

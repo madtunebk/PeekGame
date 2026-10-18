@@ -18,6 +18,9 @@ struct Mono {
     current: unsafe extern "win64" fn() -> P,
 }
 impl Mono {
+    // The transmute targets are the struct's fn-pointer fields; spelling each one out
+    // again at the call site adds noise without clarity.
+    #[allow(clippy::missing_transmute_annotations)]
     fn load() -> Option<Self> {
         let module = crate::images::by_name("mono-2.0-bdwgc.dll")?;
         let get = |name| crate::images::export(&module, Some(name), None, 0);

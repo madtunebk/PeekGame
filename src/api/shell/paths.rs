@@ -41,9 +41,8 @@ pub unsafe extern "win64" fn combine_w(
     let combined = if file_str.starts_with('\\')
         || file_str.starts_with('/')
         || (file_str.len() >= 2 && file_str.as_bytes()[1] == b':')
+        || dir_str.is_empty()
     {
-        file_str
-    } else if dir_str.is_empty() {
         file_str
     } else if dir_str.ends_with('\\') || dir_str.ends_with('/') {
         format!("{dir_str}{file_str}")
@@ -94,10 +93,10 @@ fn canonicalize(path: &str) -> String {
     let (prefix, rest) = if let Some(idx) = normalized.find(':') {
         let (p, r) = normalized.split_at(idx + 1);
         (p.to_string(), r)
-    } else if normalized.starts_with(r"\\") {
-        (r"\\".to_string(), &normalized[2..])
-    } else if normalized.starts_with('\\') {
-        (r"\".to_string(), &normalized[1..])
+    } else if let Some(rest) = normalized.strip_prefix(r"\\") {
+        (r"\\".to_string(), rest)
+    } else if let Some(rest) = normalized.strip_prefix('\\') {
+        (r"\".to_string(), rest)
     } else {
         (String::new(), normalized.as_str())
     };

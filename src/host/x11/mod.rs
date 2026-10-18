@@ -194,7 +194,7 @@ impl Connection {
                 return Err(8);
             }
             ffi::XSelectInput(self.display, window, EVENT_MASK);
-            if parent==0{let mut hints=types::SizeHints::default();hints.flags=1<<2;hints.x=x;hints.y=y;ffi::XSetWMNormalHints(self.display,window,&mut hints);}
+            if parent==0{let mut hints=types::SizeHints{flags:1<<2,x,y,..Default::default()};ffi::XSetWMNormalHints(self.display,window,&mut hints);}
 
             if parent == 0 {
                 if let Some(class) = identity::property() {

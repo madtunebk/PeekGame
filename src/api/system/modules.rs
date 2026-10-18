@@ -67,11 +67,7 @@ fn module_handle_ex(flags: u32, name: Option<String>, address: usize, out: *mut 
             Some((m.base, Some(m)))
         } else if crate::api::steam::recognizes_address(address) {
             Some((crate::api::steam::base_address(), None))
-        } else if let Some(dll) = registry::by_address(address) {
-            Some((builtin_handle(dll), None))
-        } else {
-            None
-        }
+        } else { registry::by_address(address).map(|dll| (builtin_handle(dll), None)) }
     } else if address == 0 {
         let base = main_image();
         (base != 0).then(|| (base, images::by_handle(base)))

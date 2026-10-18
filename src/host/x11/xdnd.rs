@@ -108,7 +108,7 @@ impl Connection {
                 window,
                 property,
                 0,
-                ((max + 3) / 4) as i64,
+                max.div_ceil(4) as i64,
                 0,
                 0,
                 &mut kind,

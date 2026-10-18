@@ -46,6 +46,9 @@ struct OwnedChain {
     chain: Box<Chain>,
     _simple: Box<Simple>,
     _chains: Box<[*const Simple]>,
+    // Each Element is boxed for a stable address: `_pointers` holds `*const Element`
+    // into these, so the Vec's own buffer must not be what they point at.
+    #[allow(clippy::vec_box)]
     _elements: Vec<Box<Element>>,
     _pointers: Box<[*const Element]>,
     contexts: Vec<usize>,
