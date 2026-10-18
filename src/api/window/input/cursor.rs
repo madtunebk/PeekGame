@@ -96,6 +96,26 @@ pub(crate) unsafe extern "win64" fn clip_cursor(rect: *const Rect) -> i32 {
     apply_clip(r);
     1
 }
+/// During camera capture — the cursor is hidden (ShowCursor < 0) and confined by
+/// ClipCursor — keep the pointer near the centre of the clip rectangle so relative
+/// (raw) motion never stops at a screen or window edge, as it would on Windows where
+/// the device keeps reporting deltas. Called after a raw motion with the pointer at
+/// (`x`, `y`) in screen coordinates; returns the new centre when it warped there, so
+/// the raw delta anchor can follow. Only warps once the pointer leaves the central
+/// half, to keep warps rare.
+pub(super) fn recenter_captured(x: i32, y: i32) -> Option<(i32, i32)> {
+    if SHOW.load(Ordering::Acquire) >= 0 {
+        return None;
+    }
+    let r = (*CLIP.lock().unwrap())?;
+    let (cx, cy) = ((r.left + r.right) / 2, (r.top + r.bottom) / 2);
+    if (x - cx).abs() * 4 <= (r.right - r.left) && (y - cy).abs() * 4 <= (r.bottom - r.top) {
+        return None; // still well inside: no warp needed yet
+    }
+    let c = connection().ok()?;
+    c.warp(cx, cy);
+    Some((cx, cy))
+}
 /// Focus left the program: release the X grab so other applications get the pointer
 /// (the clip rectangle stays recorded, as for Windows' foreground switch).
 pub(in crate::api::window) fn suspend_clip() {

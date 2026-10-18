@@ -145,9 +145,17 @@ pub(in crate::api::window) fn raw_mouse(
     };
     let (dx, dy) = match x_root {
         Some((x, y)) => {
-            let mut raw = RAW.lock().unwrap();
-            let delta = raw.last.map_or((0, 0), |(lx, ly)| (x - lx, y - ly));
-            raw.last = Some((x, y));
+            let delta = {
+                let mut raw = RAW.lock().unwrap();
+                let delta = raw.last.map_or((0, 0), |(lx, ly)| (x - lx, y - ly));
+                raw.last = Some((x, y));
+                delta
+            };
+            // While the game captures the mouse for camera look (cursor hidden and
+            // clipped), recenter the pointer so raw deltas never stop at an edge.
+            if let Some(center) = super::cursor::recenter_captured(x, y) {
+                RAW.lock().unwrap().last = Some(center);
+            }
             delta
         }
         None => (0, 0),
