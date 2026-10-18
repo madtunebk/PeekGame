@@ -494,6 +494,20 @@ pub(crate) unsafe extern "win64" fn create_swapchain(
     if let Some(mode) = override_mode {
         unsafe { slot.write_unaligned(mode) };
     }
+    // PEEKGAME_VULKAN_IMAGES caps the swapchain image count (VkSwapchainCreateInfoKHR
+    // .minImageCount @32). FIFO with a deep queue adds frames of latency; clamping to
+    // 2-3 keeps vsync's low GPU use with a short, low-latency queue. Only lowers the
+    // count the program asked for, never below 2 (the FIFO minimum).
+    if let Ok(cap) = std::env::var("PEEKGAME_VULKAN_IMAGES") {
+        if let Ok(cap) = cap.trim().parse::<u32>() {
+            let field = unsafe { (info as *const u8).add(32) as *mut u32 };
+            let requested = unsafe { field.read_unaligned() };
+            let wanted = cap.max(2);
+            if wanted < requested {
+                unsafe { field.write_unaligned(wanted) };
+            }
+        }
+    }
     if std::env::var_os("PEEKGAME_TRACE_WINDOW").is_some() {
         // VkSwapchainCreateInfoKHR.imageExtent @44 (width) and @48 (height).
         let (w, h) = unsafe { ((info as *const u8).add(44).cast::<u32>().read_unaligned(), (info as *const u8).add(48).cast::<u32>().read_unaligned()) };
