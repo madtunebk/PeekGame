@@ -67,3 +67,7 @@ __pycache__/
 
 # Steam bridge test executable built by tests
 native/steam_bridge/test_bridge
+
+# Conversation exports and raw logs
+/20??-*-*.txt
+docs/error.txt
