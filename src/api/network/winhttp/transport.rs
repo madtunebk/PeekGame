@@ -16,7 +16,8 @@ const CURLOPT_POSTFIELDS: u32 = 10015;
 const CURLOPT_POSTFIELDSIZE_LARGE: u32 = 30120;
 const CURLOPT_NOSIGNAL: u32 = 99;
 const CURLOPT_CONNECTTIMEOUT_MS: u32 = 156;
-const CURLOPT_TIMEOUT_MS: u32 = 155;
+const CURLOPT_LOW_SPEED_LIMIT: u32 = 19;
+const CURLOPT_LOW_SPEED_TIME: u32 = 20;
 const CURLINFO_RESPONSE_CODE: u32 = 0x20_0002;
 const MAX_BODY: usize = 16 * 1024 * 1024;
 
@@ -73,7 +74,7 @@ impl Drop for Easy {
 }
 
 /// Returns a Windows WinHTTP error on failure.
-pub(super) fn fetch(host: &str, port: u16, method: &str, path: &str, secure: bool, connect_ms: i32, total_ms: i32, headers: &[String], request_body: &[u8]) -> Result<Response, u32> {
+pub(super) fn fetch(host: &str, port: u16, method: &str, path: &str, secure: bool, connect_ms: i32, receive_ms: i32, headers: &[String], request_body: &[u8]) -> Result<Response, u32> {
     static INIT: OnceLock<i32> = OnceLock::new();
     if *INIT.get_or_init(|| unsafe { curl_global_init(3) }) != 0 { return Err(12029); }
     if !matches!(method, "GET" | "HEAD" | "POST") || !path.starts_with('/') || host.contains(['/', '\r', '\n', '@']) {
@@ -107,7 +108,10 @@ pub(super) fn fetch(host: &str, port: u16, method: &str, path: &str, secure: boo
             && unsafe { curl_easy_setopt(easy.0, CURLOPT_POSTFIELDS, request_body.as_ptr()) } == 0
             && unsafe { curl_easy_setopt(easy.0, CURLOPT_POSTFIELDSIZE_LARGE, request_body.len() as i64) } == 0))
         && (connect_ms <= 0 || set(CURLOPT_CONNECTTIMEOUT_MS, connect_ms as c_long) == 0)
-        && (total_ms <= 0 || set(CURLOPT_TIMEOUT_MS, total_ms as c_long) == 0);
+        // WinHTTP's receive timeout bounds the wait for data, not the whole transfer:
+        // fail when nothing arrives for that long (curl's low-speed limit of 1 byte/s).
+        && (receive_ms <= 0 || (set(CURLOPT_LOW_SPEED_LIMIT, 1) == 0
+            && set(CURLOPT_LOW_SPEED_TIME, ((receive_ms as c_long) + 999) / 1000) == 0));
     if !configured { return Err(12009); }
     let code = unsafe { curl_easy_perform(easy.0) };
     if code != 0 {

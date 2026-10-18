@@ -64,6 +64,38 @@ exports! {
         "%NAME% from the process environment",
         environment::expand_w
     ),
+    export!(
+        "userenv.dll",
+        "RegisterGPNotification",
+        "system",
+        "implemented",
+        "group policy change notification stub",
+        environment::register_gp_notification
+    ),
+    export!(
+        "userenv.dll",
+        "UnregisterGPNotification",
+        "system",
+        "implemented",
+        "group policy change notification unregister stub",
+        environment::unregister_gp_notification
+    ),
+    export!(
+        "userenv.dll",
+        "GetUserProfileDirectoryW",
+        "system",
+        "implemented",
+        "user profile directory",
+        environment::get_user_profile_directory_w
+    ),
+    export!(
+        "userenv.dll",
+        "GetUserProfileDirectoryA",
+        "system",
+        "implemented",
+        "user profile directory",
+        environment::get_user_profile_directory_a
+    ),
     implemented!(
         "SetUnhandledExceptionFilter",
         "system",
@@ -166,8 +198,8 @@ exports! {
         "GetLastError",
         "system",
         "implemented",
-        "per-thread Win32 error state; TEB not provided yet",
-        error::get_last_error
+        "per-thread Win32 error state; TEB not provided yet; PEEKGAME_TRACE_LAST_ERROR logs nonzero reads",
+        error::get_last_error_traced
     ),
     implemented!(
         "GetCommandLineA",

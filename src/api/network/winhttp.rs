@@ -32,6 +32,11 @@ const STATUS_READ_COMPLETE: u32 = 0x0008_0000;
 const STATUS_WRITE_COMPLETE: u32 = 0x0010_0000;
 const API_SEND_REQUEST: usize = 5;
 const OPTION_CONTEXT_VALUE: u32 = 45;
+/// WINHTTP_OPTION_RESOLVE/CONNECT/SEND/RECEIVE/RECEIVE_RESPONSE_TIMEOUT.
+const TIMEOUT_OPTIONS: &[u32] = &[2, 3, 5, 6, 7];
+/// WinHTTP's default connect and receive timeouts (ms) when none was set.
+const DEFAULT_CONNECT_MS: i32 = 60_000;
+const DEFAULT_RECEIVE_MS: i32 = 30_000;
 /// WINHTTP_INVALID_STATUS_CALLBACK.
 const INVALID_CALLBACK: usize = usize::MAX;
 /// Options that only shape a connection; they are kept per handle, but no
@@ -81,6 +86,100 @@ fn fail<T>(code: u32, value: T) -> T {
 }
 fn with<T>(f: impl FnOnce(&mut HashMap<usize, Handle>) -> T) -> T {
     f(HANDLES.lock().unwrap().get_or_insert_with(HashMap::new))
+}
+/// An HTTP date as SYSTEMTIME fields (year, month, day of week, day, hour, minute,
+/// second, milliseconds). Accepts RFC 1123 ("Sun, 06 Nov 1994 08:49:37 GMT"),
+/// RFC 850 ("Sunday, 06-Nov-94 08:49:37 GMT") and asctime ("Sun Nov  6 08:49:37 1994");
+/// the day of week is computed from the date.
+fn http_date(text: &str) -> Option<[u16; 8]> {
+    const MONTHS: [&str; 12] = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+    let month_of = |m: &str| MONTHS.iter().position(|x| m.eq_ignore_ascii_case(x)).map(|i| i as u32 + 1);
+    let clock = |t: &str| -> Option<(u32, u32, u32)> {
+        let mut parts = t.split(':').map(|p| p.parse::<u32>().ok());
+        let (h, m, s) = (parts.next()??, parts.next()??, parts.next()??);
+        (parts.next().is_none() && h < 24 && m < 60 && s < 61).then_some((h, m, s.min(59)))
+    };
+    let words: Vec<&str> = text.split_whitespace().collect();
+    let (year, month, day, (hour, minute, second)) = match words.as_slice() {
+        [_, day, month, year, time, zone] if zone.eq_ignore_ascii_case("GMT") || zone.eq_ignore_ascii_case("UTC") => {
+            (year.parse::<u32>().ok()?, month_of(month)?, day.parse::<u32>().ok()?, clock(time)?)
+        }
+        [_, date, time, zone] if zone.eq_ignore_ascii_case("GMT") => {
+            let mut parts = date.split('-');
+            let (day, month, year) = (parts.next()?, parts.next()?, parts.next()?);
+            let year: u32 = year.parse().ok()?;
+            let year = if year < 100 { if year < 70 { 2000 + year } else { 1900 + year } } else { year };
+            (year, month_of(month)?, day.parse::<u32>().ok()?, clock(time)?)
+        }
+        [_, month, day, time, year] => (year.parse::<u32>().ok()?, month_of(month)?, day.parse::<u32>().ok()?, clock(time)?),
+        _ => return None,
+    };
+    let leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+    let days_in_month = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month as usize - 1];
+    if !(1601..=30827).contains(&year) || day == 0 || day > days_in_month {
+        return None;
+    }
+    // Day of week (0 = Sunday) by Sakamoto's method.
+    let t = [0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4];
+    let y = if month < 3 { year - 1 } else { year };
+    let weekday = (y + y / 4 - y / 100 + y / 400 + t[month as usize - 1] + day) % 7;
+    Some([year as u16, month as u16, weekday as u16, day as u16, hour as u16, minute as u16, second as u16, 0])
+}
+/// Response bodies are printed for PlayFab MultiplayerServer calls (the Party QoS server
+/// list) under PEEKGAME_TRACE_HTTP, or for every request with PEEKGAME_TRACE_HTTP_BODY.
+/// String values under credential-like keys are replaced before printing.
+fn trace_body(target: &str, body: &[u8]) {
+    static ALL: OnceLock<bool> = OnceLock::new();
+    let all = *ALL.get_or_init(|| std::env::var_os("PEEKGAME_TRACE_HTTP_BODY").is_some());
+    if !all && !target.contains("/MultiplayerServer/") {
+        return;
+    }
+    let text = String::from_utf8_lossy(&body[..body.len().min(16 * 1024)]);
+    eprintln!("[http] body {target}: {}", redact_json(&text));
+}
+/// Replaces the string value after any JSON key that names a credential.
+fn redact_json(text: &str) -> String {
+    const SENSITIVE: &[&str] = &["token", "ticket", "auth", "password", "secret", "session", "signature", "cookie", "key"];
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.char_indices().peekable();
+    let mut last_key: Option<String> = None;
+    let mut expect_value = false;
+    while let Some((_, c)) = chars.next() {
+        if c != '"' {
+            if c == ':' && last_key.is_some() {
+                expect_value = true;
+            } else if !c.is_whitespace() {
+                expect_value = false;
+                if c != ':' { last_key = None; }
+            }
+            out.push(c);
+            continue;
+        }
+        let mut literal = String::new();
+        while let Some((_, d)) = chars.next() {
+            if d == '\\' {
+                literal.push(d);
+                if let Some((_, e)) = chars.next() { literal.push(e); }
+            } else if d == '"' {
+                break;
+            } else {
+                literal.push(d);
+            }
+        }
+        if expect_value {
+            let key = last_key.take().unwrap_or_default().to_ascii_lowercase();
+            if SENSITIVE.iter().any(|word| key.contains(word)) {
+                out.push_str("\"<redacted>\"");
+            } else {
+                out.push('"'); out.push_str(&literal); out.push('"');
+            }
+            expect_value = false;
+        } else {
+            out.push('"'); out.push_str(&literal); out.push('"');
+            last_key = Some(literal);
+        }
+    }
+    out
 }
 unsafe fn trace_headers(source: &str, ptr: *const u16, length: u32) {
     if !trace() || ptr.is_null() || length == 0 { return; }
@@ -243,7 +342,8 @@ fn create_child(parent: usize, parent_kind: Kind, kind: Kind, target: String) ->
             response: None,
             pending: None,
             headers: Vec::new(),
-            options: HashMap::new(),
+            // Timeouts set on a session or connection apply to the handles created from it.
+            options: p.options.iter().filter(|(k, _)| TIMEOUT_OPTIONS.contains(k)).map(|(k, v)| (*k, v.clone())).collect(),
         };
         h.insert(handle, child);
         Ok(())
@@ -473,7 +573,7 @@ extern "win64" fn fetch_worker(context: usize) -> u32 {
     let job = unsafe { Box::from_raw(context as *mut FetchJob) };
     match transport::fetch(&job.host, job.port, &job.method, &job.path, job.secure, job.connect_ms, job.total_ms, &job.headers, &job.body) {
         Ok(response) => {
-            if trace() { eprintln!("[http] WinHttpSendRequest {}: HTTP {} ({} body bytes)", job.target, response.status, response.body.len()); }
+            if trace() { eprintln!("[http] WinHttpSendRequest {}: HTTP {} ({} body bytes)", job.target, response.status, response.body.len()); trace_body(&job.target, &response.body); }
             let alive = with(|h| {
                 if let Some(e) = h.get_mut(&job.handle) {
                     e.response = Some(response);
@@ -526,8 +626,13 @@ pub extern "win64" fn send_request(
         e.headers.extend(extra_headers);
         e.response = None;
         e.pending = None;
-        let timeout = |key| e.options.get(&key).and_then(|b| b.get(..4)).map(|b| i32::from_le_bytes(b.try_into().unwrap())).unwrap_or(0);
-        (e.asynchronous, e.target.clone(), e.host.clone(), e.port, e.method.clone(), e.path.clone(), e.secure, timeout(3), timeout(6), e.headers.clone())
+        // Unset: WinHTTP's defaults. 0 or -1: no limit (passed on as 0).
+        let timeout = |key, default| match e.options.get(&key).and_then(|b| b.get(..4)).map(|b| i32::from_le_bytes(b.try_into().unwrap())) {
+            None => default,
+            Some(v) if v <= 0 => 0,
+            Some(v) => v,
+        };
+        (e.asynchronous, e.target.clone(), e.host.clone(), e.port, e.method.clone(), e.path.clone(), e.secure, timeout(3, DEFAULT_CONNECT_MS), timeout(6, DEFAULT_RECEIVE_MS), e.headers.clone())
     });
     if method != "POST" && total_length != 0 { return fail(50, 0); }
     if method == "POST" {
@@ -554,7 +659,7 @@ pub extern "win64" fn send_request(
         match transport::fetch(&job.host, job.port, &job.method, &job.path, job.secure,
             job.connect_ms, job.total_ms, &job.headers, &job.body) {
             Ok(response) => {
-                if trace() { eprintln!("[http] WinHttpSendRequest {}: HTTP {} ({} body bytes)", job.target, response.status, response.body.len()); }
+                if trace() { eprintln!("[http] WinHttpSendRequest {}: HTTP {} ({} body bytes)", job.target, response.status, response.body.len()); trace_body(&job.target, &response.body); }
                 with(|h| { if let Some(e) = h.get_mut(&handle) { e.response = Some(response); } });
                 error::set(0);
                 return 1;
@@ -607,7 +712,7 @@ pub extern "win64" fn receive_response(handle: usize, _reserved: usize) -> i32 {
         match transport::fetch(&job.host, job.port, &job.method, &job.path, job.secure,
             job.connect_ms, job.total_ms, &job.headers, &job.body) {
             Ok(response) => {
-                if trace() { eprintln!("[http] WinHttpReceiveResponse {}: HTTP {} ({} body bytes)", job.target, response.status, response.body.len()); }
+                if trace() { eprintln!("[http] WinHttpReceiveResponse {}: HTTP {} ({} body bytes)", job.target, response.status, response.body.len()); trace_body(&job.target, &response.body); }
                 with(|h| { if let Some(e) = h.get_mut(&handle) { e.response = Some(response); } });
                 error::set(0);
                 return 1;
@@ -662,16 +767,27 @@ pub unsafe extern "win64" fn query_headers(
         (r.status, text)
     }));
     let Some((status, value)) = result else { return no_response(handle); };
-    if flags & SYSTEMTIME != 0 {
-        if trace() { eprintln!("[http] WinHttpQueryHeaders SYSTEMTIME conversion unsupported -> ERROR_NOT_SUPPORTED (50)"); }
-        return fail(50, 0);
-    }
-    if flags & !NUMBER != 0 { return fail(50, 0); }
+    if flags & !(NUMBER | SYSTEMTIME) != 0 || flags & NUMBER != 0 && flags & SYSTEMTIME != 0 { return fail(50, 0); }
     if length == 0 { return fail(ERROR_INVALID_PARAMETER, 0); }
     let Some(value) = value else {
         if trace() { eprintln!("[http] WinHttpQueryHeaders level={level:#x} -> HEADER_NOT_FOUND"); }
         return fail(HEADER_NOT_FOUND, 0);
     };
+    if flags & SYSTEMTIME != 0 {
+        const ERROR_WINHTTP_INVALID_HEADER: u32 = 12153;
+        let Some(time) = http_date(&value) else {
+            if trace() { eprintln!("[http] WinHttpQueryHeaders level={level:#x} {value:?} is not an HTTP date"); }
+            return fail(ERROR_WINHTTP_INVALID_HEADER, 0);
+        };
+        let capacity = unsafe { *(length as *mut u32) };
+        unsafe { *(length as *mut u32) = 16; }
+        if buffer == 0 || capacity < 16 { return fail(INSUFFICIENT_BUFFER, 0); }
+        unsafe { std::ptr::copy_nonoverlapping(time.as_ptr(), buffer as *mut u16, 8); }
+        if index != 0 { unsafe { *(index as *mut u32) = 0; } }
+        if trace() { eprintln!("[http] WinHttpQueryHeaders level={level:#x} {value:?} -> SYSTEMTIME {time:?}"); }
+        error::set(0);
+        return 1;
+    }
     if query == 1 && trace() { eprintln!("[http] WinHttpQueryHeaders Content-Type -> {value:?}"); }
     if flags & NUMBER != 0 {
         let number = if query == 19 { Some(status) } else { value.parse::<u32>().ok() };
@@ -767,10 +883,44 @@ pub unsafe extern "win64" fn ie_proxy_config(out: *mut u8) -> i32 {
     unsafe { out.write_bytes(0, 32) };
     1
 }
+
+pub unsafe extern "win64" fn default_proxy_config(out: *mut u8) -> i32 {
+    if out.is_null() {
+        return fail(ERROR_INVALID_PARAMETER, 0);
+    }
+    unsafe {
+        out.write_bytes(0, 24);
+        (out as *mut u32).write_unaligned(1); // WINHTTP_ACCESS_TYPE_NO_PROXY
+    }
+    1
+}
+
 /// WinHttpGetProxyForUrl: ERROR_WINHTTP_AUTODETECTION_FAILED (no proxy script).
 pub extern "win64" fn proxy_for_url(_session: usize, _url: usize, _options: usize, _info: usize) -> i32 {
     fail(ERROR_WINHTTP_AUTODETECTION_FAILED, 0)
 }
 pub extern "win64" fn check_platform() -> i32 {
     1
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn http_dates_to_systemtime() {
+        let expected = Some([1994, 11, 0, 6, 8, 49, 37, 0]);
+        assert_eq!(super::http_date("Sun, 06 Nov 1994 08:49:37 GMT"), expected);
+        assert_eq!(super::http_date("Sunday, 06-Nov-94 08:49:37 GMT"), expected);
+        assert_eq!(super::http_date("Sun Nov  6 08:49:37 1994"), expected);
+        assert_eq!(super::http_date("Sun, 18 Oct 2026 02:03:04 GMT"), Some([2026, 10, 0, 18, 2, 3, 4, 0]));
+        assert_eq!(super::http_date("Mon, 31 Feb 2026 00:00:00 GMT"), None);
+        assert_eq!(super::http_date("not a date"), None);
+    }
+    #[test]
+    fn redact_json_hides_credentials_only() {
+        let body = r#"{"code":200,"data":{"SessionTicket":"abc\"def","EntityToken":{"EntityToken":"xyz"},"QosServers":[{"ServerUrl":"q.example.net","Region":"EastUs"}]}}"#;
+        let out = super::redact_json(body);
+        assert!(!out.contains("abc") && !out.contains("xyz"), "{out}");
+        assert!(out.contains(r#""ServerUrl":"q.example.net""#) && out.contains(r#""Region":"EastUs""#), "{out}");
+        assert!(out.contains(r#""code":200"#), "{out}");
+    }
 }
