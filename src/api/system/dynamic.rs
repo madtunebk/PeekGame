@@ -211,7 +211,10 @@ pub unsafe extern "win64" fn get_proc_address(module: usize, name: *const c_char
         },
     );
     if address.is_none() {
-        eprintln!("GetProcAddress({dll}, {text}) -> None");
+        static VERBOSE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if *VERBOSE.get_or_init(|| std::env::var_os("PEEKGAME_VERBOSE").is_some()) {
+            eprintln!("GetProcAddress({dll}, {text}) -> None");
+        }
     }
     match address {
         Some(address) => address as *const c_void,
@@ -222,7 +225,8 @@ pub unsafe extern "win64" fn get_proc_address(module: usize, name: *const c_char
     }
 }
 pub extern "win64" fn free_library(module: usize) -> i32 {
-    if builtin_name(module).is_some() {
+    // Built-in DLLs and the Steam bridge stay loaded for the whole process.
+    if builtin_name(module).is_some() || crate::api::steam::loaded() && module == crate::api::steam::base_address() {
         return 1;
     }
     match images::by_handle(module) {
@@ -256,6 +260,56 @@ pub unsafe extern "win64" fn set_dll_directory_w(path: *const u16) -> i32 {
 }
 pub unsafe extern "win64" fn set_dll_directory_a(path: *const c_char) -> i32 {
     set_dll_directory(unsafe { narrow(path) }.as_deref())
+}
+pub unsafe extern "win64" fn get_dll_directory_w(n_buffer_length: u32, lp_buffer: *mut u16) -> u32 {
+    let dir = images::get_dll_directory();
+    let s = match dir {
+        Some(s) => s,
+        None => {
+            error::set(0);
+            if n_buffer_length > 0 && !lp_buffer.is_null() {
+                unsafe { *lp_buffer = 0 };
+            }
+            return 0;
+        }
+    };
+    let utf16: Vec<u16> = s.encode_utf16().collect();
+    let needed = utf16.len() as u32 + 1;
+    if n_buffer_length < needed {
+        return needed;
+    }
+    if !lp_buffer.is_null() {
+        for (i, &ch) in utf16.iter().enumerate() {
+            unsafe { *lp_buffer.add(i) = ch };
+        }
+        unsafe { *lp_buffer.add(utf16.len()) = 0 };
+    }
+    utf16.len() as u32
+}
+pub unsafe extern "win64" fn get_dll_directory_a(n_buffer_length: u32, lp_buffer: *mut u8) -> u32 {
+    let dir = images::get_dll_directory();
+    let s = match dir {
+        Some(s) => s,
+        None => {
+            error::set(0);
+            if n_buffer_length > 0 && !lp_buffer.is_null() {
+                unsafe { *lp_buffer = 0 };
+            }
+            return 0;
+        }
+    };
+    let bytes = s.as_bytes();
+    let needed = bytes.len() as u32 + 1;
+    if n_buffer_length < needed {
+        return needed;
+    }
+    if !lp_buffer.is_null() {
+        unsafe {
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), lp_buffer, bytes.len());
+            *lp_buffer.add(bytes.len()) = 0;
+        }
+    }
+    bytes.len() as u32
 }
 /// NULL restores the default search; "" removes the current directory from it.
 fn set_dll_directory(path: Option<&str>) -> i32 {

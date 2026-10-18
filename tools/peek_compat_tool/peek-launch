@@ -2,7 +2,8 @@
 # Steam compatibility-tool entry point for the peek native PE loader.
 #   peek-launch <verb> <path/to/game.exe> [args...]
 # Supported verbs: run, waitforexitandrun. Every other verb is rejected with exit status 64.
-# Steam's environment and working directory are passed through unchanged; nothing is added.
+# Steam's environment and working directory are passed through, with one change:
+# Steam-runtime directories are removed from LD_LIBRARY_PATH (see below). Nothing is added.
 #
 # Settings (environment, all optional):
 #   PEEK_BIN       loader binary (default: ../peek next to this tool's real directory)
@@ -21,6 +22,13 @@ if [ -z "${PEEK_BIN:-}" ]; then
         PEEK_BIN=$(readlink -f "$TOOL_DIR/../../dist/peekgame")
     else
         PEEK_BIN="peekgame"  # fall back to PATH; peek-launch reports if it is missing
+    fi
+fi
+if [ -z "${PEEKGAME_WINDOWS_DLLS:-}" ]; then
+    if [ -d "$TOOL_DIR/windows-dlls" ]; then
+        export PEEKGAME_WINDOWS_DLLS="$TOOL_DIR/windows-dlls"
+    elif [ -d "$TOOL_DIR/../../dist/windows-dlls" ]; then
+        export PEEKGAME_WINDOWS_DLLS=$(readlink -f "$TOOL_DIR/../../dist/windows-dlls")
     fi
 fi
 LOG_DIR=${PEEK_LOG_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/peek-compat}
@@ -85,6 +93,24 @@ if [ "$verb" = waitforexitandrun ]; then
     flock 9 || die $EX_UNAVAILABLE "cannot take lock $lock"
 else
     flock -n 9 || echo "peek-launch: note: a previous session for this app id still holds $lock"
+fi
+
+# peek is a host binary linked against the system's libraries (libcurl, OpenSSL, ...).
+# Steam's LD_LIBRARY_PATH puts the Steam runtime's older copies first, e.g. a libcurl
+# without CURL_OPENSSL_4, and the loader then fails to start. Drop those entries; the
+# overlay in LD_PRELOAD and the rest of the environment are left as Steam set them.
+if [ -n "${LD_LIBRARY_PATH:-}" ]; then
+    kept=()
+    IFS=: read -r -a entries <<< "$LD_LIBRARY_PATH"
+    for entry in "${entries[@]}"; do
+        case "$entry" in
+            ""|*/steam-runtime*|*/pinned_libs_*) ;;
+            *) kept+=("$entry") ;;
+        esac
+    done
+    LD_LIBRARY_PATH=$(IFS=:; echo "${kept[*]}")
+    export LD_LIBRARY_PATH
+    printf 'LD_LIBRARY_PATH for the loader: %q\n' "$LD_LIBRARY_PATH"
 fi
 
 cmd=("$PEEK_BIN" "$exe" --run "$@")

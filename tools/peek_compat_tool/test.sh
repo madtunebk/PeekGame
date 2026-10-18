@@ -24,6 +24,7 @@ cat >"$T/fake-peek" <<'EOF'
 printf 'FAKE argc=%d\n' $#; for a in "$@"; do printf 'FAKE arg=[%s]\n' "$a"; done
 printf 'FAKE cwd=[%s]\n' "$PWD"
 printf 'FAKE SteamAppId=[%s] STEAM_COMPAT_DATA_PATH=[%s] ODD=[%s]\n' "${SteamAppId-}" "${STEAM_COMPAT_DATA_PATH-}" "${ODD-}"
+printf 'FAKE LD_LIBRARY_PATH=[%s] LD_PRELOAD=[%s]\n' "${LD_LIBRARY_PATH-}" "${LD_PRELOAD-}"
 [ -n "${FAKE_SLEEP:-}" ] && sleep "$FAKE_SLEEP"
 exit "${FAKE_STATUS:-0}"
 EOF
@@ -63,6 +64,13 @@ run run "$GAME/Missing Game.exe" 2>/dev/null; expect "missing executable file re
 printf x >"$GAME/readme.txt"; run run "$GAME/readme.txt" 2>/dev/null; expect "non-.exe rejected" 64 $?
 (cd "$GAME" && env PEEK_BIN="$T/nope" PEEK_LOG_DIR="$T/logs" "$LAUNCH" run "$GAME/Game Launcher.exe" 2>/dev/null)
 expect "missing loader rejected" 69 $?
+
+# Steam-runtime library directories are removed for the loader; other entries and LD_PRELOAD stay.
+LD_LIBRARY_PATH="/rt/ubuntu12_32/steam-runtime/pinned_libs_64:/game/dir:/rt/steam-runtime/usr/lib/x86_64-linux-gnu::/opt/lib" \
+LD_PRELOAD=/rt/ubuntu12_64/gameoverlayrenderer.so run run "$GAME/Game Launcher.exe" >/dev/null
+grep -qF 'FAKE LD_LIBRARY_PATH=[/game/dir:/opt/lib] LD_PRELOAD=[/rt/ubuntu12_64/gameoverlayrenderer.so]' "$T/logs/latest.log" \
+    && ok "Steam runtime removed from LD_LIBRARY_PATH, overlay preload kept" \
+    || { bad "LD_LIBRARY_PATH filtering"; grep FAKE "$T/logs/latest.log"; }
 
 # waitforexitandrun waits for the previous session of the same app id; run does not.
 FAKE_SLEEP=2 run run "$GAME/Game Launcher.exe" &

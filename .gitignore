@@ -64,3 +64,6 @@ __pycache__/
 
 # Local progress scratch; reviewed reports live under docs/progress/
 /progress/
+
+# Steam bridge test executable built by tests
+native/steam_bridge/test_bridge

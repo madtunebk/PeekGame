@@ -115,6 +115,7 @@ static const CallbackLayout layouts[]={
     {143,"ValidateAuthTicketResponse_t",20,24,{{0,0,8},{8,8,4},{12,16,8}}},
     {152,"MicroTxnAuthorizationResponse_t",16,24,{{0,0,4},{4,8,8},{12,16,1}}},
     {304,"PersonaStateChange_t",12,16,{{0,0,8},{8,8,4}}},
+    {336,"FriendRichPresenceUpdate_t",12,16,{{0,0,8},{8,8,4}}}, /* CSteamID, AppId_t */
     {1332,"RemoteStorageFileReadAsyncComplete_t",20,24,{{0,0,8},{8,8,4},{12,12,4},{16,16,4}}},
     {1101,"UserStatsReceived_t",20,24,{{0,0,8},{8,8,4},{12,16,8}}},
     {1102,"UserStatsStored_t",12,16,{{0,0,8},{8,8,4}}},
@@ -228,7 +229,7 @@ typedef enum {
     USER,USER020,USER019,USER018,USER017,
     UTILS,UTILS009,UTILS008,UTILS007,
     FRIENDS,CONTROLLER,APPS,REMOTESTORAGE,USERSTATS,MATCHMAKING,
-    APPTICKET,
+    APPTICKET,NETWORKING,MATCHMAKING_SERVERS,NETWORKING_SOCKETS,NETWORKING_UTILS,
     KINDS
 } Kind;
 typedef struct Wrapper {void **vtbl;void *lin;Kind kind;struct Wrapper *next;} Wrapper;
@@ -240,7 +241,8 @@ static const char *const kind_names[KINDS]={
     "ISteamUser021","ISteamUser020","ISteamUser019","ISteamUser018","ISteamUser017",
     "ISteamUtils010","ISteamUtils009","ISteamUtils008","ISteamUtils007",
     "ISteamFriends017","ISteamController007","ISteamApps008","ISteamRemoteStorage014","ISteamUserStats011","ISteamMatchmaking009",
-    "ISteamAppTicket001"
+    "ISteamAppTicket001","ISteamNetworking006","ISteamMatchmakingServers002",
+    "ISteamNetworkingSockets012","ISteamNetworkingUtils004"
 };
 static const char *const versions[KINDS]={
     "SteamClient020","SteamClient019","SteamClient017","SteamClient014",
@@ -248,14 +250,15 @@ static const char *const versions[KINDS]={
     "SteamUtils010","SteamUtils009","SteamUtils008","SteamUtils007",
     "SteamFriends017","SteamController007","STEAMAPPS_INTERFACE_VERSION008",
     "STEAMREMOTESTORAGE_INTERFACE_VERSION014","STEAMUSERSTATS_INTERFACE_VERSION011","SteamMatchMaking009",
-    "STEAMAPPTICKET_INTERFACE_VERSION001"
+    "STEAMAPPTICKET_INTERFACE_VERSION001","SteamNetworking006","SteamMatchMakingServers002",
+    "SteamNetworkingSockets012","SteamNetworkingUtils004"
 };
 static const int slot_counts[KINDS]={
     42,41,37,29,
     32,31,29,25,24,
     39,34,28,26,
     80,34,35,55,43,38,
-    1
+    1,32,32,64,64
 };
 static const char *const method_names[KINDS][MAX_SLOTS]={
     [CLIENT]={"CreateSteamPipe","BReleaseSteamPipe","ConnectToGlobalUser","CreateLocalUser","ReleaseUser","GetISteamUser",
@@ -393,6 +396,8 @@ static const char *const method_names[KINDS][MAX_SLOTS]={
      "SetLobbyMemberLimit","GetLobbyMemberLimit","SetLobbyType","SetLobbyJoinable",
       "GetLobbyOwner","SetLobbyOwner","SetLinkedLobby"},
     [APPTICKET]={"GetAppOwnershipTicketData"},
+    [NETWORKING_SOCKETS]={[22]="InitAuthentication",[23]="GetAuthenticationStatus"},
+    [NETWORKING_UTILS]={[13]="SetDebugOutputFunction"},
 };
 
 /* Unbridged slots stop with the method name, matching the loader's UD2 traps. */
@@ -419,7 +424,7 @@ static void unbridged(Kind kind,int slot) {
 SLOTS(TRAP,CLIENT) SLOTS(TRAP,CLIENT019) SLOTS(TRAP,CLIENT017) SLOTS(TRAP,CLIENT014) \
 SLOTS(TRAP,USER) SLOTS(TRAP,USER020) SLOTS(TRAP,USER019) SLOTS(TRAP,USER018) SLOTS(TRAP,USER017) \
 SLOTS(TRAP,UTILS) SLOTS(TRAP,UTILS009) SLOTS(TRAP,UTILS008) SLOTS(TRAP,UTILS007) \
-SLOTS(TRAP,FRIENDS) SLOTS(TRAP,CONTROLLER) SLOTS(TRAP,APPS) SLOTS(TRAP,REMOTESTORAGE) SLOTS(TRAP,USERSTATS) SLOTS(TRAP,MATCHMAKING) SLOTS(TRAP,APPTICKET)
+SLOTS(TRAP,FRIENDS) SLOTS(TRAP,CONTROLLER) SLOTS(TRAP,APPS) SLOTS(TRAP,REMOTESTORAGE) SLOTS(TRAP,USERSTATS) SLOTS(TRAP,MATCHMAKING) SLOTS(TRAP,APPTICKET) SLOTS(TRAP,NETWORKING) SLOTS(TRAP,MATCHMAKING_SERVERS) SLOTS(TRAP,NETWORKING_SOCKETS) SLOTS(TRAP,NETWORKING_UTILS)
 #define TRAP_ADDRESS(kind,n) (void *)trap_##kind##_##n,
 static void *const traps[KINDS][MAX_SLOTS]={
     [CLIENT]={SLOTS(TRAP_ADDRESS,CLIENT)},
@@ -441,7 +446,11 @@ static void *const traps[KINDS][MAX_SLOTS]={
     [REMOTESTORAGE]={SLOTS(TRAP_ADDRESS,REMOTESTORAGE)},
     [USERSTATS]={SLOTS(TRAP_ADDRESS,USERSTATS)},
     [MATCHMAKING]={SLOTS(TRAP_ADDRESS,MATCHMAKING)},
-    [APPTICKET]={SLOTS(TRAP_ADDRESS,APPTICKET)}
+    [APPTICKET]={SLOTS(TRAP_ADDRESS,APPTICKET)},
+    [NETWORKING]={SLOTS(TRAP_ADDRESS,NETWORKING)},
+    [MATCHMAKING_SERVERS]={SLOTS(TRAP_ADDRESS,MATCHMAKING_SERVERS)},
+    [NETWORKING_SOCKETS]={SLOTS(TRAP_ADDRESS,NETWORKING_SOCKETS)},
+    [NETWORKING_UTILS]={SLOTS(TRAP_ADDRESS,NETWORKING_UTILS)}
 };
 
 static void *wrap(void *object,Kind kind) {
@@ -455,7 +464,10 @@ static void *wrap(void *object,Kind kind) {
     return w;
 }
 static int bridged_kind(const char *version) {
-    for(int k=0;version && k<KINDS;k++)if(!strcmp(version,versions[k]))return k;
+    if(!version) return -1;
+    for(int k=0;k<KINDS;k++)if(!strcmp(version,versions[k]))return k;
+    if(!strncmp(version,"STEAMREMOTESTORAGE_INTERFACE_VERSION",36)) return REMOTESTORAGE;
+    if(!strncmp(version,"STEAMUSERSTATS_INTERFACE_VERSION",32)) return USERSTATS;
     return -1;
 }
 
@@ -491,7 +503,10 @@ static void WIN client_ReleaseUser(void *self,int32_t pipe,int32_t user) {CM(sel
 static void *WIN client_GetISteamUser(void *self,int32_t user,int32_t pipe,const char *version) {
     int kind=bridged_kind(version);
     if(kind!=USER && kind!=USER020 && kind!=USER019 && kind!=USER018 && kind!=USER017) {log_msg("GetISteamUser(%s): version not bridged",version?version:"NULL");return NULL;}
-    return wrap(CM(self,5,void *(*)(void *,int32_t,int32_t,const char *))(L(self),user,pipe,version),(Kind)kind);
+    void *linux_object=CM(self,5,void *(*)(void *,int32_t,int32_t,const char *))(L(self),user,pipe,version);
+    void *windows_object=wrap(linux_object,(Kind)kind);
+    if(trace_enabled())log_msg("trace GetISteamUser(%s, user=%d, pipe=%d) -> Linux=%p Windows=%p",version,user,pipe,linux_object,windows_object);
+    return windows_object;
 }
 static void WIN client_SetLocalIPBinding(void *self,const void *address,uint16_t port) {
     CM(self,7,void(*)(void *,const void *,uint16_t))(L(self),address,port); /* SteamIPAddress_t: 20 bytes on both */
@@ -525,10 +540,14 @@ static void *WIN client_GetISteamApps(void *self,int32_t user,int32_t pipe,const
     if(kind!=APPS) {log_msg("GetISteamApps(%s): version not bridged",version?version:"NULL");return NULL;}
     return wrap(CM(self,15,void *(*)(void *,int32_t,int32_t,const char *))(L(self),user,pipe,version),(Kind)kind);
 }
+static void log_unbridged_once(const char *version);
 static void *WIN client_GetISteamGenericInterface(void *self,int32_t user,int32_t pipe,const char *version) {
     int kind=bridged_kind(version);
-    if(kind<0) {log_msg("GetISteamGenericInterface(%s): interface not bridged",version?version:"NULL");return NULL;}
-    return wrap(CM(self,12,void *(*)(void *,int32_t,int32_t,const char *))(L(self),user,pipe,version),(Kind)kind);
+    if(kind<0) {log_unbridged_once(version);return NULL;}
+    void *linux_object=CM(self,12,void *(*)(void *,int32_t,int32_t,const char *))(L(self),user,pipe,version);
+    void *windows_object=wrap(linux_object,(Kind)kind);
+    if(trace_enabled())log_msg("trace GetISteamGenericInterface(%s, user=%d, pipe=%d) -> Linux=%p Windows=%p",version,user,pipe,linux_object,windows_object);
+    return windows_object;
 }
 static void *WIN client_GetISteamUserStats(void *self,int32_t user,int32_t pipe,const char *version) {
     int kind=bridged_kind(version);
@@ -600,8 +619,14 @@ static void WIN user_TrackAppUsageEvent(void *self,uint64_t game,int event,const
     M(self,5,void(*)(void *,uint64_t,int,const char *))(L(self),game,event,extra);
 }
 static bool WIN user_GetUserDataFolder(void *self,char *buffer,int size) {return M(self,6,bool(*)(void *,char *,int))(L(self),buffer,size);}
-static uint32_t WIN user_GetAuthSessionTicket(void *self,void *ticket,int size,uint32_t *written) {
-    return M(self,13,uint32_t(*)(void *,void *,int,uint32_t *))(L(self),ticket,size,written);
+static uint32_t WIN user_GetAuthSessionTicket(void *self,void *ticket,int size,uint32_t *written,const void *identity) {
+    uint32_t result;
+    if(((Wrapper *)self)->kind==USER)
+        result=M(self,13,uint32_t(*)(void *,void *,int,uint32_t *,const void *))(L(self),ticket,size,written,identity);
+    else
+        result=M(self,13,uint32_t(*)(void *,void *,int,uint32_t *))(L(self),ticket,size,written);
+    if(trace_enabled())log_msg("trace ISteamUser::GetAuthSessionTicket(version=%s, max=%d) -> handle=%u size=%u",kind_names[((Wrapper *)self)->kind],size,result,written?*written:0);
+    return result;
 }
 static int WIN user_BeginAuthSession(void *self,const void *ticket,int size,uint64_t steam_id) {
     return M(self,14,int(*)(void *,const void *,int,uint64_t))(L(self),ticket,size,steam_id);
@@ -1191,6 +1216,31 @@ static uint64_t *WIN mm_GetLobbyOwner(void *self,uint64_t *result,uint64_t lobby
 static bool WIN mm_SetLobbyOwner(void *self,uint64_t lobby,uint64_t owner) {return M(self,36,bool(*)(void *,uint64_t,uint64_t))(L(self),lobby,owner);}
 static bool WIN mm_SetLinkedLobby(void *self,uint64_t lobby,uint64_t dependent) {return M(self,37,bool(*)(void *,uint64_t,uint64_t))(L(self),lobby,dependent);}
 
+/* ISteamNetworkingSockets012: these slots are shared by the Windows and Linux SDK. */
+static int WIN sockets_InitAuthentication(void *self) {
+    int result=M(self,22,int(*)(void *))(L(self));
+    if(trace_enabled())log_msg("trace ISteamNetworkingSockets012::InitAuthentication -> %d",result);
+    return result;
+}
+static int WIN sockets_GetAuthenticationStatus(void *self,void *details) {
+    int result=M(self,23,int(*)(void *,void *))(L(self),details);
+    if(trace_enabled())log_msg("trace ISteamNetworkingSockets012::GetAuthenticationStatus -> %d",result);
+    return result;
+}
+
+typedef void (WIN *WinNetworkingDebugHook)(int,const char *);
+static WinNetworkingDebugHook networking_debug_hook;
+static void lin_networking_debug_hook(int level,const char *message) {
+    WinNetworkingDebugHook hook=networking_debug_hook;
+    if(hook)hook(level,message);
+}
+static void WIN networking_utils_SetDebugOutputFunction(void *self,int level,WinNetworkingDebugHook hook) {
+    networking_debug_hook=hook;
+    M(self,13,void(*)(void *,int,void(*)(int,const char *)))(
+        L(self),level,hook?lin_networking_debug_hook:NULL);
+    if(trace_enabled())log_msg("trace ISteamNetworkingUtils004::SetDebugOutputFunction(level=%d, enabled=%d)",level,hook!=NULL);
+}
+
 /* ISteamAppTicket001 */
 static uint32_t WIN appticket_GetAppOwnershipTicketData(void *self,uint32_t app_id,void *buffer,uint32_t size,uint32_t *piTicketLength,uint32_t *piAppId,uint32_t *piSteamId,uint32_t *piSignature) {
     if(trace_enabled())log_msg("trace ISteamAppTicket::GetAppOwnershipTicketData(app=%u, size=%u)",app_id,size);
@@ -1202,8 +1252,11 @@ static uint32_t WIN appticket_GetAppOwnershipTicketData(void *self,uint32_t app_
 
 static void init_vtables(void) {
     for(int k=0;k<KINDS;k++)for(int s=0;s<MAX_SLOTS;s++)vtables[k][s]=traps[k][s];
-    void **c=vtables[CLIENT],**u=vtables[USER],**t=vtables[UTILS],**f=vtables[FRIENDS],**ct=vtables[CONTROLLER],**ap=vtables[APPS],**mm=vtables[MATCHMAKING],**at=vtables[APPTICKET];
+    void **c=vtables[CLIENT],**u=vtables[USER],**t=vtables[UTILS],**f=vtables[FRIENDS],**ct=vtables[CONTROLLER],**ap=vtables[APPS],**mm=vtables[MATCHMAKING],**at=vtables[APPTICKET],**sockets=vtables[NETWORKING_SOCKETS],**net_utils=vtables[NETWORKING_UTILS];
     at[0]=(void *)appticket_GetAppOwnershipTicketData;
+    sockets[22]=(void *)sockets_InitAuthentication;
+    sockets[23]=(void *)sockets_GetAuthenticationStatus;
+    net_utils[13]=(void *)networking_utils_SetDebugOutputFunction;
     c[0]=(void *)client_CreateSteamPipe;c[1]=(void *)client_BReleaseSteamPipe;c[2]=(void *)client_ConnectToGlobalUser;
     c[3]=(void *)client_CreateLocalUser;c[4]=(void *)client_ReleaseUser;c[5]=(void *)client_GetISteamUser;
     c[7]=(void *)client_SetLocalIPBinding;c[8]=(void *)client_GetISteamFriends;c[9]=(void *)client_GetISteamUtils;

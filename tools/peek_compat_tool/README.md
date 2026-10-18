@@ -47,7 +47,7 @@ Every refusal goes to the log and to Steam's original stderr.
 
 ## Environment and logging
 
-- **Steam's environment and working directory are passed through unchanged.** `peek-launch` adds and removes nothing. The test checks that `SteamAppId`, `STEAM_COMPAT_DATA_PATH` with a space in it, and a value containing tabs and quotes all reach the loader byte for byte, and that the working directory is kept.
+- **Steam's environment and working directory are passed through, with one exception.** `peek-launch` adds nothing. It removes the Steam-runtime directories (`*/steam-runtime*`, `*/pinned_libs_*`) from `LD_LIBRARY_PATH`, because `peek` is linked against the system libraries, and the runtime's older libcurl (without `CURL_OPENSSL_4`) stops the loader from starting. `LD_PRELOAD` (the Steam overlay) is kept. The test checks that `SteamAppId`, `STEAM_COMPAT_DATA_PATH` with a space in it, and a value containing tabs and quotes all reach the loader byte for byte, and that the working directory is kept.
 - **Log location:** `${PEEK_LOG_DIR:-${XDG_STATE_HOME:-~/.local/state}/peek-compat}/steam-<SteamAppId>-<time>-<pid>.log`, with a `latest.log` symlink.
 - **Log contents:** argv, the working directory, the tool and loader paths, and the Steam-related environment (`Steam*`, `STEAM_*`, `SDL_*`, `DXVK_*`, `VK_*`, display variables, `LD_*`), followed by the loader's own output.
 - **Process:** `exec` keeps the PID Steam started, so Steam's Stop button and exit tracking reach `peek` directly. The loader's exit status is Steam's exit status.
@@ -65,7 +65,7 @@ Every refusal goes to the log and to Steam's original stderr.
 - All four Proton verbs we don't support, plus an unknown verb, rejected with their messages.
 - Missing, wrong-type and extra arguments rejected.
 - An executable path with spaces delivered as one argument.
-- Environment and working directory preserved.
+- Environment and working directory preserved (except Steam-runtime entries in `LD_LIBRARY_PATH`).
 - The log contents.
 - `waitforexitandrun` waiting about 2 s for a running session, and `run` not waiting.
 - The real `../peek` launched through `peek-launch` running a synthetic PE (`mov eax,42; ret`) from `…/Steam Library/common/My Game/Fixture Game.exe` and printing `PE entry returned 0x2a`.
