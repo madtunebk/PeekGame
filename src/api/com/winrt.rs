@@ -305,3 +305,37 @@ pub unsafe extern "win64" fn uia_get_reserved_not_supported_value(out: *mut usiz
     0 // S_OK
 }
 
+/// WindowsConcatString: a new HSTRING holding `a` then `b` (NULL is the empty string).
+pub unsafe extern "win64" fn concat_string(a: *const Header, b: *const Header, out: *mut *mut Header) -> i32 {
+    if out.is_null() {
+        return E_INVALIDARG;
+    }
+    let mut text = unsafe { units(a) }.to_vec();
+    text.extend_from_slice(unsafe { units(b) });
+    if text.len() > u32::MAX as usize {
+        unsafe { *out = std::ptr::null_mut() };
+        return E_OUTOFMEMORY;
+    }
+    unsafe { create_string(text.as_ptr(), text.len() as u32, out) }
+}
+
+pub extern "win64" fn mf_startup(_version: u32, _flags: u32) -> i32 {
+    S_OK
+}
+pub extern "win64" fn mf_shutdown() -> i32 {
+    S_OK
+}
+pub unsafe extern "win64" fn mf_frame_rate_to_avg_time(num: u32, den: u32, out: *mut u64) -> i32 {
+    if out.is_null() || num == 0 {
+        return E_INVALIDARG;
+    }
+    unsafe { *out = (10_000_000u64 * den as u64) / num as u64 };
+    S_OK
+}
+pub extern "win64" fn mf_not_impl() -> i32 {
+    E_NOTIMPL
+}
+pub extern "win64" fn mf_class_not_reg() -> i32 {
+    REGDB_E_CLASSNOTREG
+}
+

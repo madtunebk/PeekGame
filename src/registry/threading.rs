@@ -15,6 +15,21 @@ exports! {
     export!("avrt.dll", "AvSetMmThreadPriority", "threading", "partial", "no registered MMCSS handles: ERROR_INVALID_HANDLE", crate::api::threading::avrt::priority),
 
     implemented!("OpenMutexW", "threading", "partial", "process-local named mutexes with independent handle lifetimes", crate::api::threading::objects::open_mutex_w),
+    implemented!("TerminateThread", "threading", "partial", "the calling thread only (as ExitThread); other threads ERROR_NOT_SUPPORTED", threads::terminate),
+    implemented!("CreateThreadpoolWork", "threading", "partial", "default pool; callbacks on reusable Windows threads; custom pools/cleanup groups ERROR_NOT_SUPPORTED", crate::api::threading::pool::create_work),
+    implemented!("SubmitThreadpoolWork", "threading", "implemented", "queues one callback", crate::api::threading::pool::submit_work),
+    implemented!("WaitForThreadpoolWorkCallbacks", "threading", "partial", "waits for outstanding callbacks; pending ones are not cancelled", crate::api::threading::pool::wait_work_callbacks),
+    implemented!("CloseThreadpoolWork", "threading", "implemented", "released after outstanding callbacks", crate::api::threading::pool::close_work),
+    implemented!("CreateThreadpoolTimer", "threading", "partial", "default pool; one Windows thread per timer", crate::api::threading::pool::create_timer),
+    implemented!("SetThreadpoolTimer", "threading", "partial", "relative/absolute FILETIME due time, period; window length ignored", crate::api::threading::pool::set_timer),
+    implemented!("IsThreadpoolTimerSet", "threading", "implemented", "pending expiration", crate::api::threading::pool::is_timer_set),
+    implemented!("WaitForThreadpoolTimerCallbacks", "threading", "implemented", "waits for a running callback; optional cancel", crate::api::threading::pool::wait_timer_callbacks),
+    implemented!("CloseThreadpoolTimer", "threading", "implemented", "stops the timer thread", crate::api::threading::pool::close_timer),
+    implemented!("CreateThreadpoolWait", "threading", "partial", "default pool; one Windows thread per wait object", crate::api::threading::pool::create_wait),
+    implemented!("SetThreadpoolWait", "threading", "partial", "one-shot wait through WaitForSingleObject in 20 ms slices; FILETIME timeout", crate::api::threading::pool::set_wait),
+    implemented!("WaitForThreadpoolWaitCallbacks", "threading", "implemented", "waits for a running callback; optional cancel", crate::api::threading::pool::wait_wait_callbacks),
+    implemented!("CloseThreadpoolWait", "threading", "implemented", "stops the wait thread", crate::api::threading::pool::close_wait),
+    implemented!("FreeLibraryWhenCallbackReturns", "threading", "implemented", "FreeLibrary after the pool callback returns", crate::api::threading::pool::free_library_when_callback_returns),
     implemented!("ExitThread", "threading", "partial", "Windows-created threads; TLS detach and exit status", crate::host::thread_entry::exit),
     implemented!("FreeLibraryAndExitThread", "threading", "partial", "release module reference then terminate calling Windows thread", crate::host::thread_entry::free_and_exit),
     implemented!(
@@ -499,6 +514,27 @@ exports! {
         "partial",
         "event handles; non-alertable waits",
         events::wait_ex
+    ),
+    implemented!(
+        "RegisterWaitForSingleObject",
+        "threading",
+        "partial",
+        "wait for single object on thread pool",
+        events::register_wait_for_single_object
+    ),
+    implemented!(
+        "UnregisterWait",
+        "threading",
+        "partial",
+        "cancels registered wait",
+        events::unregister_wait
+    ),
+    implemented!(
+        "UnregisterWaitEx",
+        "threading",
+        "partial",
+        "cancels registered wait with completion event",
+        events::unregister_wait_ex
     ),
     implemented!(
         "CloseHandle",

@@ -109,12 +109,15 @@ pub unsafe extern "win64" fn create(
         error::set(87);
         return 0;
     };
+    static VERBOSE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *VERBOSE.get_or_init(|| std::env::var_os("PEEKGAME_VERBOSE").is_some()) {
+        eprintln!("CreateThread: start={start:p} param={parameter:#x} suspended={suspended}");
+    }
     let inherited_locale = crate::api::system::locale::thread::get();
     let (send, receive) = std::sync::mpsc::sync_channel(1);
     let mut builder = std::thread::Builder::new();
-    if stack > 0 {
-        builder = builder.stack_size(stack);
-    }
+    let actual_stack = stack.max(32 * 1024 * 1024);
+    builder = builder.stack_size(actual_stack);
     let spawned = builder.spawn(move || {
         crate::api::system::locale::thread::inherit(inherited_locale);
         let thread = Arc::new(Thread {
@@ -180,19 +183,37 @@ pub unsafe extern "win64" fn duplicate(
     unsafe {
         *out = 0;
     }
-    // Only this process exists. Inheritance concerns child processes, so the flag is
-    // accepted; access must be "the same" (DUPLICATE_SAME_ACCESS or no extra rights).
-    let _ = inherit;
-    if source_process != usize::MAX
-        || target_process != usize::MAX
-        || options & !3 != 0
-        || (options & 2 == 0 && access != 0)
-    {
+    let _ = (inherit, access);
+    let pid = std::process::id() as usize;
+    let is_valid_proc = |h: usize| {
+        h == usize::MAX
+            || h == 1
+            || h == pid
+            || crate::api::system::process::is_child_process(h)
+    };
+    if !is_valid_proc(source_process) || !is_valid_proc(target_process) || options & !3 != 0 {
         error::set(50);
         return 0;
     }
+    if let Some(res) = crate::api::memory::mapping::duplicate(source, access, options) {
+        if options & 1 != 0 {
+            super::events::close(source);
+        }
+        return match res {
+            Ok(target) => {
+                unsafe { *out = target };
+                1
+            }
+            Err(code) => {
+                error::set(code);
+                0
+            }
+        };
+    }
     let existing = threads().lock().unwrap().get(&source).cloned();
-    let target = if source == usize::MAX - 1 {
+    let target = if source == usize::MAX {
+        Some(1)
+    } else if source == usize::MAX - 1 {
         Some(insert(current_thread()))
     } else if let Some(thread) = existing {
         Some(insert(thread))
@@ -201,6 +222,7 @@ pub unsafe extern "win64" fn duplicate(
             .or_else(|| super::events::duplicate(source))
             .or_else(|| super::objects::duplicate(source))
             .or_else(|| crate::api::filesystem::files::duplicate(source))
+            .or_else(|| crate::api::system::process::duplicate_child_handle(source))
     };
     let Some(target) = target else {
         error::set(6);
@@ -282,6 +304,27 @@ pub unsafe extern "win64" fn begin_thread(
     id: *mut u32,
 ) -> usize {
     unsafe { create(security, stack as usize, start, parameter, flags, id) }
+}
+pub unsafe extern "win64" fn begin_thread_cdecl(
+    start: Option<Start>,
+    stack: u32,
+    parameter: usize,
+) -> usize {
+    let h = unsafe {
+        create(
+            std::ptr::null(),
+            stack as usize,
+            start,
+            parameter,
+            0,
+            std::ptr::null_mut(),
+        )
+    };
+    if h == 0 {
+        usize::MAX
+    } else {
+        h
+    }
 }
 
 /// ResumeThread: starts a thread created suspended. Suspending running threads
@@ -393,4 +436,21 @@ pub extern "win64" fn current_processor_number() -> u32 {
         syscall(309, &mut cpu as *mut u32, std::ptr::null_mut::<c_void>(), std::ptr::null_mut::<c_void>());
     }
     cpu
+}
+/// TerminateThread: the calling thread exits with `code` (as ExitThread). Stopping
+/// another thread at an arbitrary instruction cannot be done safely here, so that
+/// fails with ERROR_NOT_SUPPORTED.
+pub extern "win64" fn terminate(handle: usize, code: u32) -> i32 {
+    match id_of(handle) {
+        None => {
+            error::set(6);
+            0
+        }
+        Some(id) if id == startup::thread_id() => crate::host::thread_entry::exit(code),
+        Some(id) => {
+            eprintln!("TerminateThread: terminating thread {id} from another thread is not supported");
+            error::set(50);
+            0
+        }
+    }
 }

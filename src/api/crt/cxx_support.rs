@@ -186,6 +186,71 @@ pub unsafe extern "win64" fn atol(text: *const c_char) -> i32 {
     value as i32
 }
 
+pub unsafe extern "win64" fn atol_l(text: *const c_char, _locale: usize) -> i32 {
+    unsafe { atol(text) }
+}
+
+pub unsafe extern "win64" fn atoi_l(text: *const c_char, _locale: usize) -> i32 {
+    let value = unsafe { super::numbers::strtol(text, std::ptr::null_mut(), 10) };
+    value as i32
+}
+
+pub unsafe extern "win64" fn atof_l(text: *const c_char, _locale: usize) -> f64 {
+    unsafe { strtod(text, std::ptr::null_mut()) }
+}
+
+pub unsafe extern "win64" fn atoi64(text: *const c_char) -> i64 {
+    unsafe { super::numbers::strtoi64(text, std::ptr::null_mut(), 10) }
+}
+
+pub unsafe extern "win64" fn atoi64_l(text: *const c_char, _locale: usize) -> i64 {
+    unsafe { atoi64(text) }
+}
+
+pub unsafe extern "win64" fn wtof(text: *const u16) -> f64 {
+    if text.is_null() {
+        return 0.0;
+    }
+    unsafe { wide_to_double(text, std::ptr::null_mut()) }
+}
+
+pub unsafe extern "win64" fn wtof_l(text: *const u16, _locale: usize) -> f64 {
+    unsafe { wtof(text) }
+}
+
+pub unsafe extern "win64" fn wtoi(text: *const u16) -> i32 {
+    if text.is_null() {
+        return 0;
+    }
+    unsafe { super::numbers::wcstol(text, std::ptr::null_mut(), 10) }
+}
+
+pub unsafe extern "win64" fn wtoi_l(text: *const u16, _locale: usize) -> i32 {
+    unsafe { wtoi(text) }
+}
+
+pub unsafe extern "win64" fn wtol(text: *const u16) -> i32 {
+    if text.is_null() {
+        return 0;
+    }
+    unsafe { super::numbers::wcstol(text, std::ptr::null_mut(), 10) }
+}
+
+pub unsafe extern "win64" fn wtol_l(text: *const u16, _locale: usize) -> i32 {
+    unsafe { wtol(text) }
+}
+
+pub unsafe extern "win64" fn wtoi64(text: *const u16) -> i64 {
+    if text.is_null() {
+        return 0;
+    }
+    unsafe { super::numbers::wcstoi64(text, std::ptr::null_mut(), 10) }
+}
+
+pub unsafe extern "win64" fn wtoi64_l(text: *const u16, _locale: usize) -> i64 {
+    unsafe { wtoi64(text) }
+}
+
 // ---- runtime ------------------------------------------------------------------------
 
 type NewHandler = unsafe extern "win64" fn(usize) -> i32;
@@ -407,4 +472,363 @@ pub unsafe extern "win64" fn stream_buffer_pointers(
 /// _get_heap_handle returns the CRT heap handle (the process heap).
 pub extern "win64" fn get_heap_handle() -> usize {
     crate::api::memory::heap::get_process_heap()
+}
+
+pub extern "win64" fn purecall() -> ! {
+    eprintln!("Pure virtual function call");
+    std::process::exit(78);
+}
+
+// ---- C-locale time names (msvcp140 _Locinfo) ------------------------------------
+const DAYS_ABBR: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const DAYS: [&str; 7] = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+const MONTHS_ABBR: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const MONTHS: [&str; 12] = [
+    "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November",
+    "December",
+];
+const AMPM: [&str; 2] = ["AM", "PM"];
+const SHORT_DATE: &str = "MM/dd/yy";
+const LONG_DATE: &str = "dddd, MMMM dd, yyyy";
+const TIME: &str = "HH:mm:ss";
+/// ":Sun:Sunday:Mon:Monday..." (UCRT's _Getdays/_Getmonths format).
+fn names(abbr: &[&str], full: &[&str]) -> String {
+    abbr.iter().zip(full).map(|(a, f)| format!(":{a}:{f}")).collect()
+}
+fn malloc_narrow(text: &str) -> *mut c_char {
+    let out = unsafe { malloc(text.len() + 1) }.cast::<u8>();
+    if !out.is_null() {
+        unsafe {
+            std::ptr::copy_nonoverlapping(text.as_ptr(), out, text.len());
+            *out.add(text.len()) = 0;
+        }
+    }
+    out.cast()
+}
+fn malloc_wide(text: &str) -> *mut u16 {
+    let wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
+    let out = unsafe { malloc(wide.len() * 2) }.cast::<u16>();
+    if !out.is_null() {
+        unsafe { std::ptr::copy_nonoverlapping(wide.as_ptr(), out, wide.len()) };
+    }
+    out
+}
+/// _Getdays: the C locale's day names in CRT memory, freed with free().
+pub extern "win64" fn get_days() -> *mut c_char {
+    malloc_narrow(&names(&DAYS_ABBR, &DAYS))
+}
+pub extern "win64" fn get_months() -> *mut c_char {
+    malloc_narrow(&names(&MONTHS_ABBR, &MONTHS))
+}
+pub extern "win64" fn get_days_w() -> *mut u16 {
+    malloc_wide(&names(&DAYS_ABBR, &DAYS))
+}
+pub extern "win64" fn get_months_w() -> *mut u16 {
+    malloc_wide(&names(&MONTHS_ABBR, &MONTHS))
+}
+/// _Gettnames/_W_Gettnames: one CRT block holding UCRT's __crt_lc_time_data for the
+/// C locale followed by its strings; the caller frees it with free(). Layout (x64):
+/// narrow pointers wday_abbr[7] @0, wday[7] @56, month_abbr[12] @112, month[12] @208,
+/// ampm[2] @304, sdatefmt @320, ldatefmt @328, timefmt @336; ww_caltype @344,
+/// refcount @348; the same 43 wide pointers from @352; locale name @696; 704 bytes.
+pub extern "win64" fn get_time_names() -> *mut c_void {
+    const HEADER: usize = 704;
+    let narrow: Vec<&str> = DAYS_ABBR
+        .iter()
+        .chain(&DAYS)
+        .chain(&MONTHS_ABBR)
+        .chain(&MONTHS)
+        .chain(&AMPM)
+        .copied()
+        .chain([SHORT_DATE, LONG_DATE, TIME])
+        .collect();
+    let narrow_bytes: usize = narrow.iter().map(|s| s.len() + 1).sum();
+    let wide_units: usize = narrow.iter().map(|s| s.len() + 1).sum::<usize>() + 1; // + empty locale name
+    let block = unsafe { malloc(HEADER + narrow_bytes + wide_units * 2) }.cast::<u8>();
+    if block.is_null() {
+        return std::ptr::null_mut();
+    }
+    unsafe {
+        std::ptr::write_bytes(block, 0, HEADER);
+        let mut text = block.add(HEADER);
+        for (i, s) in narrow.iter().enumerate() {
+            block.add(i * 8).cast::<usize>().write_unaligned(text as usize);
+            std::ptr::copy_nonoverlapping(s.as_ptr(), text, s.len());
+            *text.add(s.len()) = 0;
+            text = text.add(s.len() + 1);
+        }
+        block.add(344).cast::<i32>().write_unaligned(1); // CAL_GREGORIAN
+        let mut wide = text.cast::<u16>();
+        for (i, s) in narrow.iter().chain(std::iter::once(&"")).enumerate() {
+            block.add(352 + i * 8).cast::<usize>().write_unaligned(wide as usize);
+            for (j, unit) in s.encode_utf16().enumerate() {
+                wide.add(j).write_unaligned(unit);
+            }
+            wide.add(s.len()).write_unaligned(0);
+            wide = wide.add(s.len() + 1);
+        }
+    }
+    block.cast()
+}
+/// _Strftime/_Wcsftime: strftime with an explicit __crt_lc_time_data. Only the C locale
+/// exists here, and every time-data block this CRT hands out holds it.
+pub unsafe extern "win64" fn strftime_l(
+    out: *mut c_char, max: usize, format: *const c_char, tm: *const i32, _time_data: *const c_void,
+) -> usize {
+    unsafe { super::ucrt::strftime(out, max, format, tm) }
+}
+pub unsafe extern "win64" fn wcsftime_l(
+    out: *mut u16, max: usize, format: *const u16, tm: *const i32, _time_data: *const c_void,
+) -> usize {
+    unsafe { super::ucrt::wcsftime(out, max, format, tm) }
+}
+
+// ---- UCRT imports of PlayFab Party (PartyWin.dll) -------------------------------
+use crate::api::system::time::Tm;
+unsafe extern "C" {
+    fn timegm(tm: *mut Tm) -> i64;
+    fn gmtime_r(time: *const i64, out: *mut Tm) -> *mut Tm;
+    fn sscanf(input: *const c_char, format: *const c_char, ...) -> i32;
+}
+/// _dtest: the FP_* class of *x (as _dclass).
+pub unsafe extern "win64" fn dtest(x: *const f64) -> i16 {
+    classify(unsafe { *x }.classify())
+}
+/// fmax: the larger argument; a NaN argument loses to a number.
+pub extern "win64" fn fmax(a: f64, b: f64) -> f64 {
+    a.max(b)
+}
+/// _difftime64: t1 - t0 in seconds; negative times are invalid (EINVAL, 0).
+pub extern "win64" fn difftime64(t1: i64, t0: i64) -> f64 {
+    if t1 < 0 || t0 < 0 {
+        unsafe { *errno() = 22 };
+        return 0.0;
+    }
+    (t1 - t0) as f64
+}
+/// _mkgmtime64: a UTC struct tm (normalised in place, tm_wday/tm_yday filled,
+/// tm_isdst 0) to time_t. The UCRT range is 1970-01-01 through 3000-12-31 23:59:59;
+/// outside it the result is -1 with EINVAL.
+pub unsafe extern "win64" fn mkgmtime64(tm: *mut i32) -> i64 {
+    const MAX: i64 = 32_535_215_999;
+    if tm.is_null() {
+        unsafe { *errno() = 22 };
+        return -1;
+    }
+    // Linux struct tm starts with the same nine ints; tm_gmtoff/tm_zone stay zero.
+    let mut host = Tm::default();
+    unsafe { std::ptr::copy_nonoverlapping(tm, (&mut host as *mut Tm).cast::<i32>(), 8) };
+    let time = unsafe { timegm(&mut host) };
+    if !(0..=MAX).contains(&time) {
+        unsafe { *errno() = 22 };
+        return -1;
+    }
+    let mut out = Tm::default();
+    if unsafe { gmtime_r(&time, &mut out) }.is_null() {
+        unsafe { *errno() = 22 };
+        return -1;
+    }
+    unsafe { std::ptr::copy_nonoverlapping((&out as *const Tm).cast::<i32>(), tm, 9) };
+    time
+}
+/// __stdio_common_vsnprintf_s: at most `count` characters (or as many as fit with
+/// _TRUNCATE), always terminated. Output cut by `count`/_TRUNCATE returns -1; output
+/// that does not fit the buffer otherwise empties it with ERANGE and returns -1.
+pub unsafe extern "win64" fn common_vsnprintf_s(
+    options: u64,
+    buffer: *mut c_char,
+    size: usize,
+    count: usize,
+    format: *const c_char,
+    locale: usize,
+    args: *const u64,
+) -> i32 {
+    const TRUNCATE: usize = usize::MAX;
+    if buffer.is_null() || size == 0 || format.is_null() {
+        if !buffer.is_null() && size != 0 {
+            unsafe { *buffer = 0 };
+        }
+        unsafe { *errno() = 22 };
+        return -1;
+    }
+    let needed = unsafe { super::ucrt::common_vsprintf(options | 2, std::ptr::null_mut(), 0, format, locale, args) };
+    if needed < 0 {
+        unsafe { *buffer = 0 };
+        return -1;
+    }
+    let needed = needed as usize;
+    let limit = if count == TRUNCATE { size - 1 } else { count };
+    if needed <= limit && needed < size {
+        return unsafe { super::ucrt::common_vsprintf(options, buffer, size, format, locale, args) };
+    }
+    if count != TRUNCATE && count >= size {
+        unsafe {
+            *buffer = 0;
+            *errno() = 34;
+        }
+        return -1;
+    }
+    // Truncated to `limit` characters.
+    let mut full = vec![0 as c_char; needed + 1];
+    unsafe {
+        super::ucrt::common_vsprintf(options, full.as_mut_ptr(), full.len(), format, locale, args);
+        std::ptr::copy_nonoverlapping(full.as_ptr(), buffer, limit);
+        *buffer.add(limit) = 0;
+    }
+    -1
+}
+/// __stdio_common_vsscanf for narrow conversions. The Windows format is translated
+/// for the host sscanf (all scanf arguments are pointers): I64/I/ll sizes, `l` on
+/// integers (32-bit long), `L` on floats (double); with the secure-CRT option the
+/// buffer size after each %s/%c/%[ becomes a field width. Wide conversions
+/// (%ls, %lc, %S, %C, %w...) fail with EINVAL.
+pub unsafe extern "win64" fn common_vsscanf(
+    options: u64,
+    input: *const c_char,
+    length: usize,
+    format: *const c_char,
+    _locale: usize,
+    args: *const usize,
+) -> i32 {
+    const SECURE: u64 = 1;
+    if input.is_null() || format.is_null() {
+        unsafe { *errno() = 22 };
+        return -1;
+    }
+    let text: Vec<u8> = {
+        let mut n = 0;
+        while n < length && unsafe { *input.add(n) } != 0 {
+            n += 1;
+        }
+        let mut v = unsafe { std::slice::from_raw_parts(input.cast::<u8>(), n) }.to_vec();
+        v.push(0);
+        v
+    };
+    let format = unsafe { std::ffi::CStr::from_ptr(format) }.to_bytes();
+    let mut out = Vec::with_capacity(format.len() + 16);
+    let mut pointers: Vec<usize> = Vec::new();
+    let mut next = 0usize;
+    let mut arg = || {
+        let value = unsafe { *args.add(next) };
+        next += 1;
+        value
+    };
+    let mut i = 0;
+    while i < format.len() {
+        let c = format[i];
+        out.push(c);
+        i += 1;
+        if c != b'%' {
+            continue;
+        }
+        if format.get(i) == Some(&b'%') {
+            out.push(b'%');
+            i += 1;
+            continue;
+        }
+        let suppressed = format.get(i) == Some(&b'*');
+        if suppressed {
+            out.push(b'*');
+            i += 1;
+        }
+        let width_start = i;
+        while format.get(i).is_some_and(u8::is_ascii_digit) {
+            i += 1;
+        }
+        let width = &format[width_start..i];
+        // Size prefix (Windows spelling), resolved against the conversion below.
+        let mut size: &[u8] = b"";
+        for prefix in [&b"I64"[..], b"I32", b"ll", b"hh", b"h", b"l", b"L", b"I", b"j", b"z", b"t", b"w"] {
+            if format[i..].starts_with(prefix) {
+                size = prefix;
+                i += prefix.len();
+                break;
+            }
+        }
+        let Some(&conversion) = format.get(i) else {
+            unsafe { *errno() = 22 };
+            return -1;
+        };
+        i += 1;
+        let integer = b"diouxXn".contains(&conversion);
+        let float = b"eEfFgGaA".contains(&conversion);
+        let text_conversion = matches!(conversion, b's' | b'c' | b'[');
+        let wide = (text_conversion && matches!(size, b"l" | b"w")) || matches!(conversion, b'S' | b'C');
+        if wide {
+            eprintln!("__stdio_common_vsscanf: wide conversions are not supported");
+            unsafe { *errno() = 22 };
+            return -1;
+        }
+        let host_size: &[u8] = match (size, integer, float) {
+            (b"I64" | b"ll" | b"I" | b"j" | b"z" | b"t", true, _) => b"ll",
+            (b"I32" | b"l", true, _) => b"",
+            (b"hh", true, _) => b"hh",
+            (b"h", true, _) => b"h",
+            (b"l" | b"L", _, true) => b"l",
+            (b"", _, _) => b"",
+            _ if text_conversion => b"",
+            _ => {
+                unsafe { *errno() = 22 };
+                return -1;
+            }
+        };
+        if !suppressed && text_conversion && options & SECURE != 0 {
+            let pointer = arg();
+            let buffer_size = arg() as u32 as usize;
+            if buffer_size == 0 {
+                unsafe { *errno() = 12 }; // ENOMEM, as UCRT for a zero-sized buffer
+                return 0;
+            }
+            let room = if conversion == b'c' { buffer_size } else { buffer_size - 1 };
+            let given: usize = std::str::from_utf8(width).ok().and_then(|w| w.parse().ok()).unwrap_or(0);
+            let w = if width.is_empty() { if conversion == b'c' { 1 } else { room } } else { given.min(room) };
+            if w == 0 {
+                unsafe { *errno() = 12 };
+                return 0;
+            }
+            out.extend_from_slice(w.to_string().as_bytes());
+            pointers.push(pointer);
+        } else {
+            out.extend_from_slice(width);
+            if !suppressed {
+                pointers.push(arg());
+            }
+        }
+        out.extend_from_slice(host_size);
+        out.push(conversion);
+        if conversion == b'[' {
+            // The scanset: optional '^', a leading ']' is literal, then up to ']'.
+            let begin = i;
+            if format.get(i) == Some(&b'^') {
+                i += 1;
+            }
+            if format.get(i) == Some(&b']') {
+                i += 1;
+            }
+            while format.get(i).is_some_and(|&s| s != b']') {
+                i += 1;
+            }
+            if i >= format.len() {
+                unsafe { *errno() = 22 };
+                return -1;
+            }
+            i += 1;
+            out.extend_from_slice(&format[begin..i]);
+        }
+        if pointers.len() > 32 {
+            eprintln!("__stdio_common_vsscanf: more than 32 conversions are not supported");
+            unsafe { *errno() = 22 };
+            return -1;
+        }
+    }
+    out.push(0);
+    let mut p = [0usize; 32];
+    p[..pointers.len()].copy_from_slice(&pointers);
+    unsafe {
+        sscanf(
+            text.as_ptr().cast(), out.as_ptr().cast(),
+            p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7], p[8], p[9], p[10], p[11], p[12], p[13], p[14], p[15],
+            p[16], p[17], p[18], p[19], p[20], p[21], p[22], p[23], p[24], p[25], p[26], p[27], p[28], p[29], p[30], p[31],
+        )
+    }
 }

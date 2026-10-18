@@ -8,7 +8,7 @@ use crate::{
 };
 use std::{
     collections::HashMap,
-    ffi::c_char,
+    ffi::{c_char, CStr},
     fs::{File, OpenOptions},
     io::{Read, Seek, SeekFrom, Write},
     os::unix::fs::{FileExt, MetadataExt, OpenOptionsExt, PermissionsExt},
@@ -651,12 +651,15 @@ pub unsafe extern "win64" fn size_ex(handle: usize, out: *mut i64) -> i32 {
 /// PeekNamedPipe: bytes available on a pipe (FIONREAD); no data is read.
 pub unsafe extern "win64" fn peek_named_pipe(
     handle: usize,
-    _buffer: usize,
-    _size: u32,
+    buffer: usize,
+    size: u32,
     read: *mut u32,
     available: *mut u32,
     left: *mut u32,
 ) -> i32 {
+    if let Some(res) = unsafe { super::pipes::peek(handle, buffer, size, read, available, left) } {
+        return res;
+    }
     unsafe extern "C" {
         fn ioctl(fd: i32, request: u64, ...) -> i32;
     }
@@ -699,6 +702,91 @@ pub extern "win64" fn cancel_io_ex(handle: usize, _overlapped: usize) -> i32 {
         fail(ERROR_INVALID_HANDLE, 0)
     }
 }
+pub extern "win64" fn cancel_synchronous_io(_thread: usize) -> i32 {
+    fail(1168, 0)
+}
+unsafe fn io_ex(
+    handle: usize,
+    buffer: *mut u8,
+    n: u32,
+    ov: *mut u8,
+    routine: Option<crate::api::threading::apc::IoRoutine>,
+    writing: bool,
+) -> i32 {
+    if ov.is_null() {
+        return fail(87, 0);
+    }
+    let Some(entry) = get(handle) else {
+        if super::pipes::known(handle) {
+            let mut moved = 0u32;
+            let ok = unsafe {
+                super::pipes::io(handle, buffer, n, &mut moved, std::ptr::null_mut(), writing)
+            }
+            .unwrap_or(0);
+            let err = if ok != 0 { 0 } else { error::get_last_error() };
+            unsafe {
+                (ov as *mut i64)
+                    .write_unaligned(if err == 0 { 0 } else { 0xc000_0185u32 as i32 as i64 });
+                (ov.add(8) as *mut u64).write_unaligned(moved as u64);
+            }
+            if let Some(routine) = routine {
+                crate::api::threading::apc::queue_io(routine, err, moved, ov as usize);
+            }
+            return ok;
+        }
+        return fail(ERROR_INVALID_HANDLE, 0);
+    };
+    let offset = unsafe {
+        (ov.add(16) as *const u32).read_unaligned() as u64
+            | ((ov.add(20) as *const u32).read_unaligned() as u64) << 32
+    };
+    let result = unsafe {
+        if writing {
+            entry
+                .file
+                .write_at(std::slice::from_raw_parts(buffer, n as usize), offset)
+        } else {
+            entry
+                .file
+                .read_at(std::slice::from_raw_parts_mut(buffer, n as usize), offset)
+        }
+    };
+    let (status, err, moved): (i64, u32, u32) = match &result {
+        Ok(0) if !writing && n > 0 => (0xc000_0011u32 as i32 as i64, ERROR_HANDLE_EOF, 0),
+        Ok(done) => (0, 0, *done as u32),
+        Err(e) => (0xc000_0185u32 as i32 as i64, paths::error(e), 0),
+    };
+    unsafe {
+        (ov as *mut i64).write_unaligned(status);
+        (ov.add(8) as *mut u64).write_unaligned(moved as u64);
+    }
+    if let Some(routine) = routine {
+        crate::api::threading::apc::queue_io(routine, err, moved, ov as usize);
+    }
+    if err != 0 && err != ERROR_HANDLE_EOF {
+        return fail(err, 0);
+    }
+    error::set(0);
+    1
+}
+pub unsafe extern "win64" fn read_ex(
+    handle: usize,
+    out: *mut u8,
+    n: u32,
+    ov: *mut u8,
+    routine: Option<crate::api::threading::apc::IoRoutine>,
+) -> i32 {
+    unsafe { io_ex(handle, out, n, ov, routine, false) }
+}
+pub unsafe extern "win64" fn write_ex(
+    handle: usize,
+    data: *const u8,
+    n: u32,
+    ov: *mut u8,
+    routine: Option<crate::api::threading::apc::IoRoutine>,
+) -> i32 {
+    unsafe { io_ex(handle, data as *mut u8, n, ov, routine, true) }
+}
 /// GetOverlappedResult: disk transfers finish immediately; pipe transfers may pend.
 pub unsafe extern "win64" fn overlapped_result(
     handle: usize,
@@ -722,6 +810,52 @@ pub unsafe extern "win64" fn overlapped_result(
         0xc000_0011 => fail(ERROR_HANDLE_EOF, 0),
         _ => fail(31, 0), // ERROR_GEN_FAILURE
     }
+}
+pub unsafe extern "win64" fn overlapped_result_ex(
+    handle: usize,
+    ov: *const u8,
+    transferred: *mut u32,
+    ms: u32,
+    alertable: i32,
+) -> i32 {
+    if alertable != 0 && crate::api::threading::apc::run() {
+        return fail(crate::api::threading::apc::WAIT_IO_COMPLETION, 0);
+    }
+    unsafe { overlapped_result(handle, ov, transferred, (ms != 0) as i32) }
+}
+pub unsafe extern "win64" fn final_path_name_by_handle_w(
+    handle: usize,
+    out: *mut u16,
+    cch: u32,
+    flags: u32,
+) -> u32 {
+    let Some(entry) = get(handle) else {
+        return fail(ERROR_INVALID_HANDLE, 0);
+    };
+    let Some(path) = entry.path.lock().unwrap().clone() else {
+        return fail(ERROR_INVALID_HANDLE, 0);
+    };
+    let win = paths::windows(&path);
+    let formatted = match flags & 0x7 {
+        0x4 => win
+            .strip_prefix("Z:")
+            .or_else(|| win.strip_prefix("C:"))
+            .unwrap_or(&win)
+            .to_string(),
+        _ => format!("\\\\?\\{win}"),
+    };
+    let wide: Vec<u16> = formatted.encode_utf16().collect();
+    let needed = wide.len() as u32 + 1;
+    if out.is_null() || cch < needed {
+        error::set(122);
+        return needed;
+    }
+    unsafe {
+        std::ptr::copy_nonoverlapping(wide.as_ptr(), out, wide.len());
+        *out.add(wide.len()) = 0;
+    }
+    error::set(0);
+    wide.len() as u32
 }
 
 // ---- metadata -------------------------------------------------------------
@@ -1267,6 +1401,57 @@ pub extern "win64" fn find_close(handle: usize) -> i32 {
         Some(_) => 1,
         None => fail(ERROR_INVALID_HANDLE, 0),
     }
+}
+
+pub unsafe extern "win64" fn find_first_change_notification_w(
+    path: *const u16,
+    watch_subtree: i32,
+    filter: u32,
+) -> usize {
+    let p = if !path.is_null() {
+        unsafe { crate::api::text::string(path) }.unwrap_or_default()
+    } else {
+        String::new()
+    };
+    eprintln!("FindFirstChangeNotificationW(path={p:?}, subtree={watch_subtree}, filter={filter:#x})");
+    let handle = crate::api::threading::events::create(false, false, None);
+    if handle == 0 {
+        INVALID_HANDLE
+    } else {
+        handle
+    }
+}
+
+pub unsafe extern "win64" fn find_first_change_notification_a(
+    path: *const c_char,
+    watch_subtree: i32,
+    filter: u32,
+) -> usize {
+    let p = if !path.is_null() {
+        unsafe { CStr::from_ptr(path) }.to_string_lossy().into_owned()
+    } else {
+        String::new()
+    };
+    eprintln!("FindFirstChangeNotificationA(path={p:?}, subtree={watch_subtree}, filter={filter:#x})");
+    let handle = crate::api::threading::events::create(false, false, None);
+    if handle == 0 {
+        INVALID_HANDLE
+    } else {
+        handle
+    }
+}
+
+pub extern "win64" fn find_next_change_notification(handle: usize) -> i32 {
+    eprintln!("FindNextChangeNotification(handle={handle:#x})");
+    1
+}
+
+pub extern "win64" fn find_close_change_notification(handle: usize) -> i32 {
+    eprintln!("FindCloseChangeNotification(handle={handle:#x})");
+    if handle != 0 && handle != INVALID_HANDLE {
+        crate::api::threading::events::close(handle);
+    }
+    1
 }
 
 // ---- path operations ------------------------------------------------------
@@ -1913,5 +2098,91 @@ pub unsafe extern "win64" fn set_file_information_by_handle(
     match result {
         Ok(()) => 1,
         Err(code) => fail(code, 0),
+    }
+}
+
+// ---- Windows 8 file entry points and links ---------------------------------------
+/// CreateFile2: CreateFileW with CREATEFILE2_EXTENDED_PARAMETERS (x64: dwSize @0,
+/// dwFileAttributes @4, dwFileFlags @8, dwSecurityQosFlags @12, lpSecurityAttributes
+/// @16, hTemplateFile @24).
+pub unsafe extern "win64" fn create_2(
+    name: *const u16, access: u32, share: u32, disposition: u32, parameters: *const u8,
+) -> usize {
+    let (attributes, flags, security, template) = if parameters.is_null() {
+        (0, 0, 0, 0)
+    } else {
+        unsafe {
+            if parameters.cast::<u32>().read_unaligned() < 32 {
+                return fail(87, usize::MAX);
+            }
+            (
+                parameters.add(4).cast::<u32>().read_unaligned(),
+                parameters.add(8).cast::<u32>().read_unaligned(),
+                parameters.add(16).cast::<usize>().read_unaligned(),
+                parameters.add(24).cast::<usize>().read_unaligned(),
+            )
+        }
+    };
+    unsafe { create_w(name, access, share, security, disposition, attributes | flags, template) }
+}
+/// CopyFile2: COPY_FILE_FAIL_IF_EXISTS only; progress routines, cancellation and other
+/// copy flags return HRESULT_FROM_WIN32(ERROR_NOT_SUPPORTED). COPYFILE2_EXTENDED_PARAMETERS
+/// (x64): dwSize @0, dwCopyFlags @4, pfCancel @8, pProgressRoutine @16, context @24.
+pub unsafe extern "win64" fn copy_2(from: *const u16, to: *const u16, parameters: *const u8) -> i32 {
+    const COPY_FILE_FAIL_IF_EXISTS: u32 = 1;
+    let hresult = |code: u32| if code == 0 { 0 } else { (0x8007_0000 | (code & 0xffff)) as i32 };
+    let mut flags = 0;
+    if !parameters.is_null() {
+        unsafe {
+            if parameters.cast::<u32>().read_unaligned() < 32 {
+                return hresult(87);
+            }
+            flags = parameters.add(4).cast::<u32>().read_unaligned();
+            let cancel = parameters.add(8).cast::<usize>().read_unaligned();
+            let progress = parameters.add(16).cast::<usize>().read_unaligned();
+            if flags & !COPY_FILE_FAIL_IF_EXISTS != 0 || cancel != 0 || progress != 0 {
+                eprintln!("CopyFile2: flags {flags:#x}, cancel or progress callbacks are not supported");
+                error::set(50);
+                return hresult(50);
+            }
+        }
+    }
+    if unsafe { copy_w(from, to, (flags & COPY_FILE_FAIL_IF_EXISTS != 0) as i32) } != 0 {
+        return 0;
+    }
+    hresult(crate::api::system::error::get_last_error())
+}
+/// CreateSymbolicLinkW (file or directory; unprivileged creation is the default here).
+/// Relative targets stay relative to the link's directory.
+pub unsafe extern "win64" fn create_symbolic_link_w(link: *const u16, target: *const u16, flags: u32) -> u8 {
+    const KNOWN: u32 = 1 | 2; // SYMBOLIC_LINK_FLAG_DIRECTORY, _ALLOW_UNPRIVILEGED_CREATE
+    if flags & !KNOWN != 0 {
+        return fail(87, 0);
+    }
+    let Some(target_text) = (unsafe { text::string(target) }) else {
+        return fail(87, 0);
+    };
+    let absolute = target_text.as_bytes().get(1) == Some(&b':') || target_text.starts_with(['\\', '/']);
+    let target_path = if absolute {
+        match paths::host(&target_text) {
+            Ok(path) => path,
+            Err(code) => return fail(code, 0),
+        }
+    } else {
+        PathBuf::from(target_text.replace('\\', "/"))
+    };
+    let link_path = match unsafe { wide_path(link) } {
+        Ok(path) => path,
+        Err(code) => return fail(code, 0),
+    };
+    match std::os::unix::fs::symlink(&target_path, &link_path) {
+        Ok(()) => 1,
+        Err(e) => fail(path_error(&link_path, &e), 0),
+    }
+}
+pub unsafe extern "win64" fn create_hard_link_w(new: *const u16, existing: *const u16, _security: usize) -> i32 {
+    match (unsafe { wide_path(new) }, unsafe { wide_path(existing) }) {
+        (Ok(new), Ok(existing)) => result(&new, std::fs::hard_link(&existing, &new)),
+        (Err(code), _) | (_, Err(code)) => fail(code, 0),
     }
 }

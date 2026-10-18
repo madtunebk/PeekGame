@@ -5,6 +5,7 @@ pub(crate) mod events;
 pub(crate) mod fls;
 pub(crate) mod objects;
 pub(crate) mod once;
+pub(crate) mod pool;
 pub(crate) mod slist;
 pub(crate) mod srw;
 pub(crate) mod suspend;

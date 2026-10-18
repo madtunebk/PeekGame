@@ -25,6 +25,14 @@ exports! {
     export!("ntdll.dll", "NtSetInformationFile", "filesystem", "partial", "basic, position, allocation, end-of-file info", crate::api::filesystem::nt_io::set_information_file),
     export!("ntdll.dll", "RtlNtStatusToDosError", "filesystem", "partial", "known file/IO statuses; unknown returns ERROR_MR_MID_NOT_FOUND", crate::api::filesystem::directory::status_to_dos),
     implemented!("SetNamedPipeHandleState", "file", "partial", "local Unix socket byte-stream pipe clients", crate::api::filesystem::pipes::set_state),
+    implemented!("CreateNamedPipeW", "file", "implemented", "named pipe server backed by Unix domain socket", crate::api::filesystem::pipes::create_named_pipe_w),
+    implemented!("CreateNamedPipeA", "file", "implemented", "named pipe server backed by Unix domain socket", crate::api::filesystem::pipes::create_named_pipe_a),
+    implemented!("ConnectNamedPipe", "file", "implemented", "accepts client connection on named pipe server", crate::api::filesystem::pipes::connect_named_pipe),
+    implemented!("DisconnectNamedPipe", "file", "implemented", "disconnects client from named pipe server", crate::api::filesystem::pipes::disconnect_named_pipe),
+    implemented!("WaitNamedPipeW", "file", "implemented", "checks named pipe availability", crate::api::filesystem::pipes::wait_named_pipe_w),
+    implemented!("WaitNamedPipeA", "file", "implemented", "checks named pipe availability", crate::api::filesystem::pipes::wait_named_pipe_a),
+    implemented!("GetNamedPipeClientProcessId", "file", "implemented", "returns connected peer process ID", crate::api::filesystem::pipes::get_pipe_process_id),
+    implemented!("GetNamedPipeServerProcessId", "file", "implemented", "returns connected peer process ID", crate::api::filesystem::pipes::get_pipe_process_id),
     implemented!("GetLogicalDrives", "filesystem", "partial", "returns drive C: availability mask", files::get_logical_drives),
     implemented!("GetVolumeInformationW", "filesystem", "partial", "NTFS filesystem info for root volume", files::get_volume_information_w),
     implemented!("SetFileInformationByHandle", "filesystem", "partial", "sets file length and allocation info", files::set_file_information_by_handle),
@@ -219,6 +227,34 @@ exports! {
         files::find_close
     ),
     implemented!(
+        "FindFirstChangeNotificationW",
+        "filesystem",
+        "implemented",
+        "creates change notification event handle",
+        files::find_first_change_notification_w
+    ),
+    implemented!(
+        "FindFirstChangeNotificationA",
+        "filesystem",
+        "implemented",
+        "creates change notification event handle",
+        files::find_first_change_notification_a
+    ),
+    implemented!(
+        "FindNextChangeNotification",
+        "filesystem",
+        "implemented",
+        "resets change notification handle",
+        files::find_next_change_notification
+    ),
+    implemented!(
+        "FindCloseChangeNotification",
+        "filesystem",
+        "implemented",
+        "stops change notification monitoring",
+        files::find_close_change_notification
+    ),
+    implemented!(
         "CreateDirectoryW",
         "filesystem",
         "partial",
@@ -260,6 +296,10 @@ exports! {
         "copy, fail-if-exists",
         files::copy_w
     ),
+    implemented!("CreateFile2", "filesystem", "partial", "CreateFileW with CREATEFILE2_EXTENDED_PARAMETERS attributes/flags/security/template", files::create_2),
+    implemented!("CopyFile2", "filesystem", "partial", "COPY_FILE_FAIL_IF_EXISTS; progress/cancel/other flags HRESULT ERROR_NOT_SUPPORTED", files::copy_2),
+    implemented!("CreateSymbolicLinkW", "filesystem", "implemented", "host symlink; relative targets stay relative", files::create_symbolic_link_w),
+    implemented!("CreateHardLinkW", "filesystem", "implemented", "host hard link", files::create_hard_link_w),
     implemented!(
         "SetFileAttributesW",
         "filesystem",
@@ -343,6 +383,41 @@ exports! {
         "implemented",
         "transfers complete at once",
         files::overlapped_result
+    ),
+    implemented!(
+        "GetOverlappedResultEx",
+        "filesystem",
+        "implemented",
+        "alertable overlapped result check",
+        files::overlapped_result_ex
+    ),
+    implemented!(
+        "ReadFileEx",
+        "filesystem",
+        "implemented",
+        "overlapped read with APC completion routine",
+        files::read_ex
+    ),
+    implemented!(
+        "WriteFileEx",
+        "filesystem",
+        "implemented",
+        "overlapped write with APC completion routine",
+        files::write_ex
+    ),
+    implemented!(
+        "CancelSynchronousIo",
+        "filesystem",
+        "implemented",
+        "nothing is ever pending: ERROR_NOT_FOUND",
+        files::cancel_synchronous_io
+    ),
+    implemented!(
+        "GetFinalPathNameByHandleW",
+        "filesystem",
+        "partial",
+        "returns \\\\?\\ Windows path for open file handles",
+        files::final_path_name_by_handle_w
     ),
     implemented!(
         "GetLongPathNameW",
