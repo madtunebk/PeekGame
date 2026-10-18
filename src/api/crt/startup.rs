@@ -93,36 +93,6 @@ pub unsafe extern "win64" fn init_term(
     mut begin: *const Option<Callback>,
     end: *const Option<Callback>,
 ) {
-    // Unreal Engine games (such as Palworld) may include plugins or telemetry
-    // whose C++ global constructors call FCommandLine::Get() before WinMain runs
-    // FCommandLine::Set(). If FCommandLine::bIsInitialized is false (0), initialize it
-    // with the process command line so early queries succeed instead of raising LowLevelFatalError.
-    unsafe {
-        if let Some(process) = crate::host::process::PROCESS.get() {
-            if process.image_base == 0x140000000
-                && crate::images::by_address(0x1434826b4).is_some()
-                && crate::images::by_address(0x149427570).is_some()
-            {
-                let check_insn = 0x1434826b4 as *const [u8; 7];
-                if *check_insn == [0x80, 0x3d, 0xad, 0x4e, 0xfa, 0x05, 0x00] {
-                    let b_init = 0x149427568 as *mut u8;
-                    let cmd_buf = 0x149427570 as *mut u16;
-                    if *b_init == 0 {
-                        eprintln!("Pre-initializing Unreal Engine FCommandLine...");
-                        let wcmd = crate::api::system::startup::get_command_line_w();
-                        let mut len = 0;
-                        while *wcmd.add(len) != 0 && len < 16380 {
-                            *cmd_buf.add(len) = *wcmd.add(len);
-                            len += 1;
-                        }
-                        *cmd_buf.add(len) = 0;
-                        *b_init = 1;
-                        eprintln!("Pre-initialized Unreal Engine FCommandLine ({} chars)", len);
-                    }
-                }
-            }
-        }
-    }
     while begin < end {
         if let Some(callback) = unsafe { *begin } {
             callback();
@@ -148,10 +118,7 @@ pub extern "win64" fn exit(code: i32) -> ! {
     for i in 0..32 {
         let val = unsafe { ptr.add(i).read() };
         if let Some(m) = crate::images::try_by_address(val) {
-            eprintln!("  exit_stack[{i}] = {val:#x} ({}+{:#x})", m.name, val - m.base);
-        } else if val >= 0x140000000 && val < 0x150000000 {
-            eprintln!("  exit_stack[{i}] = {val:#x} (Palworld+{:#x})", val - 0x140000000);
-        }
+            eprintln!("  exit_stack[{i}] = {val:#x} ({}+{:#x})", m.name, val - m.base);        }
     }
     cexit();
     std::process::exit(code & 255)

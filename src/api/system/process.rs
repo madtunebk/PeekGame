@@ -96,10 +96,7 @@ pub(crate) extern "win64" fn exit_process(code: u32) -> ! {
     for i in 0..48 {
         let val = unsafe { ptr.add(i).read() };
         if let Some(m) = crate::images::try_by_address(val) {
-            eprintln!("  stack[{i}] = {val:#x} ({}+{:#x})", m.name, val - m.base);
-        } else if val >= 0x140000000 && val < 0x150000000 {
-            eprintln!("  stack[{i}] = {val:#x} (Palworld+{:#x})", val - 0x140000000);
-        }
+            eprintln!("  stack[{i}] = {val:#x} ({}+{:#x})", m.name, val - m.base);        }
     }
     EXITING.store(true, Ordering::Release);
     crate::api::crt::startup::cexit();

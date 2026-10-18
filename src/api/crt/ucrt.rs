@@ -773,10 +773,7 @@ pub extern "win64" fn exit_now(code: i32) -> ! {
     for i in 0..32 {
         let val = unsafe { ptr.add(i).read() };
         if let Some(m) = crate::images::try_by_address(val) {
-            eprintln!("  exit_stack[{i}] = {val:#x} ({}+{:#x})", m.name, val - m.base);
-        } else if val >= 0x140000000 && val < 0x150000000 {
-            eprintln!("  exit_stack[{i}] = {val:#x} (Palworld+{:#x})", val - 0x140000000);
-        }
+            eprintln!("  exit_stack[{i}] = {val:#x} ({}+{:#x})", m.name, val - m.base);        }
     }
     unsafe { host_exit(code) }
 }
