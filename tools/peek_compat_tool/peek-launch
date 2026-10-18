@@ -113,6 +113,16 @@ if [ -n "${LD_LIBRARY_PATH:-}" ]; then
     printf 'LD_LIBRARY_PATH for the loader: %q\n' "$LD_LIBRARY_PATH"
 fi
 
+# DXVK writes its pipeline state cache to DXVK_STATE_CACHE_PATH, else to the current
+# directory. Steam usually sets it to the game's shadercache; when it does not, give
+# DXVK a persistent per-app directory so the cache survives and is reused across runs
+# instead of scattering a *.dxvk-cache beside the working directory.
+if [ -z "${DXVK_STATE_CACHE_PATH:-}" ]; then
+    DXVK_STATE_CACHE_PATH=${XDG_CACHE_HOME:-$HOME/.cache}/peekgame/dxvk/${SteamAppId:-noappid}
+    mkdir -p "$DXVK_STATE_CACHE_PATH" && export DXVK_STATE_CACHE_PATH \
+        && printf 'DXVK_STATE_CACHE_PATH: %q\n' "$DXVK_STATE_CACHE_PATH"
+fi
+
 cmd=("$PEEK_BIN" "$exe" --run "$@")
 [ -n "${PEEK_TIMEOUT:-}" ] && cmd=(timeout --foreground "$PEEK_TIMEOUT" "${cmd[@]}")
 printf 'exec:'; printf ' %q' "${cmd[@]}"; echo
