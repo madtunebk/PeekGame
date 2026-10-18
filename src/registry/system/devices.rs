@@ -181,6 +181,22 @@ exports! {
     ),
     export!(
         "setupapi.dll",
+        "SetupDiGetClassDevsExW",
+        "system",
+        "partial",
+        "empty device set",
+        devices::get_class_devs_ex
+    ),
+    export!(
+        "setupapi.dll",
+        "SetupDiGetClassDevsExA",
+        "system",
+        "partial",
+        "empty device set",
+        devices::get_class_devs_ex
+    ),
+    export!(
+        "setupapi.dll",
         "SetupDiEnumDeviceInterfaces",
         "system",
         "partial",

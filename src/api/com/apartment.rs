@@ -128,3 +128,74 @@ pub extern "win64" fn set_proxy_blanket(
     0
 }
 
+fn parse_guid(s: &str) -> Option<[u8; 16]> {
+    let clean = s.trim().trim_start_matches('{').trim_end_matches('}');
+    let parts: Vec<&str> = clean.split('-').collect();
+    if parts.len() != 5 {
+        return None;
+    }
+    if parts[0].len() != 8 || parts[1].len() != 4 || parts[2].len() != 4 || parts[3].len() != 4 || parts[4].len() != 12 {
+        return None;
+    }
+    let d1 = u32::from_str_radix(parts[0], 16).ok()?;
+    let d2 = u16::from_str_radix(parts[1], 16).ok()?;
+    let d3 = u16::from_str_radix(parts[2], 16).ok()?;
+    let d4_0 = u8::from_str_radix(&parts[3][0..2], 16).ok()?;
+    let d4_1 = u8::from_str_radix(&parts[3][2..4], 16).ok()?;
+    let mut d4_rest = [0u8; 6];
+    for i in 0..6 {
+        d4_rest[i] = u8::from_str_radix(&parts[4][i*2..i*2+2], 16).ok()?;
+    }
+    let mut out = [0u8; 16];
+    out[0..4].copy_from_slice(&d1.to_le_bytes());
+    out[4..6].copy_from_slice(&d2.to_le_bytes());
+    out[6..8].copy_from_slice(&d3.to_le_bytes());
+    out[8] = d4_0;
+    out[9] = d4_1;
+    out[10..16].copy_from_slice(&d4_rest);
+    Some(out)
+}
+
+pub unsafe extern "win64" fn iid_from_string(lpsz: *const u16, lpiid: *mut u8) -> i32 {
+    if lpiid.is_null() {
+        return 0x80070057u32 as i32; // E_INVALIDARG
+    }
+    if lpsz.is_null() {
+        unsafe { lpiid.write_bytes(0, 16) };
+        return 0; // S_OK
+    }
+    let s = unsafe { crate::api::text::string(lpsz) }.unwrap_or_default();
+    match parse_guid(&s) {
+        Some(guid) => {
+            unsafe { std::ptr::copy_nonoverlapping(guid.as_ptr(), lpiid, 16) };
+            0
+        }
+        None => 0x800401E0u32 as i32, // CO_E_IIDSTRING
+    }
+}
+
+pub unsafe extern "win64" fn clsid_from_string(lpsz: *const u16, lpclsid: *mut u8) -> i32 {
+    unsafe { iid_from_string(lpsz, lpclsid) }
+}
+
+pub unsafe extern "win64" fn string_from_iid(rclsid: *const u8, lplpsz: *mut *mut u16) -> i32 {
+    if rclsid.is_null() || lplpsz.is_null() {
+        return 0x80070057u32 as i32;
+    }
+    let d1 = unsafe { (rclsid as *const u32).read_unaligned() };
+    let d2 = unsafe { (rclsid.add(4) as *const u16).read_unaligned() };
+    let d3 = unsafe { (rclsid.add(6) as *const u16).read_unaligned() };
+    let d4 = unsafe { std::slice::from_raw_parts(rclsid.add(8), 8) };
+    let s = format!("{{{:08X}-{:04X}-{:04X}-{:02X}{:02X}-{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}}}",
+        d1, d2, d3, d4[0], d4[1], d4[2], d4[3], d4[4], d4[5], d4[6], d4[7]);
+    let utf16: Vec<u16> = s.encode_utf16().chain(std::iter::once(0)).collect();
+    let mem = allocate(utf16.len() * 2) as *mut u16;
+    if mem.is_null() {
+        return 0x8007000Eu32 as i32;
+    }
+    unsafe {
+        std::ptr::copy_nonoverlapping(utf16.as_ptr(), mem, utf16.len());
+        *lplpsz = mem;
+    }
+    0
+}

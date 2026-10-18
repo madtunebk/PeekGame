@@ -61,7 +61,7 @@ pub(crate) extern "win64" fn get_dc(hwnd: usize) -> usize {
     DCS.lock()
         .unwrap()
         .get_or_insert_with(HashMap::new)
-        .insert(dc, hwnd);
+        .insert(dc, if hwnd == 0 { DESKTOP } else { hwnd });
     dc
 }
 pub(crate) extern "win64" fn get_dc_ex(hwnd: usize, _clip: usize, _flags: u32) -> usize {
@@ -443,6 +443,28 @@ pub(crate) extern "win64" fn imm_set_candidate_window(_context: usize, _form: us
 pub(crate) extern "win64" fn imm_set_composition_window(_context: usize, _form: usize) -> i32 {
     1
 }
+pub(crate) extern "win64" fn imm_create_context() -> usize {
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
+    0x0009_0000 | (NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed) & 0xffff)
+}
+pub(crate) extern "win64" fn imm_destroy_context(_context: usize) -> i32 {
+    1
+}
+pub(crate) extern "win64" fn imm_get_property(_hkl: usize, index: u32) -> u32 {
+    match index {
+        4 => 0x0008_0000, // IGP_PROPERTY: IME_PROP_UNICODE
+        _ => 0,
+    }
+}
+pub(crate) extern "win64" fn imm_is_ime(_hkl: usize) -> i32 {
+    0
+}
+pub(crate) extern "win64" fn imm_get_ime_file_name_w(_hkl: usize, _name: *mut u16, _size: u32) -> u32 {
+    0
+}
+pub(crate) extern "win64" fn imm_get_ime_file_name_a(_hkl: usize, _name: *mut u8, _size: u32) -> u32 {
+    0
+}
 
 // ---- DWM ------------------------------------------------------------------------------------
 /// DwmGetWindowAttribute: DWMWA_EXTENDED_FRAME_BOUNDS (9) is the window rectangle;
@@ -766,7 +788,187 @@ pub(crate) extern "win64" fn load_image_w(
     load_icon(instance, name as usize)
 }
 pub(crate) extern "win64" fn create_icon_indirect(_info: usize) -> usize {
-    load_icon(0, 0)
+    load_icon(0, 32512)
+}
+pub(crate) extern "win64" fn set_parent(_child: usize, _parent: usize) -> usize {
+    DESKTOP
+}
+pub(crate) extern "win64" fn is_child(_parent: usize, _child: usize) -> i32 {
+    0
+}
+pub(crate) extern "win64" fn vk_key_scan_ex_w(ch: u16, _hkl: usize) -> i16 {
+    match ch as u8 {
+        b'a'..=b'z' => (ch as u8 - b'a' + b'A') as i16,
+        b'A'..=b'Z' => ((ch as u8) as i16) | 0x0100,
+        b'0'..=b'9' => (ch as u8) as i16,
+        b' ' => 0x20,
+        b'\r' | b'\n' => 0x0d,
+        b'\t' => 0x09,
+        0x1b => 0x1b,
+        _ => -1,
+    }
+}
+pub(crate) unsafe extern "win64" fn get_window_display_affinity(
+    _hwnd: usize,
+    out: *mut u32,
+) -> i32 {
+    if !out.is_null() {
+        unsafe { *out = 0 };
+    }
+    1
+}
+pub(crate) unsafe extern "win64" fn change_display_settings_w(
+    mode: *const u8,
+    flags: u32,
+) -> i32 {
+    unsafe {
+        crate::api::system::compat::change_display_settings_ex_w(
+            std::ptr::null(),
+            mode,
+            0,
+            flags,
+            0,
+        )
+    }
+}
+pub(crate) extern "win64" fn is_dialog_message_w(_hwnd: usize, _msg: usize) -> i32 {
+    0
+}
+#[allow(clippy::too_many_arguments)]
+pub(crate) extern "win64" fn draw_icon_ex(
+    _dc: usize,
+    _x: i32,
+    _y: i32,
+    _icon: usize,
+    _w: i32,
+    _h: i32,
+    _step: u32,
+    _br: usize,
+    _flags: u32,
+) -> i32 {
+    1
+}
+pub(crate) extern "win64" fn get_class_long_ptr_w(_hwnd: usize, _index: i32) -> usize {
+    0
+}
+pub(crate) extern "win64" fn fill_rect(_dc: usize, _rect: usize, _brush: usize) -> i32 {
+    1
+}
+pub(crate) extern "win64" fn set_layered_window_attributes(
+    _hwnd: usize,
+    _key: u32,
+    _alpha: u8,
+    _flags: u32,
+) -> i32 {
+    1
+}
+pub(crate) extern "win64" fn register_hot_key(
+    _hwnd: usize,
+    _id: i32,
+    _mod: u32,
+    _vk: u32,
+) -> i32 {
+    1
+}
+pub(crate) extern "win64" fn unregister_hot_key(_hwnd: usize, _id: i32) -> i32 {
+    1
+}
+pub(crate) extern "win64" fn get_dlg_item(_dlg: usize, _id: i32) -> usize {
+    0
+}
+pub(crate) unsafe extern "win64" fn get_dlg_item_text_w(
+    _dlg: usize,
+    _id: i32,
+    out: *mut u16,
+    cch: i32,
+) -> u32 {
+    if !out.is_null() && cch > 0 {
+        unsafe { *out = 0 };
+    }
+    0
+}
+#[allow(clippy::too_many_arguments)]
+pub(crate) extern "win64" fn draw_state_w(
+    _dc: usize,
+    _br: usize,
+    _cb: usize,
+    _lp: usize,
+    _wp: usize,
+    _x: i32,
+    _y: i32,
+    _cx: i32,
+    _cy: i32,
+    _flags: u32,
+) -> i32 {
+    1
+}
+pub(crate) extern "win64" fn draw_text_w(
+    _dc: usize,
+    _str: *const u16,
+    _count: i32,
+    _rect: usize,
+    _fmt: u32,
+) -> i32 {
+    16
+}
+pub(crate) extern "win64" fn create_popup_menu() -> usize {
+    0x000e_8000
+}
+pub(crate) extern "win64" fn insert_menu_item_w(
+    _menu: usize,
+    _item: u32,
+    _by_pos: i32,
+    _info: usize,
+) -> i32 {
+    1
+}
+#[allow(clippy::too_many_arguments)]
+pub(crate) extern "win64" fn track_popup_menu(
+    _menu: usize,
+    _flags: u32,
+    _x: i32,
+    _y: i32,
+    _res: i32,
+    _hwnd: usize,
+    _rect: usize,
+) -> i32 {
+    0
+}
+pub(crate) extern "win64" fn delete_menu(_menu: usize, _pos: u32, _flags: u32) -> i32 {
+    1
+}
+pub(crate) extern "win64" fn imm_get_description_w(
+    _hkl: usize,
+    _buf: *mut u16,
+    _cch: u32,
+) -> u32 {
+    0
+}
+pub(crate) unsafe extern "win64" fn dwm_get_composition_timing_info(
+    _hwnd: usize,
+    info: *mut u8,
+) -> i32 {
+    if info.is_null() {
+        return -2147024809;
+    }
+    let size = unsafe { (info as *const u32).read_unaligned() } as usize;
+    if size > 4 && size <= 512 {
+        unsafe { info.add(4).write_bytes(0, size - 4) };
+        if size >= 12 {
+            unsafe {
+                (info.add(4) as *mut u32).write_unaligned(60);
+                (info.add(8) as *mut u32).write_unaligned(1);
+            }
+        }
+    }
+    0
+}
+pub(crate) extern "win64" fn set_window_theme(
+    _hwnd: usize,
+    _sub_app: *const u16,
+    _sub_id: *const u16,
+) -> i32 {
+    0
 }
 
 // ---- rectangles -----------------------------------------------------------------------------
@@ -1049,4 +1251,24 @@ pub unsafe extern "win64" fn wvsprintf_a(
 ) -> i32 {
     unsafe { wsprintf_a_impl(buffer, format, arglist) }
 }
+
+#[repr(C)]
+pub struct InitCommonControlsExStruct {
+    pub size: u32,
+    pub icc: u32,
+}
+
+pub unsafe extern "win64" fn init_common_controls_ex(
+    init: *const InitCommonControlsExStruct,
+) -> i32 {
+    if init.is_null() {
+        return 0;
+    }
+    if unsafe { (*init).size } < std::mem::size_of::<InitCommonControlsExStruct>() as u32 {
+        return 0;
+    }
+    1
+}
+
+pub extern "win64" fn init_common_controls() {}
 

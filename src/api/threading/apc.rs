@@ -11,9 +11,11 @@ pub const WAIT_IO_COMPLETION: u32 = 0xC0;
 type Routine = extern "win64" fn(usize);
 /// PTIMERAPCROUTINE: context, due time low and high parts.
 pub(crate) type TimerRoutine = extern "win64" fn(usize, u32, u32);
+pub(crate) type IoRoutine = extern "win64" fn(u32, u32, usize);
 enum Apc {
     User(Routine, usize),
     Timer(TimerRoutine, usize, u64),
+    Io(IoRoutine, u32, u32, usize),
 }
 type Queues = HashMap<u32, VecDeque<Apc>>;
 static QUEUES: Mutex<Option<Queues>> = Mutex::new(None);
@@ -43,6 +45,18 @@ pub(crate) fn queue_timer(thread: u32, routine: TimerRoutine, context: usize, du
         .push_back(Apc::Timer(routine, context, due));
     objects::changed();
 }
+/// Queues a ReadFileEx/WriteFileEx completion routine for the calling thread.
+pub(crate) fn queue_io(routine: IoRoutine, err: u32, bytes: u32, ov: usize) {
+    let thread = startup::thread_id();
+    QUEUES
+        .lock()
+        .unwrap()
+        .get_or_insert_with(HashMap::new)
+        .entry(thread)
+        .or_default()
+        .push_back(Apc::Io(routine, err, bytes, ov));
+    objects::changed();
+}
 /// Does the calling thread have APCs queued?
 pub fn pending() -> bool {
     let id = startup::thread_id();
@@ -67,6 +81,7 @@ pub fn run() -> bool {
         match next {
             Some(Apc::User(routine, data)) => routine(data),
             Some(Apc::Timer(routine, context, due)) => routine(context, due as u32, (due >> 32) as u32),
+            Some(Apc::Io(routine, err, bytes, ov)) => routine(err, bytes, ov),
             None => return ran,
         }
         ran = true;

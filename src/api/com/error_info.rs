@@ -25,3 +25,11 @@ pub unsafe extern "win64" fn get_error_info(_reserved: u32, out: *mut *mut c_voi
         }
     })
 }
+
+pub unsafe extern "win64" fn create_error_info(out: *mut *mut c_void) -> i32 {
+    if !out.is_null() {
+        unsafe { *out = std::ptr::null_mut() };
+    }
+    0x80004001u32 as i32 // E_NOTIMPL
+}
+

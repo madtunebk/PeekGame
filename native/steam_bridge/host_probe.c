@@ -5,6 +5,7 @@
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <time.h>
 
 #define WIN __attribute__((ms_abi))
@@ -22,10 +23,20 @@ static int probe(const char *version,int run_frame,const char *utils_ver,const c
     int32_t user=SLOT(client,2,int32_t(WIN *)(void *,int32_t))(client,pipe);
     if(!user) {puts("FAIL: ConnectToGlobalUser returned 0");SLOT(client,1,bool(WIN *)(void *,int32_t))(client,pipe);return 1;}
     printf("pipe=%d user=%d\n",pipe,user);
+    int status=0;
+
+    if(!strcmp(version,"SteamClient020")) {
+        const char *optional_versions[]={"SteamMatchMakingServers002","SteamNetworking006",
+            "SteamNetworkingSockets012","SteamNetworkingUtils004"};
+        for(size_t i=0;i<sizeof optional_versions/sizeof *optional_versions;i++) {
+            void *object=SLOT(client,12,void *(WIN *)(void *,int32_t,int32_t,const char *))(client,user,pipe,optional_versions[i]);
+            printf("%s: %s\n",optional_versions[i],object?"available through Windows ABI":"unavailable");
+            if(!object)status=1;
+        }
+    }
 
     void *utils=SLOT(client,9,void *(WIN *)(void *,int32_t,const char *))(client,pipe,utils_ver);
     void *steam_user=SLOT(client,5,void *(WIN *)(void *,int32_t,int32_t,const char *))(client,user,pipe,user_ver);
-    int status=0;
     if(!utils || !steam_user) {printf("FAIL: %s / %s unavailable\n",utils_ver,user_ver);status=1;}
     else {
         uint32_t app=SLOT(utils,9,uint32_t(WIN *)(void *))(utils);

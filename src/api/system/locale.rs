@@ -549,6 +549,16 @@ pub unsafe extern "win64" fn compare_ex(
 ) -> i32 {
     unsafe { compare(flags, a, a_count, b, b_count) }
 }
+pub unsafe extern "win64" fn compare_ordinal(
+    a: *const u16,
+    a_count: i32,
+    b: *const u16,
+    b_count: i32,
+    ignore_case: i32,
+) -> i32 {
+    let flags = if ignore_case != 0 { NORM_IGNORECASE } else { 0 };
+    unsafe { compare(flags, a, a_count, b, b_count) }
+}
 
 /// The LANGID a "ll-CC" or "ll" locale name stands for.
 fn lcid_of(name: &str) -> Option<u32> {
@@ -604,6 +614,19 @@ pub unsafe extern "win64" fn lcid_to_locale_name(
 pub unsafe extern "win64" fn is_valid_locale_name(name: *const u16) -> i32 {
     let name = String::from_utf16_lossy(unsafe { text::units(name) });
     (!name.is_empty() && lcid_of(&name).is_some()) as i32
+}
+pub unsafe extern "win64" fn resolve_locale_name(
+    name: *const u16,
+    out: *mut u16,
+    capacity: i32,
+) -> i32 {
+    let lcid = if name.is_null() {
+        langid() as u32
+    } else {
+        let s = String::from_utf16_lossy(unsafe { text::units(name) });
+        lcid_of(&s).unwrap_or(0x0409)
+    };
+    unsafe { lcid_to_locale_name(lcid, out, capacity, 0) }
 }
 type EnumLocalesEx = extern "win64" fn(*const u16, u32, isize) -> i32;
 /// EnumSystemLocalesEx: the user's locale (LOCALE_SPECIFICDATA when it names a
@@ -745,3 +768,53 @@ pub unsafe extern "win64" fn thread_preferred_ui_languages(
     }
     unsafe { preferred_ui_languages(flags & (MUI_LANGUAGE_ID | MUI_LANGUAGE_NAME), count, buffer, size) }
 }
+
+pub extern "win64" fn get_user_geo_id(geo_class: u32) -> i32 {
+    // GEOCLASS_NATION = 16, GEOCLASS_REGION = 14
+    if geo_class != 16 && geo_class != 14 {
+        error::set(87); // ERROR_INVALID_PARAMETER
+        return -1; // GEOID_NOT_AVAILABLE
+    }
+    let (_, country) = parts();
+    match country.as_str() {
+        "RO" => 200,
+        "GB" | "UK" => 242,
+        "DE" => 94,
+        "FR" => 84,
+        "CA" => 39,
+        "AU" => 12,
+        "JP" => 122,
+        _ => 244, // United States
+    }
+}
+
+pub unsafe extern "win64" fn get_geo_info_w(
+    _geoid: i32,
+    geo_type: u32,
+    lp_geo_data: *mut u16,
+    cch_data: i32,
+    _lang_id: u16,
+) -> i32 {
+    let (_, country) = parts();
+    let val = match geo_type {
+        4 => country, // GEO_ISO2
+        5 => match country.as_str() { // GEO_ISO3
+            "RO" => "ROU".to_string(),
+            "GB" | "UK" => "GBR".to_string(),
+            "DE" => "DEU".to_string(),
+            "FR" => "FRA".to_string(),
+            _ => "USA".to_string(),
+        },
+        _ => country,
+    };
+    let utf16: Vec<u16> = val.encode_utf16().chain(std::iter::once(0)).collect();
+    if cch_data == 0 || lp_geo_data.is_null() {
+        return utf16.len() as i32;
+    }
+    let to_copy = (cch_data as usize).min(utf16.len());
+    unsafe {
+        std::ptr::copy_nonoverlapping(utf16.as_ptr(), lp_geo_data, to_copy);
+    }
+    to_copy as i32
+}
+

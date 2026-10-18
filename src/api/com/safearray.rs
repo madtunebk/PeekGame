@@ -205,3 +205,45 @@ pub unsafe extern "win64" fn create(
     let bound = unsafe { *rgsabound };
     create_vector(vt, bound.l_lbound, bound.c_elements)
 }
+
+pub unsafe extern "win64" fn copy(psa: *mut SafeArray, ppsa_out: *mut *mut SafeArray) -> i32 {
+    if ppsa_out.is_null() {
+        return 0x80070057u32 as i32;
+    }
+    if psa.is_null() {
+        unsafe { *ppsa_out = std::ptr::null_mut() };
+        return 0;
+    }
+    unsafe {
+        let cb = (*psa).cb_elements;
+        let bound = (*psa).rgsabound[0];
+        let data_len = cb as usize * bound.c_elements as usize;
+        let total = size_of::<SafeArray>() + data_len;
+        let ptr = malloc(total) as *mut u8;
+        if ptr.is_null() {
+            return 0x8007000Eu32 as i32; // E_OUTOFMEMORY
+        }
+        std::ptr::copy_nonoverlapping(psa as *const u8, ptr, total);
+        let out = ptr as *mut SafeArray;
+        (*out).c_locks = 0;
+        (*out).pv_data = ptr.add(size_of::<SafeArray>());
+        *ppsa_out = out;
+    }
+    0
+}
+
+pub unsafe extern "win64" fn get_vartype(psa: *mut SafeArray, pvt: *mut u16) -> i32 {
+    if psa.is_null() || pvt.is_null() {
+        return 0x80070057u32 as i32;
+    }
+    let vt = match unsafe { (*psa).cb_elements } {
+        1 => 17, // VT_UI1
+        2 => 2,  // VT_I2
+        4 => 3,  // VT_I4
+        24 => 12, // VT_VARIANT
+        _ => 8,  // VT_BSTR / 8-byte
+    };
+    unsafe { *pvt = vt };
+    0
+}
+

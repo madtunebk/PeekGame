@@ -190,6 +190,12 @@ pub(crate) extern "win64" fn load_cursor_w(instance: usize, name: *const u16) ->
 pub(crate) extern "win64" fn load_cursor_a(instance: usize, name: *const i8) -> usize {
     load_cursor(instance, name as usize)
 }
+pub(crate) extern "win64" fn load_cursor_from_file_w(_name: *const u16) -> usize {
+    cursor_handle(32512).unwrap_or_else(|e| fail(e, 0))
+}
+pub(crate) extern "win64" fn load_cursor_from_file_a(_name: *const i8) -> usize {
+    cursor_handle(32512).unwrap_or_else(|e| fail(e, 0))
+}
 /// Applies the current cursor (or the blank one while hidden) to every window.
 fn apply_cursor() {
     let Ok(c) = connection() else {

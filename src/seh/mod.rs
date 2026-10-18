@@ -14,7 +14,7 @@ pub use dispatch::{
     c_specific_handler, capture_context_entry, install_fault_handlers, raise_exception_entry,
     restore_context_entry, unwind_entry, unwind_ex_entry,
 };
-pub(crate) use dispatch::{context_from_signal, context_to_signal, describe};
+pub(crate) use dispatch::{context_from_signal, context_to_signal};
 use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
     Mutex,

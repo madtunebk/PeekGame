@@ -1,5 +1,5 @@
 use super::*;
-use crate::api::shell::{folders, paths};
+use crate::api::shell::{folders, paths, system};
 use crate::api::{memory::local, shell::arguments};
 exports! {
  export!("shell32.dll","DragQueryFileW","shell","partial","UTF-16 CF_HDROP count, length and file names",crate::api::window::drop_data::query_file),
@@ -87,5 +87,21 @@ exports! {
         "implemented",
         "removes trailing file name component",
         paths::remove_file_spec_w
+    ),
+    export!(
+        "shlwapi.dll",
+        "IsOS",
+        "shell",
+        "implemented",
+        "checks operating system version and features",
+        system::is_os
+    ),
+    export!(
+        "shcore.dll",
+        "IsOS",
+        "shell",
+        "implemented",
+        "checks operating system version and features",
+        system::is_os
     ),
 }

@@ -443,11 +443,44 @@ pub unsafe extern "win64" fn system_parameters_info(
                 unsafe { (out as *mut i32).add(i).write_unaligned(v) };
             }
         }
-        0x5E | 0x46 | 0x1A | 0x4A | 0x1000 | 0x1002 | 0x1004 | 0x1006 | 0x1008 | 0x100A
-        | 0x100C | 0x100E | 0x1012 | 0x1014 | 0x1016 | 0x1018 | 0x101A | 0x1020 | 0x1022
-        | 0x1024 | 0x1042 => put(0), // mouse trails off; no screen reader; UI animation/fade flags off
+        0x42 => {
+            // SPI_GETHIGHCONTRAST: HIGHCONTRASTW/A (16 bytes on x64: cbSize(4), dwFlags(4), lpszDefaultScheme(8))
+            let cb = unsafe { (out as *const u32).read_unaligned() }.max(param) as usize;
+            unsafe {
+                let len = cb.max(16);
+                out.write_bytes(0, len);
+                (out as *mut u32).write_unaligned(cb as u32);
+                (out.add(4) as *mut u32).write_unaligned(2); // HCF_AVAILABLE (high contrast off)
+            }
+        }
+        0x43 => {} // SPI_SETHIGHCONTRAST
+        0x48 => {
+            // SPI_GETANIMATION: ANIMATIONINFO (8 bytes: cbSize(4), iMinAnimate(4))
+            unsafe {
+                (out as *mut u32).write_unaligned(8);
+                (out.add(4) as *mut i32).write_unaligned(0);
+            }
+        }
+        0x04 => {
+            // SPI_GETMOUSE: 3 ints
+            for (i, v) in [6i32, 10, 1].into_iter().enumerate() {
+                unsafe { (out as *mut i32).add(i).write_unaligned(v) };
+            }
+        }
+        0x44 | 0x5E | 0x46 | 0x1A | 0x1000 | 0x1002 | 0x1004 | 0x1006 | 0x1008 | 0x100A
+        | 0x100C | 0x100E | 0x1012 | 0x1014 | 0x1016 | 0x1018 | 0x101A | 0x101C | 0x101E
+        | 0x1020 | 0x1022 | 0x1024 | 0x1026 | 0x103E | 0x1040 | 0x1042 | 0x104A
+        | 0x2000 | 0x2002 | 0x2018 | 0x201A | 0x201E | 0x2020 | 0x2024 => put(0),
+        0x17 | 0x4A | 0x1048 | 0x104E | 0x2006 | 0x200E | 0x2010 | 0x2012 => put(1), // font smoothing / ClearType / caret width / focus border
+        0x200A => put(2),    // SPI_GETFONTSMOOTHINGTYPE = FE_FONTSMOOTHINGCLEARTYPE
+        0x200C => put(1400), // SPI_GETFONTSMOOTHINGCONTRAST
+        0x2008 => put(1200), // SPI_GETMOUSECLICKLOCKTIME
+        0x2014 => put(5),    // SPI_GETMESSAGEDURATION
+        0x2022 => put(5000), // SPI_GETCARETTIMEOUT
+        0x16 => put(31),     // SPI_GETKEYBOARDSPEED
+        0x70 => put(10),     // SPI_GETMOUSESPEED
         0x66 | 0x6A => put(400), // hover time / menu show delay (Windows default)
-        0x68 | 0x6C => put(3),   // wheel scroll lines/chars
+        0x68 | 0x6C | 0x2004 => put(3), // wheel scroll lines/chars / foreground flash count
         _ => {
             eprintln!("STOP: SystemParametersInfo({action:#x}) is not mapped");
             std::process::exit(78)

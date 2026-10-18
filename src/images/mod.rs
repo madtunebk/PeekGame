@@ -513,3 +513,7 @@ pub fn set_dll_directory(path: Option<&str>) -> bool {
     let _guard = LOADER.lock();
     search::set_dll_directory(path)
 }
+pub fn get_dll_directory() -> Option<String> {
+    let _guard = LOADER.lock();
+    search::get_dll_directory()
+}

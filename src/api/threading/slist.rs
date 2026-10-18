@@ -25,12 +25,13 @@ unsafe fn swap(head: *mut u64, old: (u64, u64), new: (u64, u64)) -> bool {
     let ok: u8;
     unsafe {
         asm!(
-            "xchg rbx, {new0}",
-            "lock cmpxchg16b [{head}]",
+            "push rbx",
+            "mov rbx, rsi",
+            "lock cmpxchg16b [rdi]",
+            "pop rbx",
             "sete {ok}",
-            "mov rbx, {new0}",
-            head = in(reg) head,
-            new0 = inout(reg) new.0 => _,
+            in("rdi") head,
+            in("rsi") new.0,
             ok = out(reg_byte) ok,
             inout("rax") old.0 => _,
             inout("rdx") old.1 => _,
@@ -119,4 +120,46 @@ pub unsafe extern "win64" fn push_list(
 }
 pub unsafe extern "win64" fn depth(head: *mut u64) -> u16 {
     unsafe { read(head) }.0 as u16
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[repr(align(16))]
+    struct AlignedEntry([u64; 2]);
+
+    #[repr(align(16))]
+    struct AlignedHead([u64; 2]);
+
+    #[test]
+    fn test_slist_push_pop() {
+        let mut head = AlignedHead([0; 2]);
+        let mut entry1 = AlignedEntry([0; 2]);
+        let mut entry2 = AlignedEntry([0; 2]);
+
+        unsafe {
+            initialize(head.0.as_mut_ptr());
+            assert_eq!(depth(head.0.as_mut_ptr()), 0);
+
+            let prev1 = push(head.0.as_mut_ptr(), entry1.0.as_mut_ptr());
+            assert_eq!(prev1, 0);
+            assert_eq!(depth(head.0.as_mut_ptr()), 1);
+
+            let prev2 = push(head.0.as_mut_ptr(), entry2.0.as_mut_ptr());
+            assert_eq!(prev2, entry1.0.as_mut_ptr() as usize);
+            assert_eq!(depth(head.0.as_mut_ptr()), 2);
+
+            let popped1 = pop(head.0.as_mut_ptr());
+            assert_eq!(popped1, entry2.0.as_mut_ptr() as usize);
+            assert_eq!(depth(head.0.as_mut_ptr()), 1);
+
+            let popped2 = pop(head.0.as_mut_ptr());
+            assert_eq!(popped2, entry1.0.as_mut_ptr() as usize);
+            assert_eq!(depth(head.0.as_mut_ptr()), 0);
+
+            let popped_empty = pop(head.0.as_mut_ptr());
+            assert_eq!(popped_empty, 0);
+        }
+    }
 }

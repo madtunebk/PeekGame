@@ -1,4 +1,18 @@
 //! Typed Windows ABI wrappers around host libm.
+/// MSVC `_fpclass` bit masks (distinct from C99 `fpclassify` values).
+pub extern "win64" fn fpclass(value: f64) -> i32 {
+    let bits = value.to_bits();
+    let negative = bits >> 63 != 0;
+    let exponent = (bits >> 52) & 0x7ff;
+    let fraction = bits & ((1_u64 << 52) - 1);
+    match (exponent, fraction) {
+        (0x7ff, 0) => if negative { 0x0004 } else { 0x0200 },
+        (0x7ff, _) => if fraction & (1_u64 << 51) == 0 { 0x0001 } else { 0x0002 },
+        (0, 0) => if negative { 0x0020 } else { 0x0040 },
+        (0, _) => if negative { 0x0010 } else { 0x0080 },
+        _ => if negative { 0x0008 } else { 0x0100 },
+    }
+}
 #[link(name = "m")]
 unsafe extern "C" {
     #[link_name = "acos"]
@@ -261,3 +275,140 @@ pub extern "win64" fn log2f(x: f32) -> f32 {
 pub extern "win64" fn tanhf(x: f32) -> f32 {
     unsafe { host_tanhf(x) }
 }
+
+unsafe extern "C" {
+    #[link_name = "modf"]
+    fn host_modf(x: f64, iptr: *mut f64) -> f64;
+    #[link_name = "modff"]
+    fn host_modff(x: f32, iptr: *mut f32) -> f32;
+}
+
+pub unsafe extern "win64" fn modf(x: f64, iptr: *mut f64) -> f64 {
+    unsafe { host_modf(x, iptr) }
+}
+
+pub unsafe extern "win64" fn modff(x: f32, iptr: *mut f32) -> f32 {
+    unsafe { host_modff(x, iptr) }
+}
+
+pub extern "win64" fn sqrt(x: f64) -> f64 {
+    x.sqrt()
+}
+
+pub extern "win64" fn sqrtf(x: f32) -> f32 {
+    x.sqrt()
+}
+
+pub extern "win64" fn isnan(x: f64) -> i32 {
+    x.is_nan() as i32
+}
+
+pub extern "win64" fn isnanf(x: f32) -> i32 {
+    x.is_nan() as i32
+}
+
+pub extern "win64" fn finite(x: f64) -> i32 {
+    x.is_finite() as i32
+}
+
+pub extern "win64" fn finitef(x: f32) -> i32 {
+    x.is_finite() as i32
+}
+
+unsafe extern "C" {
+    #[link_name = "expm1"]
+    fn host_expm1(x: f64) -> f64;
+    #[link_name = "expm1f"]
+    fn host_expm1f(x: f32) -> f32;
+    #[link_name = "lrint"]
+    fn host_lrint(x: f64) -> i64;
+    #[link_name = "lrintf"]
+    fn host_lrintf(x: f32) -> i64;
+    #[link_name = "llround"]
+    fn host_llround(x: f64) -> i64;
+    #[link_name = "llroundf"]
+    fn host_llroundf(x: f32) -> i64;
+}
+
+pub extern "win64" fn expm1(x: f64) -> f64 {
+    unsafe { host_expm1(x) }
+}
+
+pub extern "win64" fn expm1f(x: f32) -> f32 {
+    unsafe { host_expm1f(x) }
+}
+
+pub extern "win64" fn lrint(x: f64) -> i64 {
+    unsafe { host_lrint(x) }
+}
+
+pub extern "win64" fn lrintf(x: f32) -> i64 {
+    unsafe { host_lrintf(x) }
+}
+
+pub extern "win64" fn llround(x: f64) -> i64 {
+    unsafe { host_llround(x) }
+}
+
+pub extern "win64" fn llroundf(x: f32) -> i64 {
+    unsafe { host_llroundf(x) }
+}
+
+pub extern "win64" fn nan(_tagp: *const std::ffi::c_char) -> f64 {
+    f64::NAN
+}
+unsafe extern "C" {
+    #[link_name = "asinh"]
+    fn host_asinh(x: f64) -> f64;
+    #[link_name = "cbrt"]
+    fn host_cbrt(x: f64) -> f64;
+    #[link_name = "logbf"]
+    fn host_logbf(x: f32) -> f32;
+    #[link_name = "nextafterf"]
+    fn host_nextafterf(x: f32, y: f32) -> f32;
+}
+pub extern "win64" fn asinh(x: f64) -> f64 {
+    unsafe { host_asinh(x) }
+}
+pub extern "win64" fn cbrt(x: f64) -> f64 {
+    unsafe { host_cbrt(x) }
+}
+pub extern "win64" fn copysignf(x: f32, y: f32) -> f32 {
+    x.copysign(y)
+}
+pub extern "win64" fn logbf(x: f32) -> f32 {
+    unsafe { host_logbf(x) }
+}
+pub extern "win64" fn nextafterf(x: f32, y: f32) -> f32 {
+    unsafe { host_nextafterf(x, y) }
+}
+pub unsafe extern "win64" fn fdtest(px: *const f32) -> i16 {
+    if px.is_null() {
+        return 0;
+    }
+    let x = unsafe { *px };
+    if x.is_nan() {
+        2
+    } else if x.is_infinite() {
+        1
+    } else if x == 0.0 {
+        0
+    } else if x.is_subnormal() {
+        -2
+    } else {
+        -1
+    }
+}
+pub extern "win64" fn dpcomp(x: f64, y: f64) -> i32 {
+    if x.is_nan() || y.is_nan() {
+        0
+    } else if x < y {
+        1
+    } else if x == y {
+        2
+    } else {
+        4
+    }
+}
+
+

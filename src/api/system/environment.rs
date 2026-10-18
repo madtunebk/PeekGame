@@ -173,3 +173,63 @@ pub unsafe extern "win64" fn expand_w(source: *const u16, out: *mut u16, capacit
     }
     needed
 }
+
+pub extern "win64" fn register_gp_notification(_event: usize, _machine: i32) -> i32 {
+    1
+}
+
+pub extern "win64" fn unregister_gp_notification(_event: usize) -> i32 {
+    1
+}
+
+pub unsafe extern "win64" fn get_user_profile_directory_w(
+    _token: usize,
+    out: *mut u16,
+    size: *mut u32,
+) -> i32 {
+    if size.is_null() {
+        error::set(87);
+        return 0;
+    }
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/home/nobus".into());
+    let win_path = format!("Z:{}", home).replace('/', "\\");
+    let wide = text::wide(&win_path);
+    let needed = wide.len() as u32 + 1;
+    let capacity = unsafe { *size };
+    if out.is_null() || capacity < needed {
+        unsafe { *size = needed };
+        error::set(122);
+        return 0;
+    }
+    unsafe {
+        text::copy_out(&wide, out, capacity);
+        *size = needed;
+    }
+    1
+}
+
+pub unsafe extern "win64" fn get_user_profile_directory_a(
+    _token: usize,
+    out: *mut u8,
+    size: *mut u32,
+) -> i32 {
+    if size.is_null() {
+        error::set(87);
+        return 0;
+    }
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/home/nobus".into());
+    let win_path = format!("Z:{}", home).replace('/', "\\");
+    let bytes = win_path.as_bytes();
+    let needed = bytes.len() as u32 + 1;
+    let capacity = unsafe { *size };
+    if out.is_null() || capacity < needed {
+        unsafe { *size = needed };
+        error::set(122);
+        return 0;
+    }
+    unsafe {
+        text::copy_out_narrow(bytes, out, capacity);
+        *size = needed;
+    }
+    1
+}

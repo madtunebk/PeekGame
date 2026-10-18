@@ -19,6 +19,8 @@ const MEM_DECOMMIT: u32 = 0x4000;
 const MEM_RELEASE: u32 = 0x8000;
 const MEM_FREE: u32 = 0x10000;
 const MEM_PRIVATE: u32 = 0x20000;
+const MEM_RESET: u32 = 0x80000;
+const MEM_RESET_UNDO: u32 = 0x1000000;
 const MEM_IMAGE: u32 = 0x1000000;
 const GRANULARITY: usize = 0x10000;
 const PAGE: usize = 4096;
@@ -51,9 +53,22 @@ fn windows_protection(perms: &[u8]) -> u32 {
 
 static LAST_MOD_BASE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
+pub extern "win64" fn discard_virtual_memory(address: usize, size: usize) -> u32 {
+    if address == 0 || size == 0 {
+        return 87;
+    }
+    unsafe {
+        madvise(address as *mut c_void, size, MADV_DONTNEED);
+    }
+    0
+}
+
 pub extern "win64" fn alloc(address: usize, n: usize, kind: u32, protection: u32) -> usize {
     let base = alloc_inner(address, n, kind, protection);
-    eprintln!("VirtualAlloc(address={address:#x}, size={n:#x}, kind={kind:#x}, prot={protection:#x}) -> {base:#x}");
+    static VERBOSE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *VERBOSE.get_or_init(|| std::env::var_os("PEEKGAME_VERBOSE").is_some()) {
+        eprintln!("VirtualAlloc(address={address:#x}, size={n:#x}, kind={kind:#x}, prot={protection:#x}) -> {base:#x}");
+    }
     if n == 0x39000 && base != 0 {
         LAST_MOD_BASE.store(base, std::sync::atomic::Ordering::Relaxed);
     }
@@ -72,6 +87,16 @@ pub extern "win64" fn alloc(address: usize, n: usize, kind: u32, protection: u32
 }
 
 fn alloc_inner(address: usize, n: usize, kind: u32, protection: u32) -> usize {
+    if kind == MEM_RESET || kind == MEM_RESET_UNDO {
+        if address == 0 || n == 0 || address.checked_add(n).is_none() {
+            error::set(87);
+            return 0;
+        }
+        if kind == MEM_RESET {
+            unsafe { madvise(address as *mut c_void, n, MADV_DONTNEED) };
+        }
+        return address;
+    }
     let Some(prot) = linux_protection(protection) else {
         error::set(87);
         return 0;
@@ -353,3 +378,12 @@ pub extern "win64" fn is_bad_read_ptr(ptr: usize, size: usize) -> i32 {
     }
     0
 }
+
+pub extern "win64" fn large_page_minimum() -> usize {
+    2 * 1024 * 1024
+}
+
+pub extern "win64" fn unlock(_address: usize, _size: usize) -> i32 {
+    1
+}
+

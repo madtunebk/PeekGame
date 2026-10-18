@@ -32,6 +32,14 @@ pub(crate) extern "win64" fn sym_initialize(
     1
 }
 
+pub(crate) extern "win64" fn sym_initialize_w(
+    _process: usize,
+    _search_path: *const u16,
+    _invade: i32,
+) -> i32 {
+    1
+}
+
 pub(crate) extern "win64" fn sym_cleanup(_process: usize) -> i32 {
     1
 }
@@ -71,6 +79,15 @@ pub(crate) extern "win64" fn sym_from_addr(
     0
 }
 
+pub(crate) extern "win64" fn sym_from_addr_w(
+    _process: usize,
+    _address: u64,
+    _displacement: *mut u64,
+    _symbol: usize,
+) -> i32 {
+    0
+}
+
 pub(crate) extern "win64" fn sym_get_line_from_addr64(
     _process: usize,
     _addr: u64,
@@ -80,7 +97,24 @@ pub(crate) extern "win64" fn sym_get_line_from_addr64(
     0
 }
 
+pub(crate) extern "win64" fn sym_get_line_from_addr_w64(
+    _process: usize,
+    _addr: u64,
+    _displacement: *mut u32,
+    _line: usize,
+) -> i32 {
+    0
+}
+
 pub(crate) extern "win64" fn sym_get_module_info64(
+    _process: usize,
+    _addr: u64,
+    _module_info: usize,
+) -> i32 {
+    0
+}
+
+pub(crate) extern "win64" fn sym_get_module_info_w64(
     _process: usize,
     _addr: u64,
     _module_info: usize,
@@ -101,6 +135,19 @@ pub(crate) extern "win64" fn sym_load_module_ex(
     0
 }
 
+pub(crate) extern "win64" fn sym_load_module_ex_w(
+    _process: usize,
+    _file: usize,
+    _image_name: *const u16,
+    _module_name: *const u16,
+    _base_of_dll: u64,
+    _dll_size: u32,
+    _data: usize,
+    _flags: u32,
+) -> u64 {
+    0
+}
+
 pub(crate) extern "win64" fn sym_set_home_directory(
     _process: usize,
     dir: *const c_char,
@@ -108,9 +155,49 @@ pub(crate) extern "win64" fn sym_set_home_directory(
     dir
 }
 
+pub(crate) extern "win64" fn sym_set_home_directory_w(
+    _process: usize,
+    dir: *const u16,
+) -> *const u16 {
+    dir
+}
+
 pub(crate) extern "win64" fn debug_break() {
     unsafe {
         crate::seh::raise_exception_entry(0x8000_0003, 0, 0, std::ptr::null());
     }
+}
+
+pub(crate) extern "win64" fn minidump_write_dump(
+    _process: usize,
+    _pid: u32,
+    _file: usize,
+    _dump_type: u32,
+    _exception_param: usize,
+    _user_stream_param: usize,
+    _callback_param: usize,
+) -> i32 {
+    eprintln!("MiniDumpWriteDump called");
+    1
+}
+
+pub(crate) unsafe extern "win64" fn image_nt_header(base: *const u8) -> *const u8 {
+    if base.is_null() {
+        return std::ptr::null();
+    }
+    let magic = unsafe { (base as *const u16).read_unaligned() };
+    if magic != 0x5a4d {
+        return std::ptr::null();
+    }
+    let e_lfanew = unsafe { (base.add(0x3c) as *const i32).read_unaligned() };
+    if e_lfanew <= 0 {
+        return std::ptr::null();
+    }
+    let nt = unsafe { base.add(e_lfanew as usize) };
+    let nt_magic = unsafe { (nt as *const u32).read_unaligned() };
+    if nt_magic != 0x0000_4550 {
+        return std::ptr::null();
+    }
+    nt
 }
 

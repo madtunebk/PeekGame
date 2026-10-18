@@ -31,10 +31,6 @@ pub(crate) fn base_address() -> usize {
     STEAMCLIENT_MAPPING.get().map(|(b, _)| *b).unwrap_or(0x138000000)
 }
 
-pub(crate) fn size() -> usize {
-    STEAMCLIENT_MAPPING.get().map(|(_, s)| *s).unwrap_or(0x019b3000)
-}
-
 pub(crate) fn recognizes_address(address: usize) -> bool {
     if !loaded() {
         return false;
@@ -52,6 +48,33 @@ pub(crate) fn loaded() -> bool {
 }
 
 pub(crate) fn open() -> bool {
+    if std::env::var_os("SteamAppId").is_none() {
+        let mut candidates = Vec::new();
+        if let Ok(cwd) = std::env::current_dir() {
+            candidates.push(cwd.join("steam_appid.txt"));
+            if let Some(parent) = cwd.parent() {
+                candidates.push(parent.join("steam_appid.txt"));
+            }
+        }
+        if let Some(exe) = crate::images::exe() {
+            if let Some(parent) = exe.path.parent() {
+                candidates.push(parent.join("steam_appid.txt"));
+                if let Some(grandparent) = parent.parent() {
+                    candidates.push(grandparent.join("steam_appid.txt"));
+                }
+            }
+        }
+        for cand in candidates {
+            if let Ok(text) = std::fs::read_to_string(&cand) {
+                let trimmed = text.trim();
+                if !trimmed.is_empty() && trimmed.chars().all(|c| c.is_ascii_digit()) {
+                    std::env::set_var("SteamAppId", trimmed);
+                    std::env::set_var("SteamGameId", trimmed);
+                    break;
+                }
+            }
+        }
+    }
     // Failed attempts can be retried. C serializes initialization and dlopen.
     if unsafe { steam_bridge_open(std::ptr::null()) } != 0 {
         return false;

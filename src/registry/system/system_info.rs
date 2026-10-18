@@ -35,6 +35,20 @@ exports! {
         info::temp_path_w
     ),
     implemented!(
+        "K32EnumProcesses",
+        "system",
+        "implemented",
+        "returns current process PID",
+        psapi::enum_processes
+    ),
+    implemented!(
+        "EnumProcesses",
+        "system",
+        "implemented",
+        "returns current process PID",
+        psapi::enum_processes
+    ),
+    implemented!(
         "K32EnumProcessModules",
         "system",
         "implemented",
@@ -160,6 +174,14 @@ exports! {
         "partial",
         "/proc/self/status figures",
         psapi::process_memory_info
+    ),
+    export!(
+        "psapi.dll",
+        "EnumProcesses",
+        "system",
+        "implemented",
+        "returns current process PID",
+        psapi::enum_processes
     ),
     implemented!(
         "CreateToolhelp32Snapshot",
@@ -337,6 +359,27 @@ exports! {
         info::computer_name_w
     ),
     implemented!(
+        "GetComputerNameA",
+        "system",
+        "implemented",
+        "host name first label, uppercased",
+        info::computer_name_a
+    ),
+    implemented!(
+        "GetComputerNameExW",
+        "system",
+        "implemented",
+        "retrieves netbios or dns computer name according to format",
+        info::computer_name_ex_w
+    ),
+    implemented!(
+        "GetComputerNameExA",
+        "system",
+        "implemented",
+        "retrieves netbios or dns computer name according to format",
+        info::computer_name_ex_a
+    ),
+    implemented!(
         "GetSystemDirectoryW",
         "filesystem",
         "partial",
@@ -399,4 +442,69 @@ exports! {
         "processor cores and L1/L2/L3 caches",
         info::logical_processor_information
     ),
+    implemented!(
+        "GetNumaHighestNodeNumber",
+        "system",
+        "implemented",
+        "single NUMA node 0",
+        info::numa_highest_node_number
+    ),
+    implemented!(
+        "GetNumaProcessorNode",
+        "system",
+        "implemented",
+        "single NUMA node 0",
+        info::numa_processor_node
+    ),
+    implemented!(
+        "GetNumaProcessorNodeEx",
+        "system",
+        "implemented",
+        "single NUMA node 0",
+        info::numa_processor_node_ex
+    ),
+    implemented!(
+        "GetNumaNodeProcessorMask",
+        "system",
+        "implemented",
+        "usable CPU mask for node 0",
+        info::numa_node_processor_mask
+    ),
+    implemented!(
+        "GetNumaNodeProcessorMaskEx",
+        "system",
+        "implemented",
+        "usable GROUP_AFFINITY for node 0",
+        info::numa_node_processor_mask_ex
+    ),
+    implemented!(
+        "GetThreadIdealProcessorEx",
+        "threading",
+        "partial",
+        "returns processor 0 in group 0",
+        info::get_thread_ideal_processor_ex
+    ),
+    implemented!(
+        "GetCurrentProcessorNumberEx",
+        "threading",
+        "implemented",
+        "sched_getcpu in group 0",
+        info::current_processor_number_ex
+    ),
+    implemented!(
+        "QueryThreadCycleTime",
+        "threading",
+        "partial",
+        "rdtsc cycle counter",
+        info::query_thread_cycle_time
+    ),
+    implemented!(
+        "QueryProcessCycleTime",
+        "system",
+        "partial",
+        "rdtsc cycle counter",
+        info::query_process_cycle_time
+    ),
 }
+
+

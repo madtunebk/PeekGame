@@ -111,7 +111,52 @@ impl Tree {
         tree.load();
         tree.seed_steam();
         tree.seed_vc_runtime();
+        tree.seed_dns();
         tree
+    }
+    fn seed_dns(&mut self) {
+        let servers = crate::api::network::adapters::dns_servers();
+        let comma_joined = servers
+            .iter()
+            .map(|ip| format!("{}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3]))
+            .collect::<Vec<_>>()
+            .join(",");
+        let space_joined = servers
+            .iter()
+            .map(|ip| format!("{}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3]))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let wide_bytes = |s: &str| -> Vec<u8> {
+            s.encode_utf16()
+                .chain(std::iter::once(0))
+                .flat_map(|u| u.to_le_bytes())
+                .collect()
+        };
+        let ns_comma = wide_bytes(&comma_joined);
+        let ns_space = wide_bytes(&space_joined);
+        let empty_sz = wide_bytes("");
+        if let Some((tcpip, _)) =
+            self.walk(MACHINE, r"SYSTEM\CurrentControlSet\Services\Tcpip\Parameters", true)
+        {
+            self.keys[tcpip].volatile = true;
+            self.set(tcpip, "NameServer", 1, &ns_comma);
+            self.set(tcpip, "DhcpNameServer", 1, &ns_space);
+            self.set(tcpip, "Domain", 1, &empty_sz);
+            self.set(tcpip, "DhcpDomain", 1, &empty_sz);
+            self.set(tcpip, "SearchList", 1, &empty_sz);
+        }
+        for subkey in [
+            r"SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces",
+            r"SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters",
+            r"SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters\Interfaces",
+            r"SYSTEM\CurrentControlSet\Services\Dnscache\Parameters",
+            r"SOFTWARE\Policies\Microsoft\Windows NT\DNSClient",
+            r"SOFTWARE\Policies\Microsoft\System\DNSClient",
+        ] {
+            if let Some((k, _)) = self.walk(MACHINE, subkey, true) {
+                self.keys[k].volatile = true;
+            }
+        }
     }
     fn seed_steam(&mut self) {
         let pid = crate::api::steam::steam_pid();

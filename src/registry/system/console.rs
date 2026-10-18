@@ -51,5 +51,6 @@ exports! {
     implemented!("GetConsoleScreenBufferInfo", "system", "partial", "terminal/handle validation; no emulated Win32 screen buffer: ERROR_NOT_SUPPORTED", crate::api::system::console::screen_buffer_info),
     implemented!("SetConsoleTextAttribute", "system", "partial", "terminal ANSI foreground/background and intensity; COMMON_LVB flags unsupported", crate::api::system::console::text_attribute),
     implemented!("SetConsoleCtrlHandler", "system", "partial", "register or remove process console control handler", crate::api::system::console::set_ctrl_handler),
+    implemented!("GetConsoleWindow", "system", "partial", "returns NULL window handle", console::get_console_window),
 }
 

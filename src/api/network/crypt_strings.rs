@@ -129,3 +129,87 @@ pub unsafe extern "win64" fn binary_to_string_w(
 ) -> i32 {
     unsafe { convert(input, length, flags, out, size) }
 }
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct DataBlob {
+    pub cb_data: u32,
+    pub pb_data: *mut u8,
+}
+
+pub unsafe extern "win64" fn crypt_protect_data(
+    data_in: *const DataBlob,
+    _sz_data_descr: *const u16,
+    _optional_entropy: *const DataBlob,
+    _reserved: usize,
+    _prompt_struct: usize,
+    _flags: u32,
+    data_out: *mut DataBlob,
+) -> i32 {
+    if data_in.is_null() || data_out.is_null() {
+        error::set(87);
+        return 0;
+    }
+    let in_len = unsafe { (*data_in).cb_data as usize };
+    let in_ptr = unsafe { (*data_in).pb_data };
+    if in_len > 0 && in_ptr.is_null() {
+        error::set(87);
+        return 0;
+    }
+
+    let out_ptr = crate::api::memory::local::allocate(0, in_len);
+    if in_len > 0 && out_ptr == 0 {
+        error::set(8);
+        return 0;
+    }
+    if in_len > 0 {
+        unsafe {
+            std::ptr::copy_nonoverlapping(in_ptr, out_ptr as *mut u8, in_len);
+        }
+    }
+    unsafe {
+        (*data_out).cb_data = in_len as u32;
+        (*data_out).pb_data = out_ptr as *mut u8;
+    }
+    1
+}
+
+pub unsafe extern "win64" fn crypt_unprotect_data(
+    data_in: *const DataBlob,
+    ppsz_data_descr: *mut *mut u16,
+    _optional_entropy: *const DataBlob,
+    _reserved: usize,
+    _prompt_struct: usize,
+    _flags: u32,
+    data_out: *mut DataBlob,
+) -> i32 {
+    if data_in.is_null() || data_out.is_null() {
+        error::set(87);
+        return 0;
+    }
+    let in_len = unsafe { (*data_in).cb_data as usize };
+    let in_ptr = unsafe { (*data_in).pb_data };
+    if in_len > 0 && in_ptr.is_null() {
+        error::set(87);
+        return 0;
+    }
+
+    let out_ptr = crate::api::memory::local::allocate(0, in_len);
+    if in_len > 0 && out_ptr == 0 {
+        error::set(8);
+        return 0;
+    }
+    if in_len > 0 {
+        unsafe {
+            std::ptr::copy_nonoverlapping(in_ptr, out_ptr as *mut u8, in_len);
+        }
+    }
+    if !ppsz_data_descr.is_null() {
+        unsafe { *ppsz_data_descr = std::ptr::null_mut() };
+    }
+    unsafe {
+        (*data_out).cb_data = in_len as u32;
+        (*data_out).pb_data = out_ptr as *mut u8;
+    }
+    1
+}

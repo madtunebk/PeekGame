@@ -330,6 +330,47 @@ fn call_frame_handlers(record: &mut ExceptionRecord, original: &mut Context) -> 
     result
 }
 fn dispatch(record: &mut ExceptionRecord, context: &mut Context) -> ! {
+    eprintln!(
+        "SEH dispatch: exception {:#010x} at {} (flags {:#x}, {} params: {:016x?})",
+        record.code,
+        describe(context.rip as usize),
+        record.flags,
+        record.count,
+        &record.information[..record.count.min(4) as usize]
+    );
+    if record.code == 0xe000_0008 {
+        for i in 0..32 {
+            let val = unsafe { (context.rsp as *const u64).add(i).read_unaligned() } as usize;
+            let desc = describe(val);
+            if desc.contains('+') {
+                eprintln!("  oom_stack[{i}] = {val:#x} ({desc})");
+            }
+        }
+    }
+    if (record.code == 0xC06D_007E || record.code == 0xC06D_007F)
+        && record.count >= 1
+        && record.information[0] != 0
+    {
+        let info = record.information[0] as *const u8;
+        unsafe {
+            let dll = info.add(24).cast::<*const std::ffi::c_char>().read_unaligned();
+            let by_name = info.add(32).cast::<u32>().read_unaligned() != 0;
+            let name = info.add(40).cast::<usize>().read_unaligned();
+            let dll_name = if !dll.is_null() {
+                std::ffi::CStr::from_ptr(dll).to_string_lossy().into_owned()
+            } else {
+                "unknown".into()
+            };
+            let what = if by_name && name != 0 {
+                std::ffi::CStr::from_ptr(name as *const std::ffi::c_char)
+                    .to_string_lossy()
+                    .into_owned()
+            } else {
+                format!("#{name}")
+            };
+            eprintln!("DELAY-LOAD FAILURE: {dll_name}!{what} (exception {:#010x})", record.code);
+        }
+    }
     if call_vectored(record, context) || call_frame_handlers(record, context) {
         unsafe { peekgame_seh_restore(context) }
     }
@@ -624,6 +665,9 @@ fn host_code(pc: usize) -> bool {
 unsafe extern "C" fn on_fault(signal: i32, info: *mut SigInfo, u: *mut u8) {
     let pc = unsafe { *greg(u, REG_RIP) } as usize;
     let sp = unsafe { *greg(u, REG_RSP) } as usize;
+    if signal == 11 && unsafe { repair_foreign_stack_probe(info, u, pc) } {
+        return;
+    }
     if !host_code(pc) && unsafe { redirect(signal, info, u, pc, sp) } {
         return;
     }
@@ -635,7 +679,7 @@ unsafe extern "C" fn on_fault(signal: i32, info: *mut SigInfo, u: *mut u8) {
         0
     };
     eprintln!(
-        "STOP: signal {signal} at {} (address {address:#x}{})",
+        "STOP: signal {signal} at {} (address {address:#x}, rsp={sp:#x}{})",
         describe(pc),
         if caller != 0 {
             format!(", called from {}", describe(caller))
@@ -643,10 +687,55 @@ unsafe extern "C" fn on_fault(signal: i32, info: *mut SigInfo, u: *mut u8) {
             String::new()
         }
     );
+    if images::try_by_address(pc).is_some() {
+        let (stack_base, stack_limit, teb_tid): (usize, usize, usize);
+        unsafe {
+            std::arch::asm!("mov {}, gs:[8]", out(reg) stack_base);
+            std::arch::asm!("mov {}, gs:[16]", out(reg) stack_limit);
+            std::arch::asm!("mov {}, gs:[72]", out(reg) teb_tid);
+        }
+        unsafe extern "C" { fn syscall(number: i64, ...) -> i64; }
+        let tid = unsafe { syscall(186) };
+        eprintln!("STOP: TEB stack base={stack_base:#x} limit={stack_limit:#x} teb_tid={teb_tid} actual_tid={tid}");
+    }
     unsafe extern "C" {
         fn _exit(code: i32) -> !;
     }
     unsafe { _exit(128 + signal) }
+}
+/// A native worker may inherit another thread's GS base and then run a PE
+/// callback. MSVC's stack probe reads gs:StackLimit; with the inherited TEB it
+/// writes below the *other* stack. Recognize that precise probe and restart it
+/// after installing the current worker's TEB. Other faults take the normal path.
+unsafe fn repair_foreign_stack_probe(info: *mut SigInfo, u: *mut u8, pc: usize) -> bool {
+    if images::try_by_address(pc).is_none() || pc < 27 {
+        return false;
+    }
+    const LOAD_LIMIT: [u8; 9] = [0x65, 0x4c, 0x8b, 0x1c, 0x25, 0x10, 0, 0, 0];
+    const PROBE: [u8; 4] = [0x41, 0xc6, 0x03, 0];
+    let bytes = unsafe { std::slice::from_raw_parts((pc - 27) as *const u8, 9) };
+    let probe = unsafe { std::slice::from_raw_parts(pc as *const u8, 4) };
+    if bytes != LOAD_LIMIT || probe != PROBE {
+        return false;
+    }
+    unsafe extern "C" { fn syscall(number: i64, ...) -> i64; }
+    let mut gs_base: usize = 0;
+    if unsafe { syscall(158, 0x1004i32, &mut gs_base) } != 0 || gs_base == 0 {
+        return false;
+    }
+    let teb_tid = unsafe { *((gs_base + 72) as *const usize) };
+    let actual_tid = unsafe { syscall(186) } as usize;
+    let old_limit = unsafe { *((gs_base + 16) as *const usize) };
+    if teb_tid == actual_tid || (unsafe { (*info).address }) != old_limit.saturating_sub(4096) {
+        return false;
+    }
+    if let Err(error) = crate::host::thread_template::attach_foreign_worker() {
+        eprintln!("foreign PE worker TEB attach failed: {error}");
+        return false;
+    }
+    unsafe { *greg(u, REG_RIP) = (pc - 27) as u64 };
+    eprintln!("foreign PE worker {actual_tid}: repaired inherited TEB from thread {teb_tid}");
+    true
 }
 /// Builds CONTEXT and EXCEPTION_RECORD below the faulting frame and makes the
 /// thread continue in the dispatcher on its own stack, as on Windows.

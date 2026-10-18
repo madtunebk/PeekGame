@@ -33,7 +33,8 @@ pub fn run_with(
             let _ = std::env::set_current_dir(parent);
         }
     }
-    let line = std::iter::once(path.to_string_lossy().into_owned())
+    let win_path = game_imports::windows_path(path);
+    let line = std::iter::once(win_path)
         .chain(args.iter().cloned())
         .map(|a| game_imports::quote_windows_argument(&a))
         .collect::<Vec<_>>()

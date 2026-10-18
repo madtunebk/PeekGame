@@ -104,6 +104,20 @@ exports! {
         dynamic::set_dll_directory_w
     ),
     implemented!(
+        "GetDllDirectoryA",
+        "system",
+        "implemented",
+        "retrieves the application-specific portion of the search path for DLLs",
+        dynamic::get_dll_directory_a
+    ),
+    implemented!(
+        "GetDllDirectoryW",
+        "system",
+        "implemented",
+        "retrieves the application-specific portion of the search path for DLLs",
+        dynamic::get_dll_directory_w
+    ),
+    implemented!(
         "GetProcAddress",
         "system",
         "partial",

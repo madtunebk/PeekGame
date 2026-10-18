@@ -8,6 +8,8 @@ use std::{
     sync::{Mutex, OnceLock},
 };
 unsafe extern "C" {
+    fn fetestexcept(excepts: i32) -> i32;
+    fn feclearexcept(excepts: i32) -> i32;
     #[link_name = "fputc"]
     fn host_fputc(c: i32, file: *mut c_void) -> i32;
     #[link_name = "fputs"]
@@ -64,6 +66,18 @@ unsafe extern "C" {
     static daylight: i32;
     static timezone: i64;
     static tzname: [*mut c_char; 2];
+}
+
+pub extern "win64" fn clearfp() -> u32 {
+    // glibc x86 FE_* flags use the same low six bit positions as x87 status.
+    let flags = unsafe { fetestexcept(0x3f) };
+    unsafe { feclearexcept(0x3f) };
+    ((flags & 0x20 != 0) as u32)
+        | (((flags & 0x10 != 0) as u32) << 1)
+        | (((flags & 0x08 != 0) as u32) << 2)
+        | (((flags & 0x04 != 0) as u32) << 3)
+        | (((flags & 0x01 != 0) as u32) << 4)
+        | (((flags & 0x02 != 0) as u32) << 18)
 }
 fn set_errno(code: i32) {
     unsafe { *stdio::errno() = code };
@@ -752,6 +766,18 @@ pub extern "win64" fn end_thread(code: u32) -> ! {
     crate::host::thread_entry::exit(code)
 }
 pub extern "win64" fn exit_now(code: i32) -> ! {
+    eprintln!("CRT _exit called with code {code}");
+    let rsp_val: usize;
+    unsafe { std::arch::asm!("mov {}, rsp", out(reg) rsp_val); }
+    let ptr = rsp_val as *const usize;
+    for i in 0..32 {
+        let val = unsafe { ptr.add(i).read() };
+        if let Some(m) = crate::images::try_by_address(val) {
+            eprintln!("  exit_stack[{i}] = {val:#x} ({}+{:#x})", m.name, val - m.base);
+        } else if val >= 0x140000000 && val < 0x150000000 {
+            eprintln!("  exit_stack[{i}] = {val:#x} (Palworld+{:#x})", val - 0x140000000);
+        }
+    }
     unsafe { host_exit(code) }
 }
 pub extern "win64" fn abort() -> ! {
@@ -769,6 +795,55 @@ pub extern "win64" fn signal(_number: i32, _handler: usize) -> usize {
 pub extern "win64" fn strerror(code: i32) -> *mut c_char {
     unsafe { host_strerror(code) }
 }
+
+pub unsafe extern "win64" fn strerror_s(buffer: *mut c_char, size: usize, code: i32) -> i32 {
+    if buffer.is_null() || size == 0 {
+        return 22; // EINVAL
+    }
+    let msg = unsafe { host_strerror(code) };
+    if msg.is_null() {
+        unsafe { *buffer = 0 };
+        return 22;
+    }
+    let bytes = unsafe { std::ffi::CStr::from_ptr(msg) }.to_bytes();
+    if bytes.len() >= size {
+        unsafe {
+            std::ptr::copy_nonoverlapping(bytes.as_ptr().cast::<c_char>(), buffer, size - 1);
+            *buffer.add(size - 1) = 0;
+        }
+        return 34; // ERANGE
+    }
+    unsafe {
+        std::ptr::copy_nonoverlapping(bytes.as_ptr().cast::<c_char>(), buffer, bytes.len());
+        *buffer.add(bytes.len()) = 0;
+    }
+    0
+}
+
+pub unsafe extern "win64" fn wcserror_s(buffer: *mut u16, size: usize, code: i32) -> i32 {
+    if buffer.is_null() || size == 0 {
+        return 22;
+    }
+    let msg = unsafe { host_strerror(code) };
+    if msg.is_null() {
+        unsafe { *buffer = 0 };
+        return 22;
+    }
+    let s = unsafe { std::ffi::CStr::from_ptr(msg) }.to_string_lossy();
+    let units: Vec<u16> = s.encode_utf16().chain(std::iter::once(0)).collect();
+    if units.len() > size {
+        unsafe {
+            std::ptr::copy_nonoverlapping(units.as_ptr(), buffer, size - 1);
+            *buffer.add(size - 1) = 0;
+        }
+        return 34;
+    }
+    unsafe {
+        std::ptr::copy_nonoverlapping(units.as_ptr(), buffer, units.len());
+    }
+    0
+}
+
 pub unsafe extern "win64" fn strtoul(s: *const c_char, end: *mut *mut c_char, base: i32) -> u32 {
     let v = unsafe { host_strtoul(s, end, base) };
     if v > u32::MAX as u64 {
@@ -795,7 +870,129 @@ pub unsafe extern "win64" fn aligned_malloc(size: usize, align: usize) -> *mut c
 pub unsafe extern "win64" fn aligned_free(p: *mut c_void) {
     unsafe { host_free(p) }
 }
+pub unsafe extern "win64" fn aligned_realloc(
+    p: *mut c_void,
+    size: usize,
+    align: usize,
+) -> *mut c_void {
+    if p.is_null() {
+        return unsafe { aligned_malloc(size, align) };
+    }
+    if size == 0 {
+        unsafe { host_free(p) };
+        return std::ptr::null_mut();
+    }
+    unsafe { host_realloc(p, size) }
+}
+pub extern "win64" fn heapchk() -> i32 {
+    -2 // _HEAPOK
+}
 pub extern "win64" fn set_new_mode(_mode: i32) -> i32 {
+    0
+}
+pub extern "win64" fn control87(_new_val: u32, _mask: u32) -> u32 {
+    0x0008_001f
+}
+pub unsafe extern "win64" fn controlfp_s(
+    current: *mut u32,
+    _new_val: u32,
+    _mask: u32,
+) -> i32 {
+    if !current.is_null() {
+        unsafe { *current = 0x0008_001f };
+    }
+    0
+}
+pub extern "win64" fn doserrno() -> *mut u32 {
+    static mut DOSERR: u32 = 0;
+    &raw mut DOSERR
+}
+pub extern "win64" fn sys_nerr() -> *mut i32 {
+    static mut NERR: i32 = 1;
+    &raw mut NERR
+}
+pub extern "win64" fn sys_errlist() -> *const *const c_char {
+    static MSG: &[u8] = b"Success\0";
+    static mut LIST: [*const c_char; 2] = [std::ptr::null(); 2];
+    unsafe {
+        LIST[0] = MSG.as_ptr().cast();
+        (&raw const LIST).cast()
+    }
+}
+pub extern "win64" fn wassert(_expr: *const u16, _file: *const u16, _line: u32) {}
+pub extern "win64" fn raise(_sig: i32) -> i32 {
+    0
+}
+pub extern "win64" fn div(numer: i32, denom: i32) -> u64 {
+    if denom == 0 {
+        return 0;
+    }
+    let quot = (numer / denom) as u32 as u64;
+    let rem = (numer % denom) as u32 as u64;
+    quot | (rem << 32)
+}
+pub extern "win64" fn putenv(_s: *const c_char) -> i32 {
+    0
+}
+pub extern "win64" fn wgetenv(_name: *const u16) -> *const u16 {
+    std::ptr::null()
+}
+pub unsafe extern "win64" fn wcstombs_s(
+    ret: *mut usize,
+    dst: *mut u8,
+    dst_sz: usize,
+    src: *const u16,
+    count: usize,
+) -> i32 {
+    if src.is_null() {
+        if !ret.is_null() {
+            unsafe { *ret = 0 };
+        }
+        return 22;
+    }
+    let units = unsafe { wstr(src) };
+    let take = if count == usize::MAX {
+        units.len()
+    } else {
+        units.len().min(count)
+    };
+    let s = String::from_utf16_lossy(&units[..take]);
+    let bytes = s.as_bytes();
+    let needed = bytes.len() + 1;
+    if dst.is_null() && dst_sz == 0 {
+        if !ret.is_null() {
+            unsafe { *ret = needed };
+        }
+        return 0;
+    }
+    if dst.is_null() || dst_sz == 0 {
+        return 22;
+    }
+    if needed > dst_sz {
+        if count == usize::MAX && dst_sz > 0 {
+            let n = dst_sz - 1;
+            unsafe {
+                std::ptr::copy_nonoverlapping(bytes.as_ptr(), dst, n);
+                *dst.add(n) = 0;
+                if !ret.is_null() {
+                    *ret = dst_sz;
+                }
+            }
+            return 80; // STRUNCATE
+        }
+        unsafe { *dst = 0 };
+        if !ret.is_null() {
+            unsafe { *ret = 0 };
+        }
+        return 34;
+    }
+    unsafe {
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), dst, bytes.len());
+        *dst.add(bytes.len()) = 0;
+        if !ret.is_null() {
+            *ret = needed;
+        }
+    }
     0
 }
 // Math with float arguments.

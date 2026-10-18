@@ -225,3 +225,101 @@ pub extern "win64" fn wait_ex(handle: usize, milliseconds: u32, alertable: i32) 
     }
     wait(handle, milliseconds)
 }
+
+type WaitOrTimerCallback = unsafe extern "win64" fn(context: usize, timer_or_wait_fired: u8);
+
+struct RegisteredWait {
+    cancelled: Arc<std::sync::atomic::AtomicBool>,
+}
+
+static REGISTERED_WAITS: OnceLock<Mutex<HashMap<usize, RegisteredWait>>> = OnceLock::new();
+static NEXT_WAIT: AtomicUsize = AtomicUsize::new(0x7600_0000);
+
+fn registered_waits() -> &'static Mutex<HashMap<usize, RegisteredWait>> {
+    REGISTERED_WAITS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+pub unsafe extern "win64" fn register_wait_for_single_object(
+    new_wait_object: *mut usize,
+    handle: usize,
+    callback: Option<WaitOrTimerCallback>,
+    context: usize,
+    milliseconds: u32,
+    flags: u32,
+) -> i32 {
+    if new_wait_object.is_null() || callback.is_none() {
+        error::set(87);
+        return 0;
+    }
+    let callback = callback.unwrap();
+    let wait_handle = NEXT_WAIT.fetch_add(16, Ordering::Relaxed);
+    let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+    registered_waits().lock().unwrap().insert(
+        wait_handle,
+        RegisteredWait {
+            cancelled: Arc::clone(&cancelled),
+        },
+    );
+
+    unsafe { *new_wait_object = wait_handle };
+
+    let execute_only_once = (flags & 0x00000008) != 0;
+    let thread_cancelled = Arc::clone(&cancelled);
+
+    std::thread::Builder::new()
+        .name("wait_for_single_object".into())
+        .spawn(move || {
+            loop {
+                if thread_cancelled.load(Ordering::Relaxed) {
+                    break;
+                }
+                let (wait_res, timed_out) = if milliseconds == u32::MAX {
+                    // Poll in small intervals so unregister is prompt
+                    let mut res = 258;
+                    while !thread_cancelled.load(Ordering::Relaxed) {
+                        res = wait(handle, 250);
+                        if res != 258 {
+                            break;
+                        }
+                    }
+                    (res, 0u8)
+                } else {
+                    let res = wait(handle, milliseconds);
+                    let to = (res == 258) as u8;
+                    (res, to)
+                };
+
+                if thread_cancelled.load(Ordering::Relaxed) {
+                    break;
+                }
+                if wait_res == 0 || timed_out != 0 {
+                    unsafe { callback(context, timed_out) };
+                }
+                if execute_only_once {
+                    break;
+                }
+            }
+        })
+        .ok();
+
+    1
+}
+
+pub extern "win64" fn unregister_wait(wait_handle: usize) -> i32 {
+    unregister_wait_ex(wait_handle, 0)
+}
+
+pub extern "win64" fn unregister_wait_ex(wait_handle: usize, completion_event: usize) -> i32 {
+    let wait_opt = registered_waits().lock().unwrap().remove(&wait_handle);
+    if let Some(w) = wait_opt {
+        w.cancelled.store(true, Ordering::Relaxed);
+        if completion_event != 0 && completion_event != usize::MAX {
+            set(completion_event);
+        }
+        1
+    } else {
+        error::set(6);
+        0
+    }
+}

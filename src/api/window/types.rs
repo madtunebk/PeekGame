@@ -82,11 +82,27 @@ pub struct WindowPos {
     pub height: i32,
     pub flags: u32,
 }
+/// WINDOWINFO (Win32).
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct WindowInfo {
+    pub size: u32,
+    pub window: Rect,
+    pub client: Rect,
+    pub style: u32,
+    pub ex_style: u32,
+    pub window_status: u32,
+    pub border_x: u32,
+    pub border_y: u32,
+    pub window_type: u16,
+    pub creator_version: u16,
+}
 const _: () = assert!(std::mem::size_of::<WindowClass>() == 80);
 const _: () = assert!(std::mem::size_of::<WindowClassPlain>() == 72);
 const _: () = assert!(std::mem::size_of::<Message>() == 48);
 const _: () = assert!(std::mem::size_of::<CreateStruct>() == 80);
 const _: () = assert!(std::mem::size_of::<WindowPos>() == 40);
+const _: () = assert!(std::mem::size_of::<WindowInfo>() == 60);
 pub const WM_CREATE: u32 = 1;
 pub const WM_DESTROY: u32 = 2;
 pub const WM_MOVE: u32 = 3;

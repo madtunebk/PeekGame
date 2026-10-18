@@ -313,3 +313,7 @@ pub extern "win64" fn set_ctrl_handler(
     }
 }
 
+pub extern "win64" fn get_console_window() -> usize {
+    0
+}
+

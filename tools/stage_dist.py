@@ -22,4 +22,14 @@ if native.is_dir():
     libraries=destination/'lib';libraries.mkdir(exist_ok=True)
     for source in native.glob('libdxvk_*.so*'):
         if source.is_file():shutil.copy2(source,libraries/source.name)
+if (destination / 'windows-dlls').is_dir():
+    for target_dir in [root / 'target/release', root / 'target/debug']:
+        if target_dir.is_dir():
+            target_link = target_dir / 'windows-dlls'
+            if not target_link.exists():
+                try:
+                    target_link.symlink_to(destination / 'windows-dlls')
+                except OSError:
+                    pass
 print('Distribution ready:',destination/'peekgame')
+

@@ -101,18 +101,18 @@ pub extern "win64" fn is_debugger_present() -> i32 {
 }
 pub extern "win64" fn get_command_line_w() -> *const u16 {
     static LINE: std::sync::OnceLock<Vec<u16>> = std::sync::OnceLock::new();
-    let ptr = LINE.get_or_init(|| {
+    LINE.get_or_init(|| {
         let cmd = crate::host::process::PROCESS
             .get()
             .expect("configured process")
             .command_line
             .to_string_lossy();
-        eprintln!("GetCommandLineW: raw command line = {:?}", cmd);
+        if std::env::var_os("PEEKGAME_VERBOSE").is_some() {
+            eprintln!("GetCommandLineW: raw command line = {:?}", cmd);
+        }
         cmd.encode_utf16().chain(Some(0)).collect()
     })
-    .as_ptr();
-    eprintln!("GetCommandLineW -> {ptr:p}");
-    ptr
+    .as_ptr()
 }
 // c_void keeps Windows opaque pointer spelling available to this subsystem.
 const _: usize = std::mem::size_of::<*const c_void>();

@@ -17,6 +17,11 @@
 static int hook_severity;static char hook_text[64];
 static void WIN windows_hook(int severity,const char *text) {hook_severity=severity;snprintf(hook_text,sizeof hook_text,"%s",text);}
 static uint32_t WIN windows_check(int callback) {return (uint32_t)callback+1;}
+static int network_debug_level;static char network_debug_message[64];
+static void WIN windows_network_debug(int level,const char *message) {
+    network_debug_level=level;
+    snprintf(network_debug_message,sizeof network_debug_message,"%s",message);
+}
 
 typedef struct {int32_t user,callback;uint8_t *param;int32_t size;} WinMsg;
 
@@ -40,6 +45,22 @@ int main(int argc,char **argv) {
     int32_t pipe=SLOT(client,0,int32_t(WIN *)(void *))(client);
     int32_t user=SLOT(client,2,int32_t(WIN *)(void *,int32_t))(client,pipe);
     assert(pipe==7 && user==3);
+    void *networking=SLOT(client,12,void *(WIN *)(void *,int32_t,int32_t,const char *))(client,user,pipe,"SteamNetworking006");
+    void *servers=SLOT(client,12,void *(WIN *)(void *,int32_t,int32_t,const char *))(client,user,pipe,"SteamMatchMakingServers002");
+    assert(networking && servers && networking!=servers);
+    assert(networking==SLOT(client,12,void *(WIN *)(void *,int32_t,int32_t,const char *))(client,user,pipe,"SteamNetworking006"));
+    assert(servers==SLOT(client,12,void *(WIN *)(void *,int32_t,int32_t,const char *))(client,user,pipe,"SteamMatchMakingServers002"));
+    void *sockets=SLOT(client,12,void *(WIN *)(void *,int32_t,int32_t,const char *))(client,user,pipe,"SteamNetworkingSockets012");
+    void *networking_utils=SLOT(client,12,void *(WIN *)(void *,int32_t,int32_t,const char *))(client,user,pipe,"SteamNetworkingUtils004");
+    assert(sockets && networking_utils && sockets!=networking_utils);
+    assert(SLOT(sockets,22,int(WIN *)(void *))(sockets)==100);
+    struct {int availability;char message[256];} auth_status={0};
+    assert(SLOT(sockets,23,int(WIN *)(void *,void *))(sockets,&auth_status)==100);
+    assert(auth_status.availability==100 && !strcmp(auth_status.message,"ready"));
+    SLOT(networking_utils,13,void(WIN *)(void *,int,void(WIN *)(int,const char *)))(
+        networking_utils,4,windows_network_debug);
+    assert(*(int *)dlsym(fake,"fake_network_debug_level")==4);
+    assert(network_debug_level==2 && !strcmp(network_debug_message,"network diagnostic"));
     void *steam_user=SLOT(client,5,void *(WIN *)(void *,int32_t,int32_t,const char *))(client,user,pipe,"SteamUser021");
     assert(steam_user);
     assert(steam_user==SLOT(client,12,void *(WIN *)(void *,int32_t,int32_t,const char *))(client,user,pipe,"SteamUser021"));
@@ -65,6 +86,11 @@ int main(int argc,char **argv) {
 
     assert(SLOT(steam_user,0,int32_t(WIN *)(void *))(steam_user)==3);
     assert(SLOT(steam_user,1,bool(WIN *)(void *))(steam_user));
+    char auth_ticket[16]={0};uint32_t auth_size=0;int identity_marker=42;
+    assert(SLOT(steam_user,13,uint32_t(WIN *)(void *,void *,int,uint32_t *,const void *))(
+        steam_user,auth_ticket,sizeof auth_ticket,&auth_size,&identity_marker)==123);
+    assert(auth_size==4 && !memcmp(auth_ticket,"TEST",4));
+    assert(*(uintptr_t *)dlsym(fake,"fake_auth_identity")== (uintptr_t)&identity_marker);
     uint64_t id=0;
     assert(SLOT(steam_user,2,uint64_t *(WIN *)(void *,uint64_t *))(steam_user,&id)==&id); /* MSVC hidden return */
     assert(id==0x0110000100000001ULL);

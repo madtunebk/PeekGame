@@ -31,6 +31,14 @@ pub fn attach() -> Result<(), String> {
     }
     Ok(())
 }
+/// A host-created worker can enter PE code through a callback without going through
+/// CreateThread. Give it its own TEB and static TLS before resuming PE execution.
+/// DLL_THREAD_ATTACH is deliberately deferred: this path is reached from a fault
+/// handler, where running arbitrary PE callbacks would be unsafe.
+pub fn attach_foreign_worker() -> Result<(), String> {
+    let t = TEMPLATE.get().ok_or("thread TLS template is not configured")?;
+    super::teb::initialize(t.base, t.data.clone())
+}
 pub fn detach() {
     crate::api::threading::fls::thread_exit();
     crate::api::crt::startup::run_thread_local_callbacks(3);

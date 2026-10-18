@@ -200,6 +200,48 @@ exports! {
         locale::compare_ex
     ),
     implemented!(
+        "CompareStringOrdinal",
+        "system",
+        "partial",
+        "ordinal UTF-16 order, optional case folding",
+        locale::compare_ordinal
+    ),
+    implemented!(
+        "ResolveLocaleName",
+        "system",
+        "partial",
+        "resolves locale name to standard Windows tag",
+        locale::resolve_locale_name
+    ),
+    implemented!(
+        "GetNumberFormatEx",
+        "system",
+        "partial",
+        "formats numeric string",
+        formats::number_format_ex
+    ),
+    implemented!(
+        "GetCurrencyFormatEx",
+        "system",
+        "partial",
+        "formats currency string",
+        formats::currency_format_ex
+    ),
+    implemented!(
+        "GetSystemDefaultLCID",
+        "system",
+        "implemented",
+        "LANGID of the host locale",
+        locale::user_default_lcid
+    ),
+    implemented!(
+        "GetUserDefaultLangID",
+        "system",
+        "implemented",
+        "LANGID of the host locale",
+        locale::user_default_ui_language
+    ),
+    implemented!(
         "GetACP",
         "system",
         "partial",
@@ -231,4 +273,6 @@ exports! {
     implemented!("GetUserPreferredUILanguages", "system", "partial", "user preferred UI languages from host locale", locale::preferred_ui_languages),
     implemented!("GetThreadPreferredUILanguages", "system", "partial", "thread-only empty list or merged host UI language", locale::thread_preferred_ui_languages),
     implemented!("GetSystemPreferredUILanguages", "system", "partial", "system preferred UI languages from host locale", locale::preferred_ui_languages),
+    implemented!("GetUserGeoID", "system", "partial", "returns user GEOID based on host country", locale::get_user_geo_id),
+    implemented!("GetGeoInfoW", "system", "partial", "returns geo info string", locale::get_geo_info_w),
 }

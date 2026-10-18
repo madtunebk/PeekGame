@@ -40,6 +40,7 @@ fn system_message(code: u32) -> Option<&'static str> {
         0x8004_0154 => "Class not registered.",
         0x8007_0005 => "Access is denied.",
         0x8007_0057 => "The parameter is incorrect.",
+        0x8009_0302 => "The function requested is not supported.",
         0x887a_0001 => "The application made a call that is invalid.",
         0x887a_0004 => "The specified device interface or feature level is not supported on this system.",
         _ => return None,

@@ -106,6 +106,107 @@ pub unsafe extern "win64" fn create_font_a(
         create_font_indirect_a(lf.as_ptr())
     }
 }
+pub unsafe extern "win64" fn create_font_indirect_w(logfont: *const u8) -> usize {
+    let handle = NEXT_BRUSH.fetch_add(16, Ordering::Relaxed);
+    let mut lf = default_logfont_a();
+    if !logfont.is_null() {
+        unsafe { std::ptr::copy_nonoverlapping(logfont, lf.as_mut_ptr(), 28) };
+    }
+    fonts().lock().unwrap().insert(handle, lf);
+    handle
+}
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "win64" fn create_font_w(
+    height: i32,
+    width: i32,
+    escapement: i32,
+    orientation: i32,
+    weight: i32,
+    italic: u32,
+    underline: u32,
+    strike_out: u32,
+    char_set: u32,
+    out_precision: u32,
+    clip_precision: u32,
+    quality: u32,
+    pitch_and_family: u32,
+    _face_name: *const u16,
+) -> usize {
+    unsafe {
+        create_font_a(
+            height,
+            width,
+            escapement,
+            orientation,
+            weight,
+            italic,
+            underline,
+            strike_out,
+            char_set,
+            out_precision,
+            clip_precision,
+            quality,
+            pitch_and_family,
+            std::ptr::null(),
+        )
+    }
+}
+pub unsafe extern "win64" fn create_bitmap(
+    width: i32,
+    height: i32,
+    _planes: u32,
+    bpp: u32,
+    _bits: *const u8,
+) -> usize {
+    if width <= 0 || height <= 0 {
+        return 0;
+    }
+    let handle = NEXT_BRUSH.fetch_add(16, Ordering::Relaxed);
+    brushes().lock().unwrap().insert(handle, bpp);
+    handle
+}
+pub unsafe extern "win64" fn create_dib_section(
+    _dc: usize,
+    bmi: *const u8,
+    _usage: u32,
+    ppv_bits: *mut *mut u8,
+    _section: usize,
+    _offset: u32,
+) -> usize {
+    let (w, h, bpp) = if !bmi.is_null() {
+        unsafe {
+            let w = (bmi.add(4) as *const i32).read_unaligned().unsigned_abs().max(1);
+            let h = (bmi.add(8) as *const i32).read_unaligned().unsigned_abs().max(1);
+            let bpp = (bmi.add(14) as *const u16).read_unaligned().max(8) as u32;
+            (w, h, bpp)
+        }
+    } else {
+        (64, 64, 32)
+    };
+    let size = (w as usize)
+        .saturating_mul(h as usize)
+        .saturating_mul(bpp.div_ceil(8) as usize)
+        .max(64);
+    let mut buf = vec![0u8; size].into_boxed_slice();
+    let ptr = buf.as_mut_ptr();
+    std::mem::forget(buf);
+    if !ppv_bits.is_null() {
+        unsafe { *ppv_bits = ptr };
+    }
+    let handle = NEXT_BRUSH.fetch_add(16, Ordering::Relaxed);
+    brushes().lock().unwrap().insert(handle, bpp);
+    handle
+}
+pub extern "win64" fn create_round_rect_rgn(
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+    _w: i32,
+    _h: i32,
+) -> usize {
+    create(left, top, right, bottom)
+}
 pub extern "win64" fn get_stock_object(index: i32) -> usize {
     if (0..=21).contains(&index) {
         0x000f_0000 + index as usize
@@ -139,6 +240,22 @@ pub unsafe extern "win64" fn get_object_a(handle: usize, count: i32, out: *mut u
     }
     0
 }
+pub unsafe extern "win64" fn get_object_w(handle: usize, count: i32, out: *mut u8) -> i32 {
+    if let Some(lf) = fonts().lock().unwrap().get(&handle).copied().or_else(|| {
+        matches!(handle, 0x000f_000a..=0x000f_000e | 0x000f_0010 | 0x000f_0011)
+            .then(default_logfont_a)
+    }) {
+        if out.is_null() {
+            return 92;
+        }
+        let mut lfw = [0u8; 92];
+        lfw[..28].copy_from_slice(&lf[..28]);
+        let n = count.clamp(0, 92) as usize;
+        unsafe { std::ptr::copy_nonoverlapping(lfw.as_ptr(), out, n) };
+        return n as i32;
+    }
+    unsafe { get_object_a(handle, count, out) }
+}
 pub extern "win64" fn select_object(_dc: usize, obj: usize) -> usize {
     if let Some(r) = regions().lock().unwrap().get(&obj).copied() {
         return if r.empty() { 1 } else { 2 };
@@ -147,6 +264,74 @@ pub extern "win64" fn select_object(_dc: usize, obj: usize) -> usize {
         return 0;
     }
     0x000f_0000
+}
+pub extern "win64" fn set_bk_mode(_dc: usize, _mode: i32) -> i32 {
+    1
+}
+pub extern "win64" fn set_bk_color(_dc: usize, color: u32) -> u32 {
+    color
+}
+pub extern "win64" fn set_text_color(_dc: usize, color: u32) -> u32 {
+    color
+}
+pub extern "win64" fn set_text_align(_dc: usize, align: u32) -> u32 {
+    align
+}
+pub unsafe extern "win64" fn move_to_ex(_dc: usize, _x: i32, _y: i32, pt: *mut u64) -> i32 {
+    if !pt.is_null() {
+        unsafe { *pt = 0 };
+    }
+    1
+}
+pub extern "win64" fn line_to(_dc: usize, _x: i32, _y: i32) -> i32 {
+    1
+}
+pub extern "win64" fn rectangle(_dc: usize, _l: i32, _t: i32, _r: i32, _b: i32) -> i32 {
+    1
+}
+pub extern "win64" fn round_rect(
+    _dc: usize,
+    _l: i32,
+    _t: i32,
+    _r: i32,
+    _b: i32,
+    _w: i32,
+    _h: i32,
+) -> i32 {
+    1
+}
+pub extern "win64" fn polygon(_dc: usize, _pts: usize, _count: i32) -> i32 {
+    1
+}
+pub extern "win64" fn text_out_w(_dc: usize, _x: i32, _y: i32, _str: *const u16, _c: i32) -> i32 {
+    1
+}
+#[allow(clippy::too_many_arguments)]
+pub extern "win64" fn ext_text_out_w(
+    _dc: usize,
+    _x: i32,
+    _y: i32,
+    _opts: u32,
+    _rect: usize,
+    _str: *const u16,
+    _c: u32,
+    _dx: usize,
+) -> i32 {
+    1
+}
+pub unsafe extern "win64" fn get_text_extent_point32_w(
+    _dc: usize,
+    _str: *const u16,
+    c: i32,
+    size: *mut i32,
+) -> i32 {
+    if !size.is_null() {
+        unsafe {
+            *size = c.max(0) * 8;
+            *size.add(1) = 16;
+        }
+    }
+    1
 }
 pub extern "win64" fn create(left: i32, top: i32, right: i32, bottom: i32) -> usize {
     let rect = Rect {
@@ -163,7 +348,7 @@ pub extern "win64" fn delete(handle: usize) -> i32 {
     if regions().lock().unwrap().remove(&handle).is_some()
         || brushes().lock().unwrap().remove(&handle).is_some()
         || fonts().lock().unwrap().remove(&handle).is_some()
-        || (0x000e_0000..=0x000f_0015).contains(&handle)
+        || (0x000d_0000..=0x000f_0015).contains(&handle)
     {
         1
     } else {
@@ -247,4 +432,18 @@ pub extern "win64" fn set_window(hwnd: usize, region: usize, _redraw: i32) -> i3
     }
     map.remove(&region);
     1
+}
+pub extern "win64" fn pt_in_region(handle: usize, x: i32, y: i32) -> i32 {
+    let map = regions().lock().unwrap();
+    let Some(rect) = map.get(&handle).copied() else {
+        return 0;
+    };
+    if rect.empty() {
+        return 0;
+    }
+    if x >= rect.left && x < rect.right && y >= rect.top && y < rect.bottom {
+        1
+    } else {
+        0
+    }
 }

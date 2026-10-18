@@ -115,6 +115,13 @@ exports! {
         virtual_memory::alloc
     ),
     implemented!(
+        "DiscardVirtualMemory",
+        "memory",
+        "implemented",
+        "discards memory pages with MADV_DONTNEED",
+        virtual_memory::discard_virtual_memory
+    ),
+    implemented!(
         "VirtualFree",
         "memory",
         "partial",
@@ -191,4 +198,36 @@ exports! {
         "HeapCompatibilityInformation (standard heap)",
         heap::query_information
     ),
+    export!(
+        "ntdll.dll",
+        "NtQuerySection",
+        "memory",
+        "partial",
+        "SectionBasicInformation for file mapping handles",
+        mapping::query_section
+    ),
+    export!(
+        "ntdll.dll",
+        "ZwQuerySection",
+        "memory",
+        "partial",
+        "SectionBasicInformation for file mapping handles",
+        mapping::query_section
+    ),
+    implemented!(
+        "GetLargePageMinimum",
+        "memory",
+        "implemented",
+        "2 MiB x86-64 large page size",
+        virtual_memory::large_page_minimum
+    ),
+    implemented!(
+        "VirtualUnlock",
+        "memory",
+        "partial",
+        "no-op unlock",
+        virtual_memory::unlock
+    ),
 }
+
+

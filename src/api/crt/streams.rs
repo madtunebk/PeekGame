@@ -155,3 +155,135 @@ pub unsafe extern "win64" fn freopen_s(
     }
     0
 }
+unsafe extern "C" {
+    fn open(path: *const c_char, flags: i32, mode: u32) -> i32;
+    fn close(fd: i32) -> i32;
+    fn isatty(fd: i32) -> i32;
+}
+pub unsafe extern "win64" fn stat64(path: *const c_char, out: *mut u8) -> i32 {
+    if path.is_null() || out.is_null() {
+        unsafe { *stdio::errno() = 22 };
+        return -1;
+    }
+    let Ok(p) = (unsafe { crate::host::paths::narrow(path) }).and_then(|s| crate::host::paths::host(&s)) else {
+        unsafe { *stdio::errno() = 2 };
+        return -1;
+    };
+    let Ok(f) = std::fs::File::open(&p) else {
+        unsafe { *stdio::errno() = 2 };
+        return -1;
+    };
+    use std::os::fd::AsRawFd;
+    unsafe { super::ucrt::fstat64(f.as_raw_fd(), out) }
+}
+pub unsafe extern "win64" fn stat64i32(path: *const c_char, out: *mut u8) -> i32 {
+    if path.is_null() || out.is_null() {
+        unsafe { *stdio::errno() = 22 };
+        return -1;
+    }
+    let Ok(p) = (unsafe { crate::host::paths::narrow(path) }).and_then(|s| crate::host::paths::host(&s)) else {
+        unsafe { *stdio::errno() = 2 };
+        return -1;
+    };
+    let Ok(f) = std::fs::File::open(&p) else {
+        unsafe { *stdio::errno() = 2 };
+        return -1;
+    };
+    use std::os::fd::AsRawFd;
+    unsafe { fstat(f.as_raw_fd(), out) }
+}
+pub unsafe extern "win64" fn access(path: *const c_char, _mode: i32) -> i32 {
+    let Ok(p) = (unsafe { crate::host::paths::narrow(path) }).and_then(|s| crate::host::paths::host(&s)) else {
+        unsafe { *stdio::errno() = 2 };
+        return -1;
+    };
+    if p.exists() {
+        0
+    } else {
+        unsafe { *stdio::errno() = 2 };
+        -1
+    }
+}
+pub unsafe extern "win64" fn rename(old: *const c_char, new: *const c_char) -> i32 {
+    let (Ok(a), Ok(b)) = (
+        (unsafe { crate::host::paths::narrow(old) }).and_then(|s| crate::host::paths::host(&s)),
+        (unsafe { crate::host::paths::narrow(new) }).and_then(|s| crate::host::paths::host(&s)),
+    ) else {
+        unsafe { *stdio::errno() = 2 };
+        return -1;
+    };
+    if std::fs::rename(a, b).is_ok() {
+        0
+    } else {
+        unsafe { *stdio::errno() = 13 };
+        -1
+    }
+}
+pub unsafe extern "win64" fn open_fd(path: *const c_char, flags: i32, mode: u32) -> i32 {
+    let Ok(p) = (unsafe { crate::host::paths::narrow(path) }).and_then(|s| crate::host::paths::host(&s)) else {
+        unsafe { *stdio::errno() = 2 };
+        return -1;
+    };
+    use std::os::unix::ffi::OsStrExt;
+    let Ok(cpath) = CString::new(p.as_os_str().as_bytes()) else {
+        unsafe { *stdio::errno() = 22 };
+        return -1;
+    };
+    let mut lflags = flags & 3;
+    if flags & 0x0100 != 0 {
+        lflags |= 0o100; // O_CREAT
+    }
+    if flags & 0x0200 != 0 {
+        lflags |= 0o1000; // O_TRUNC
+    }
+    if flags & 0x0400 != 0 {
+        lflags |= 0o200; // O_EXCL
+    }
+    if flags & 0x0008 != 0 {
+        lflags |= 0o2000; // O_APPEND
+    }
+    let _ = mode;
+    unsafe { open(cpath.as_ptr(), lflags, 0o666) }
+}
+pub extern "win64" fn close_fd(fd: i32) -> i32 {
+    unsafe { close(fd) }
+}
+pub extern "win64" fn isatty_fd(fd: i32) -> i32 {
+    unsafe { isatty(fd) }
+}
+pub extern "win64" fn setmode_fd(_fd: i32, mode: i32) -> i32 {
+    mode
+}
+pub unsafe extern "win64" fn fopen_s(
+    out: *mut *mut c_void,
+    path: *const c_char,
+    mode: *const c_char,
+) -> i32 {
+    if out.is_null() {
+        unsafe { *stdio::errno() = 22 };
+        return 22;
+    }
+    let f = unsafe { stdio::open(path, mode) };
+    unsafe { *out = f };
+    if f.is_null() {
+        unsafe { *stdio::errno() }
+    } else {
+        0
+    }
+}
+pub unsafe extern "win64" fn tmpnam(out: *mut c_char) -> *mut c_char {
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+    static BUF: std::sync::Mutex<[u8; 64]> = std::sync::Mutex::new([0; 64]);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let s = format!("Z:\\tmp\\peek_tmp_{}_{}\0", std::process::id(), n);
+    let bytes = s.as_bytes();
+    if !out.is_null() {
+        unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr().cast(), out, bytes.len()) };
+        out
+    } else {
+        let mut b = BUF.lock().unwrap();
+        b[..bytes.len()].copy_from_slice(bytes);
+        b.as_mut_ptr().cast()
+    }
+}
+

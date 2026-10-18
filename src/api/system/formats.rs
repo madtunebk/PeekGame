@@ -277,3 +277,34 @@ pub unsafe extern "win64" fn time_format_ex(
     }
     unsafe { time_of_day(flags, st, picture, out, capacity) }
 }
+pub unsafe extern "win64" fn number_format_ex(
+    _name: *const u16,
+    _flags: u32,
+    value: *const u16,
+    _format: *const u8,
+    out: *mut u16,
+    capacity: i32,
+) -> i32 {
+    if value.is_null() {
+        error::set(87);
+        return 0;
+    }
+    let s = String::from_utf16_lossy(unsafe { text::units(value) });
+    unsafe { output(&s, out, capacity) }
+}
+pub unsafe extern "win64" fn currency_format_ex(
+    _name: *const u16,
+    _flags: u32,
+    value: *const u16,
+    _format: *const u8,
+    out: *mut u16,
+    capacity: i32,
+) -> i32 {
+    if value.is_null() {
+        error::set(87);
+        return 0;
+    }
+    let s = format!("${}", String::from_utf16_lossy(unsafe { text::units(value) }));
+    unsafe { output(&s, out, capacity) }
+}
+

@@ -20,3 +20,4 @@ pub use api::system::dynamic::start as start_import_trace;
 
 pub use host::teb::initialize as initialize_windows_thread;
 pub use host::thread_template::configure as configure_windows_threads;
+pub use host::paths::windows as windows_path;

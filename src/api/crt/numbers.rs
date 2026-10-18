@@ -35,6 +35,15 @@ pub unsafe extern "win64" fn strtoui64(s: *const c_char, end: *mut *mut c_char, 
     }
     unsafe { unsigned(s, end, base) }
 }
+pub unsafe extern "win64" fn strtoll(s: *const c_char, end: *mut *mut c_char, base: i32) -> i64 {
+    unsafe { strtoi64(s, end, base) }
+}
+pub unsafe extern "win64" fn strtoull(s: *const c_char, end: *mut *mut c_char, base: i32) -> u64 {
+    unsafe { strtoui64(s, end, base) }
+}
+pub unsafe extern "win64" fn atoll(s: *const c_char) -> i64 {
+    unsafe { strtoi64(s, std::ptr::null_mut(), 10) }
+}
 pub unsafe extern "win64" fn strtol(s: *const c_char, end: *mut *mut c_char, base: i32) -> i32 {
     let v = unsafe { strtoi64(s, end, base) };
     if v > i32::MAX as i64 {
@@ -69,6 +78,89 @@ pub unsafe extern "win64" fn wcstol(s: *const u16, end: *mut *const u16, base: i
     }
     v
 }
+
+pub unsafe extern "win64" fn wcstoi64(s: *const u16, end: *mut *const u16, base: i32) -> i64 {
+    if s.is_null() {
+        errno(22);
+        return 0;
+    }
+    let bytes: Vec<u8> = unsafe { crate::api::text::units(s) }
+        .iter()
+        .take_while(|&&c| c < 128)
+        .map(|&c| c as u8)
+        .collect();
+    let bytes = CString::new(bytes).unwrap_or_default();
+    let mut finish = std::ptr::null_mut();
+    let v = unsafe { strtoi64(bytes.as_ptr(), &mut finish, base) };
+    if !end.is_null() {
+        let n = unsafe { finish.offset_from(bytes.as_ptr()) };
+        unsafe {
+            *end = s.offset(n);
+        }
+    }
+    v
+}
+
+pub unsafe extern "win64" fn wcstoui64(s: *const u16, end: *mut *const u16, base: i32) -> u64 {
+    if s.is_null() {
+        errno(22);
+        return 0;
+    }
+    let bytes: Vec<u8> = unsafe { crate::api::text::units(s) }
+        .iter()
+        .take_while(|&&c| c < 128)
+        .map(|&c| c as u8)
+        .collect();
+    let bytes = CString::new(bytes).unwrap_or_default();
+    let mut finish = std::ptr::null_mut();
+    let v = unsafe { strtoui64(bytes.as_ptr(), &mut finish, base) };
+    if !end.is_null() {
+        let n = unsafe { finish.offset_from(bytes.as_ptr()) };
+        unsafe {
+            *end = s.offset(n);
+        }
+    }
+    v
+}
+
+pub unsafe extern "win64" fn wcstoul(s: *const u16, end: *mut *const u16, base: i32) -> u32 {
+    let v = unsafe { wcstoui64(s, end, base) };
+    if v > u32::MAX as u64 {
+        errno(34);
+        u32::MAX
+    } else {
+        v as u32
+    }
+}
+
+pub unsafe extern "win64" fn wcstol_l(s: *const u16, end: *mut *const u16, base: i32, _locale: usize) -> i32 {
+    unsafe { wcstol(s, end, base) }
+}
+
+pub unsafe extern "win64" fn wcstoul_l(s: *const u16, end: *mut *const u16, base: i32, _locale: usize) -> u32 {
+    unsafe { wcstoul(s, end, base) }
+}
+
+pub unsafe extern "win64" fn wcstoi64_l(s: *const u16, end: *mut *const u16, base: i32, _locale: usize) -> i64 {
+    unsafe { wcstoi64(s, end, base) }
+}
+
+pub unsafe extern "win64" fn wcstoui64_l(s: *const u16, end: *mut *const u16, base: i32, _locale: usize) -> u64 {
+    unsafe { wcstoui64(s, end, base) }
+}
+
+pub unsafe extern "win64" fn strtol_l(s: *const c_char, end: *mut *mut c_char, base: i32, _locale: usize) -> i32 {
+    unsafe { strtol(s, end, base) }
+}
+
+pub unsafe extern "win64" fn strtoi64_l(s: *const c_char, end: *mut *mut c_char, base: i32, _locale: usize) -> i64 {
+    unsafe { strtoi64(s, end, base) }
+}
+
+pub unsafe extern "win64" fn strtoui64_l(s: *const c_char, end: *mut *mut c_char, base: i32, _locale: usize) -> u64 {
+    unsafe { strtoui64(s, end, base) }
+}
+
 pub unsafe extern "win64" fn itoa_s(value: i32, out: *mut u8, size: usize, radix: i32) -> i32 {
     if out.is_null() || size == 0 {
         errno(22);

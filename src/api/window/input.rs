@@ -13,7 +13,7 @@ fn fail<T>(code: u32, value: T) -> T {
 pub(crate) use cursor::{
     create_cursor,
     clip_cursor, destroy_cursor, get_clip_cursor, get_cursor, get_cursor_info, get_cursor_pos,
-    get_physical_cursor_pos, load_cursor_a, load_cursor_w, set_cursor_pos, set_cursor_w,
+    get_physical_cursor_pos, load_cursor_a, load_cursor_w, load_cursor_from_file_a, load_cursor_from_file_w, set_cursor_pos, set_cursor_w,
     show_cursor,
 };
 pub(super) use cursor::{set_cursor, x_cursor_for};

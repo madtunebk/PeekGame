@@ -25,6 +25,17 @@ pub extern "win64" fn hidp_invalid() -> i32 {
 pub extern "win64" fn get_class_devs() -> usize {
     0x000e_0010
 }
+pub extern "win64" fn get_class_devs_ex(
+    _class_guid: usize,
+    _enumerator: usize,
+    _hwnd_parent: usize,
+    _flags: u32,
+    _device_info_set: usize,
+    _machine_name: usize,
+    _reserved: usize,
+) -> usize {
+    0x000e_0010
+}
 /// SetupDiEnum*/SetupDiGetDeviceInterfaceDetail: ERROR_NO_MORE_ITEMS.
 pub extern "win64" fn no_more_items() -> i32 {
     error::set(259);

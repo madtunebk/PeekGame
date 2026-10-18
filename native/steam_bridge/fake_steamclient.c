@@ -10,14 +10,36 @@ typedef struct {void **vtbl;} Object;
 static char cloud_name[64];static uint8_t cloud_data[256];static int32_t cloud_size=-1;
 static void *client_vtbl[42],*client017_vtbl[37],*client014_vtbl[29],*user_vtbl[32],*utils_vtbl[39];
 static Object client={client_vtbl},client017={client017_vtbl},client014={client014_vtbl},user={user_vtbl},utils={utils_vtbl};
+static void *networking_vtbl[32],*servers_vtbl[32];
+static Object networking={networking_vtbl},servers={servers_vtbl};
+static void *sockets_vtbl[64],*networking_utils_vtbl[64];
+static Object sockets={sockets_vtbl},networking_utils={networking_utils_vtbl};
+int fake_network_debug_level;
+static void networking_set_debug(void *self,int level,void (*hook)(int,const char *)) {
+    if(self!=&networking_utils)abort();
+    fake_network_debug_level=level;
+    if(hook)hook(2,"network diagnostic");
+}
+static int sockets_init_auth(void *self) {return self==&sockets?100:-1;}
+static int sockets_auth_status(void *self,void *details) {
+    if(self!=&sockets)return -1;
+    if(details) {*(int *)details=100;memcpy((char *)details+4,"ready",6);}
+    return 100;
+}
 
 uint64_t fake_license_steam_id;uint32_t fake_license_app;
+uintptr_t fake_auth_identity;
 int fake_hook_severity;char fake_hook_text[64];uint32_t fake_check_result;
 int fake_frees,fake_result_calls;
 uint32_t fake014_ip;uint16_t fake014_port;int fake014_run_frames;
 uint32_t fake017_ip,fake017_check_result;uint16_t fake017_port;int fake017_run_frames;
 
 static void unexpected(void) {abort();}
+static uint32_t auth_ticket(void *self,void *ticket,int size,uint32_t *written,const void *identity) {
+    if(self!=&user || !ticket || size<4 || !written)return 0;
+    fake_auth_identity=(uintptr_t)identity;
+    memcpy(ticket,"TEST",4);*written=4;return 123;
+}
 static int32_t create_pipe(void *self) {return self==&client?7:-1;}
 static int32_t connect_user(void *self,int32_t pipe) {return self==&client && pipe==7?3:0;}
 static void *get_user(void *self,int32_t u,int32_t pipe,const char *v) {
@@ -119,6 +141,12 @@ static void *get_matchmaking(void *self,int32_t u,int32_t pipe,const char *v) {
     return self==&client && u==3 && pipe==7 && !strcmp(v,"SteamMatchMaking009")?&matchmaking:NULL;
 }
 static void *get_generic(void *self,int32_t u,int32_t pipe,const char *v) {
+    if(self==&client && u==3 && pipe==7) {
+        if(!strcmp(v,"SteamNetworking006"))return &networking;
+        if(!strcmp(v,"SteamMatchMakingServers002"))return &servers;
+        if(!strcmp(v,"SteamNetworkingSockets012"))return &sockets;
+        if(!strcmp(v,"SteamNetworkingUtils004"))return &networking_utils;
+    }
     if(!strcmp(v,"SteamMatchMaking009"))return get_matchmaking(self,u,pipe,v);
     if(!strcmp(v,"STEAMUSERSTATS_INTERFACE_VERSION011"))return get_stats(self,u,pipe,v);
     if(!strcmp(v,"STEAMREMOTESTORAGE_INTERFACE_VERSION014"))return get_remote(self,u,pipe,v);
@@ -192,6 +220,11 @@ static void init(void) {
     client014_vtbl[19]=(void *)run_frame014;client014_vtbl[21]=(void *)set_hook014;
     for(int i=0;i<32;i++)user_vtbl[i]=(void *)unexpected;
     for(int i=0;i<39;i++)utils_vtbl[i]=(void *)unexpected;
+    for(int i=0;i<64;i++)sockets_vtbl[i]=(void *)unexpected;
+    sockets_vtbl[22]=(void *)sockets_init_auth;
+    sockets_vtbl[23]=(void *)sockets_auth_status;
+    for(int i=0;i<64;i++)networking_utils_vtbl[i]=(void *)unexpected;
+    networking_utils_vtbl[13]=(void *)networking_set_debug;
     for(int i=0;i<38;i++)mm_vtbl[i]=(void *)unexpected;
     mm_vtbl[4]=(void *)mm_list;mm_vtbl[12]=(void *)mm_lobby_by_index;
     mm_vtbl[13]=(void *)mm_create;mm_vtbl[35]=(void *)mm_lobby_owner;
@@ -204,6 +237,7 @@ static void init(void) {
     client017_vtbl[19]=(void *)run_frame017;client017_vtbl[20]=(void *)ipc_count017;client017_vtbl[21]=(void *)set_hook017;
     client017_vtbl[22]=(void *)shutdown017;client017_vtbl[33]=(void *)set_check017;
     user_vtbl[0]=(void *)user_handle;user_vtbl[1]=(void *)logged_on;user_vtbl[2]=(void *)steam_id;
+    user_vtbl[13]=(void *)auth_ticket;
     user_vtbl[17]=(void *)has_license;
     utils_vtbl[9]=(void *)app_id;utils_vtbl[13]=(void *)utils_result;
     for(int i=0;i<55;i++)rs_vtbl[i]=(void *)unexpected;

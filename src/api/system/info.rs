@@ -359,6 +359,99 @@ pub unsafe extern "win64" fn set_thread_group_affinity(
     }
     1
 }
+pub unsafe extern "win64" fn numa_highest_node_number(out: *mut u32) -> i32 {
+    if out.is_null() {
+        error::set(87);
+        return 0;
+    }
+    unsafe { out.write_unaligned(0) };
+    1
+}
+pub unsafe extern "win64" fn numa_processor_node(processor: u8, node_number: *mut u8) -> i32 {
+    if node_number.is_null() || processor >= 64 {
+        if !node_number.is_null() {
+            unsafe { *node_number = 0xff };
+        }
+        error::set(87);
+        return 0;
+    }
+    unsafe { *node_number = 0 };
+    1
+}
+pub unsafe extern "win64" fn numa_processor_node_ex(
+    processor: *const u8,
+    node_number: *mut u16,
+) -> i32 {
+    if processor.is_null() || node_number.is_null() {
+        error::set(87);
+        return 0;
+    }
+    unsafe { node_number.write_unaligned(0) };
+    1
+}
+pub unsafe extern "win64" fn numa_node_processor_mask(
+    node: u8,
+    processor_mask: *mut u64,
+) -> i32 {
+    if processor_mask.is_null() {
+        error::set(87);
+        return 0;
+    }
+    unsafe { processor_mask.write_unaligned(if node == 0 { affinity() } else { 0 }) };
+    1
+}
+pub unsafe extern "win64" fn numa_node_processor_mask_ex(
+    node: u16,
+    processor_mask: *mut u8,
+) -> i32 {
+    if processor_mask.is_null() {
+        error::set(87);
+        return 0;
+    }
+    unsafe {
+        processor_mask.write_bytes(0, 16);
+        if node == 0 {
+            processor_mask.cast::<u64>().write_unaligned(affinity());
+        }
+    }
+    1
+}
+pub unsafe extern "win64" fn get_thread_ideal_processor_ex(
+    _thread: usize,
+    ideal: *mut u8,
+) -> i32 {
+    if ideal.is_null() {
+        error::set(87);
+        return 0;
+    }
+    unsafe { ideal.write_bytes(0, 4) };
+    1
+}
+pub unsafe extern "win64" fn current_processor_number_ex(proc_num: *mut u8) {
+    if !proc_num.is_null() {
+        let cpu = crate::api::threading::threads::current_processor_number() as u8;
+        unsafe {
+            proc_num.write_bytes(0, 4);
+            *proc_num.add(2) = cpu;
+        }
+    }
+}
+pub unsafe extern "win64" fn query_thread_cycle_time(_thread: usize, cycles: *mut u64) -> i32 {
+    if cycles.is_null() {
+        error::set(87);
+        return 0;
+    }
+    unsafe { cycles.write_unaligned(core::arch::x86_64::_rdtsc()) };
+    1
+}
+pub unsafe extern "win64" fn query_process_cycle_time(_process: usize, cycles: *mut u64) -> i32 {
+    if cycles.is_null() {
+        error::set(87);
+        return 0;
+    }
+    unsafe { cycles.write_unaligned(core::arch::x86_64::_rdtsc()) };
+    1
+}
 pub extern "win64" fn switch_to_thread() -> i32 {
     unsafe { sched_yield() };
     1
@@ -505,6 +598,139 @@ pub unsafe extern "win64" fn computer_name_w(out: *mut u16, size: *mut u32) -> i
     }
     1
 }
+
+pub unsafe extern "win64" fn computer_name_a(out: *mut u8, size: *mut u32) -> i32 {
+    if size.is_null() {
+        error::set(87);
+        return 0;
+    }
+    let mut host = [0u8; 256];
+    if unsafe { gethostname(host.as_mut_ptr(), host.len() - 1) } != 0 {
+        error::set(1);
+        return 0;
+    }
+    let host = String::from_utf8_lossy(&host[..host.iter().position(|b| *b == 0).unwrap_or(0)])
+        .into_owned();
+    let name: String = host
+        .split('.')
+        .next()
+        .unwrap_or("")
+        .to_uppercase()
+        .chars()
+        .take(15)
+        .collect();
+    let bytes = name.as_bytes();
+    if out.is_null() || unsafe { *size } as usize <= bytes.len() {
+        unsafe { *size = bytes.len() as u32 + 1 };
+        error::set(111);
+        return 0;
+    }
+    unsafe {
+        text::copy_out_narrow(bytes, out, *size);
+        *size = bytes.len() as u32;
+    }
+    1
+}
+
+pub unsafe extern "win64" fn computer_name_ex_w(
+    format: u32,
+    out: *mut u16,
+    size: *mut u32,
+) -> i32 {
+    if size.is_null() {
+        error::set(87);
+        return 0;
+    }
+    let mut host = [0u8; 256];
+    if unsafe { gethostname(host.as_mut_ptr(), host.len() - 1) } != 0 {
+        error::set(1);
+        return 0;
+    }
+    let host_full = String::from_utf8_lossy(&host[..host.iter().position(|b| *b == 0).unwrap_or(0)])
+        .into_owned();
+    let label = host_full.split('.').next().unwrap_or("").to_string();
+
+    let name = match format {
+        0 | 4 => label.to_uppercase().chars().take(15).collect::<String>(),
+        1 | 5 => label,
+        2 | 6 => {
+            if let Some((_, domain)) = host_full.split_once('.') {
+                domain.to_string()
+            } else {
+                String::new()
+            }
+        }
+        3 | 7 => host_full,
+        _ => {
+            error::set(87);
+            return 0;
+        }
+    };
+
+    let wide = text::wide(&name);
+    let needed = wide.len() as u32 + 1;
+    if out.is_null() || unsafe { *size } < needed {
+        unsafe { *size = needed };
+        error::set(234); // ERROR_MORE_DATA
+        return 0;
+    }
+
+    unsafe {
+        text::copy_out(&wide, out, *size);
+        *size = wide.len() as u32;
+    }
+    1
+}
+
+pub unsafe extern "win64" fn computer_name_ex_a(
+    format: u32,
+    out: *mut u8,
+    size: *mut u32,
+) -> i32 {
+    if size.is_null() {
+        error::set(87);
+        return 0;
+    }
+    let mut host = [0u8; 256];
+    if unsafe { gethostname(host.as_mut_ptr(), host.len() - 1) } != 0 {
+        error::set(1);
+        return 0;
+    }
+    let host_full = String::from_utf8_lossy(&host[..host.iter().position(|b| *b == 0).unwrap_or(0)])
+        .into_owned();
+    let label = host_full.split('.').next().unwrap_or("").to_string();
+
+    let name = match format {
+        0 | 4 => label.to_uppercase().chars().take(15).collect::<String>(),
+        1 | 5 => label,
+        2 | 6 => {
+            if let Some((_, domain)) = host_full.split_once('.') {
+                domain.to_string()
+            } else {
+                String::new()
+            }
+        }
+        3 | 7 => host_full,
+        _ => {
+            error::set(87);
+            return 0;
+        }
+    };
+
+    let bytes = name.as_bytes();
+    let needed = bytes.len() as u32 + 1;
+    if out.is_null() || unsafe { *size } < needed {
+        unsafe { *size = needed };
+        error::set(234); // ERROR_MORE_DATA
+        return 0;
+    }
+
+    unsafe {
+        text::copy_out_narrow(bytes, out, *size);
+        *size = bytes.len() as u32;
+    }
+    1
+}
 /// Windows directories do not exist on the host; programs get the usual paths,
 /// which then fail to open like any missing file.
 const SYSTEM_DIRECTORY: &str = "C:\\Windows\\system32";
@@ -535,25 +761,6 @@ pub unsafe extern "win64" fn current_directory_a(capacity: u32, out: *mut u8) ->
 pub unsafe extern "win64" fn output_debug_string_w(message: *const u16) {
     if let Some(message) = unsafe { text::string(message) } {
         eprintln!("OutputDebugStringW: {message}");
-        let rsp_val: usize;
-        unsafe { std::arch::asm!("mov {}, rsp", out(reg) rsp_val); }
-        let ptr = rsp_val as *const usize;
-        for i in 0..64 {
-            let val = unsafe { ptr.add(i).read() };
-            if let Some(m) = crate::images::try_by_address(val) {
-                eprintln!("  debug_stack[{i}] = {val:#x} ({}+{:#x})", m.name, val - m.base);
-            } else if val >= 0x140000000 && val < 0x150000000 {
-                eprintln!("  debug_stack[{i}] = {val:#x} (Palworld+{:#x})", val - 0x140000000);
-            } else if val > 0x10000 {
-                eprintln!("  debug_stack[{i}] = {val:#x}");
-            }
-        }
-        let addrs: [usize; 4] = [0x1434826ce, 0x14349157e, 0x147923378, 0x1494484d4];
-        for &addr in &addrs {
-            let start = addr.saturating_sub(32);
-            let slice = unsafe { std::slice::from_raw_parts(start as *const u8, 64) };
-            eprintln!("Bytes around {addr:#x} (start {start:#x}): {:02x?}", slice);
-        }
     }
 }
 
@@ -605,7 +812,10 @@ pub unsafe extern "win64" fn module_file_name_w(
     capacity: u32,
 ) -> u32 {
     let p = module_path(module);
-    eprintln!("[info] module_file_name_w module={module:#x} path={p:?}");
+    static VERBOSE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *VERBOSE.get_or_init(|| std::env::var_os("PEEKGAME_VERBOSE").is_some()) {
+        eprintln!("[info] module_file_name_w module={module:#x} path={p:?}");
+    }
     match p {
         Some(path) => {
             let win_path = if path.to_string_lossy().starts_with("C:") || path.to_string_lossy().starts_with(r"C:\") {

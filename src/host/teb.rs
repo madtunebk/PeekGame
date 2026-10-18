@@ -148,12 +148,13 @@ pub fn initialize(image: usize, data: Vec<u8>) -> Result<(), String> {
                 return Err("cannot query stack bounds".into());
             }
             environment.teb[1] = stack as u64 + size as u64;
-            environment.teb[2] = stack as u64;
+            environment.teb[2] = 0; // StackLimit: 0 disables MSVC __chkstk page probing past Linux pthread guard
             environment.teb[6] = environment.teb.as_ptr() as u64;
             environment.teb[8] = getpid() as u64;
             environment.teb[9] = syscall(186) as u64;
             environment.teb[12] = peb(image) as u64;
             environment.teb[0x108 / 8] = crate::api::system::locale::thread::get() as u64;
+            environment.teb[0x1478 / 8] = stack as u64;
             environment.teb[0x1780 / 8] = environment.expansion.as_ptr() as u64;
             crate::images::tls::set_exe_template(data);
             crate::images::tls::thread_start(&mut environment.teb[11]);
@@ -222,7 +223,7 @@ impl Drop for ThreadEnvironment {
 /// Current Windows thread's native stack bounds, for bounded stack walking.
 pub(crate) fn stack_bounds() -> Option<(u64, u64)> {
     ENVIRONMENT
-        .try_with(|env| env.borrow().as_ref().map(|env| (env.teb[2], env.teb[1])))
+        .try_with(|env| env.borrow().as_ref().map(|env| (env.teb[0x1478 / 8], env.teb[1])))
         .ok()
         .flatten()
 }
@@ -245,4 +246,25 @@ pub(crate) fn get_fiber_data() -> usize {
         })
         .unwrap_or(0)
 }
+
+pub(crate) fn current_stack_limits(low: *mut usize, high: *mut usize) {
+    let (dealloc, base) = ENVIRONMENT
+        .try_with(|env| {
+            env.borrow()
+                .as_ref()
+                .map(|env| (env.teb[0x1478 / 8] as usize, env.teb[1] as usize))
+        })
+        .ok()
+        .flatten()
+        .unwrap_or((0, 0));
+    unsafe {
+        if !low.is_null() {
+            *low = dealloc;
+        }
+        if !high.is_null() {
+            *high = base;
+        }
+    }
+}
+
 

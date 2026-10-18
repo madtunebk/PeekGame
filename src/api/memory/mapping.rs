@@ -46,18 +46,115 @@ pub fn is_steam_response_event(handle: usize) -> bool {
 
 fn with<T>(f: impl FnOnce(&mut State) -> T) -> T {
     let mut state = STATE.lock().unwrap();
-    f(state.get_or_insert_with(|| State {
-        handles: HashMap::new(),
-        views: HashMap::new(),
+    f(state.get_or_insert_with(|| {
+        unsafe { prctl(0x59616d61, usize::MAX, 0, 0, 0) };
+        let base_h = 0x4c00_0000usize + ((std::process::id() as usize & 0xfff) << 12);
+        NEXT.fetch_max(base_h, Ordering::Relaxed);
+        let mut handles = HashMap::new();
+        if let Ok(inherited) = std::env::var("PEEKGAME_INHERITED_MAPPINGS") {
+            let mut max_h = base_h;
+            for item in inherited.split(',') {
+                let mut parts = item.split(':');
+                if let (Some(h_s), Some(fd_s), Some(sz_s), Some(pr_s)) =
+                    (parts.next(), parts.next(), parts.next(), parts.next())
+                {
+                    if let (Ok(h), Ok(fd), Ok(size), Ok(protection)) = (
+                        usize::from_str_radix(h_s, 16),
+                        fd_s.parse::<i32>(),
+                        sz_s.parse::<u64>(),
+                        pr_s.parse::<u32>(),
+                    ) {
+                        let duped = unsafe { dup(fd) };
+                        if duped >= 0 {
+                            use std::os::fd::FromRawFd;
+                            let file = unsafe { File::from_raw_fd(duped) };
+                            handles.insert(
+                                h,
+                                Arc::new(Mapping {
+                                    file,
+                                    size,
+                                    protection,
+                                    name: None,
+                                }),
+                            );
+                            if h >= max_h {
+                                max_h = h + 16;
+                            }
+                        }
+                    }
+                }
+            }
+            NEXT.fetch_max(max_h, Ordering::Relaxed);
+        }
+        State {
+            handles,
+            views: HashMap::new(),
+        }
     }))
 }
+fn get(handle: usize) -> Option<Arc<Mapping>> {
+    if let Some(m) = with(|s| s.handles.get(&handle).cloned()) {
+        return Some(m);
+    }
+    if !(0x4c00_0000..0x4e00_0000).contains(&handle) {
+        return None;
+    }
+    let text = std::fs::read_to_string("/tmp/peekgame_handles.tsv").ok()?;
+    let prefix = format!("M\t{handle:x}\t");
+    for line in text.lines().rev() {
+        if let Some(rest) = line.strip_prefix(&prefix) {
+            let mut parts = rest.split('\t');
+            let pid = parts.next()?.parse::<i32>().ok()?;
+            let remote_fd = parts.next()?.parse::<i32>().ok()?;
+            let size = parts.next()?.parse::<u64>().ok()?;
+            let protection = parts.next()?.parse::<u32>().ok()?;
+            let pidfd = unsafe { syscall(434, pid, 0usize) } as i32;
+            if pidfd < 0 {
+                continue;
+            }
+            let local_fd = unsafe { syscall(438, pidfd, remote_fd, 0usize) } as i32;
+            unsafe { close_fd(pidfd) };
+            if local_fd >= 0 {
+                use std::os::fd::FromRawFd;
+                let file = unsafe { File::from_raw_fd(local_fd) };
+                let mapping = Arc::new(Mapping {
+                    file,
+                    size,
+                    protection,
+                    name: None,
+                });
+                with(|s| s.handles.insert(handle, mapping.clone()));
+                return Some(mapping);
+            }
+        }
+    }
+    None
+}
+pub fn export_inherited() -> String {
+    with(|s| {
+        let mut out = Vec::new();
+        for (&h, m) in &s.handles {
+            let fd = m.file.as_raw_fd();
+            unsafe { fcntl(fd, 2, 0) }; // F_SETFD = 2, clear FD_CLOEXEC
+            out.push(format!("{h:x}:{fd}:{}:{}", m.size, m.protection));
+        }
+        out.join(",")
+    })
+}
 fn insert(mapping: Arc<Mapping>) -> usize {
+    with(|_| {});
     let handle = NEXT.fetch_add(16, Ordering::Relaxed);
     with(|s| s.handles.insert(handle, mapping));
     handle
 }
 unsafe extern "C" {
+    fn dup(fd: i32) -> i32;
+    #[link_name = "close"]
+    fn close_fd(fd: i32) -> i32;
+    fn fcntl(fd: i32, cmd: i32, ...) -> i32;
     fn memfd_create(name: *const u8, flags: u32) -> i32;
+    fn prctl(option: i32, arg2: usize, arg3: usize, arg4: usize, arg5: usize) -> i32;
+    fn syscall(num: i64, ...) -> i64;
     fn mmap(
         address: *mut std::ffi::c_void,
         length: usize,
@@ -261,7 +358,7 @@ pub extern "win64" fn map_view_ex(
     length: usize,
     address: usize,
 ) -> usize {
-    let Some(mapping) = with(|s| s.handles.get(&handle).cloned()) else {
+    let Some(mapping) = get(handle) else {
         error::set(6);
         return 0;
     };
@@ -358,3 +455,83 @@ pub extern "win64" fn flush_view(address: usize, length: usize) -> i32 {
 pub fn close(handle: usize) -> bool {
     with(|s| s.handles.remove(&handle)).is_some()
 }
+/// DuplicateHandle for mappings.
+pub fn duplicate(handle: usize, access: u32, options: u32) -> Option<Result<usize, u32>> {
+    let mapping = get(handle)?;
+    let page = mapping.protection & 0xff;
+    let writable = page == 4 || page == 0x40;
+    let new_protection = if options & 2 != 0 {
+        mapping.protection
+    } else {
+        let wants_write = access & (0x2 | 0x4000_0000) != 0;
+        if wants_write && !writable {
+            return Some(Err(5)); // ERROR_ACCESS_DENIED
+        }
+        if wants_write {
+            mapping.protection
+        } else {
+            2 // PAGE_READONLY
+        }
+    };
+    let Ok(file) = mapping.file.try_clone() else {
+        return Some(Err(8));
+    };
+    let export_fd = unsafe { dup(file.as_raw_fd()) };
+    let target = insert(Arc::new(Mapping {
+        file,
+        size: mapping.size,
+        protection: new_protection,
+        name: mapping.name.clone(),
+    }));
+    if export_fd >= 0 {
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("/tmp/peekgame_handles.tsv")
+        {
+            let _ = writeln!(
+                f,
+                "M\t{target:x}\t{}\t{export_fd}\t{}\t{new_protection}",
+                std::process::id(),
+                mapping.size
+            );
+        }
+    }
+    Some(Ok(target))
+}
+
+/// NtQuerySection(SectionHandle, SectionInformationClass, SectionInformation, SectionInformationLength, ResultLength)
+pub extern "win64" fn query_section(
+    handle: usize,
+    class: u32,
+    buffer: *mut u8,
+    length: usize,
+    return_length: *mut usize,
+) -> i32 {
+    let Some(mapping) = get(handle) else {
+        return -0x3fff_fff8; // STATUS_INVALID_HANDLE (0xC0000008)
+    };
+    match class {
+        0 => {
+            // SectionBasicInformation (24 bytes on x64):
+            //   0x00: PVOID BaseAddress (8 bytes)
+            //   0x08: ULONG AllocationAttributes (4 bytes, SEC_COMMIT = 0x08000000)
+            //   0x10: LARGE_INTEGER MaximumSize (8 bytes)
+            if !return_length.is_null() {
+                unsafe { return_length.write_unaligned(24) };
+            }
+            if length < 24 || buffer.is_null() {
+                return -0x3fff_fffc; // STATUS_INFO_LENGTH_MISMATCH (0xC0000004)
+            }
+            unsafe {
+                buffer.write_bytes(0, 24);
+                (buffer.add(8) as *mut u32).write_unaligned(0x0800_0000); // SEC_COMMIT
+                (buffer.add(16) as *mut u64).write_unaligned(mapping.size);
+            }
+            0 // STATUS_SUCCESS
+        }
+        _ => -0x3fff_fffd, // STATUS_INVALID_INFO_CLASS (0xC0000003)
+    }
+}
+

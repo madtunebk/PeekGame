@@ -5,11 +5,23 @@ Godot now renders its Gundam main menu through native GLX on a private Mesa
 software display. ANGLE remains an alternate path; its HLSL compiler DLL must
 be supplied separately. See `docs/opengl.md` for the current bridge and tests.
 
-A locally owned `d3dcompiler_47.dll` was tested in isolation. It maps successfully
-but currently stops at `msvcrt!__dllonexit`; its imports include additional C++
-ABI and crypto APIs beyond the old msvcrt.inc subset. It is kept under ignored
-`cache/d3dcompiler/input/`, outside the active distribution. No compiler DLL is
-redistributed or committed.
+A locally owned `d3dcompiler_47.dll` from Palworld's CEF3 directory now passes
+the isolated HLSL-to-DXBC probe after adding `msvcrt!__isascii` and
+`msvcrt!_clearfp`. The DLL is copied only into the user's local
+`dist/windows-dlls` and installed Steam compatibility tool for a live Palworld
+test; it is not redistributed or committed. The first live test still failed
+because Steam launched `./dist/peekgame`, whose separate `dist/windows-dlls`
+directory lacked the compiler. The CrashReportClient dynamic import trace
+recorded two `module_not_found` results for that DLL. Other engine DLLs may
+still need CRT imports when exercised.
+
+After copying the DLL to `dist/windows-dlls`, the next live run loaded it and
+reached `msvcrt!_mbstrlen` in CrashReportClient. The bridge now supplies that
+function for its supported single-byte C locale. The isolated D3DCompile probe
+continues to pass; the live CrashReportClient path needs another run.
+The following live run reached `msvcrt!_fpclass`; PeekGame now returns the
+MSVC `_FPCLASS_*` mask from the IEEE-754 bits of a double, including signed
+zero, denormals and signaling versus quiet NaNs. The shader probe still passes.
 
 To reproduce the optional, currently blocked probe:
 
@@ -18,7 +30,8 @@ PEEKGAME_D3DCOMPILER=/path/to/d3dcompiler_47.dll python3 tests/test_d3dcompiler.
 ```
 
 The fixture calls D3DCompile on a real HLSL pixel shader and requires a DXBC blob.
-This test must pass before activating this compiler for games.
+It passed with the Palworld CEF3 copy on 2026-10-18. Live CEF renderer validation
+is still pending.
 
 The `user://` directory error was fixed separately by initializing APPDATA before
 any game code runs. A private Gundam launch created its app_userdata/shader_cache

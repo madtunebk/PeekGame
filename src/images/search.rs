@@ -44,6 +44,17 @@ pub fn set_dll_directory(path: Option<&str>) -> bool {
     *DLL_DIRECTORY.lock().unwrap() = value;
     true
 }
+pub fn get_dll_directory() -> Option<String> {
+    match DLL_DIRECTORY.lock().unwrap().as_ref() {
+        None => None,
+        Some(None) => Some(String::new()),
+        Some(Some(dir)) => {
+            let path_str = dir.to_str().unwrap_or("");
+            let win_path = format!("Z:{}", path_str).replace('/', "\\");
+            Some(win_path)
+        }
+    }
+}
 
 /// A Windows path as a host path: `\` becomes `/`; drive Z: is the host root and
 /// other drives do not exist.
@@ -87,20 +98,47 @@ fn find_in(dir: &Path, file: &str) -> Option<PathBuf> {
 fn replacement_dir() -> Option<PathBuf> {
     static DIR: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
     DIR.get_or_init(|| {
-        let dir = match std::env::var_os("PEEKGAME_WINDOWS_DLLS") {
-            Some(d) => PathBuf::from(d),
-            None => {
-                let candidate = std::env::current_exe().ok()?.parent()?.join("windows-dlls");
+        if let Some(d) = std::env::var_os("PEEKGAME_WINDOWS_DLLS") {
+            let path = PathBuf::from(d);
+            if path.is_dir() {
+                return Some(path);
+            }
+        }
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(parent) = exe.parent() {
+                let candidate = parent.join("windows-dlls");
                 if candidate.is_dir() {
-                    candidate
-                } else if std::path::Path::new("dist/windows-dlls").is_dir() {
-                    PathBuf::from("dist/windows-dlls")
-                } else {
-                    candidate
+                    return Some(candidate);
+                }
+                // When running target/release/peekgame or target/debug/peekgame
+                if let Some(root) = parent.parent().and_then(|p| p.parent()) {
+                    let candidate = root.join("dist/windows-dlls");
+                    if candidate.is_dir() {
+                        return Some(candidate);
+                    }
                 }
             }
-        };
-        dir.is_dir().then_some(dir)
+        }
+        // Compile-time source directory dist/windows-dlls
+        let compile_dist = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/dist/windows-dlls"));
+        if compile_dist.is_dir() {
+            return Some(compile_dist);
+        }
+        // Common Steam compatibility tool install paths
+        if let Ok(home) = std::env::var("HOME") {
+            for sub in [
+                ".steam/root/compatibilitytools.d/peek_native/windows-dlls",
+                ".steam/steam/compatibilitytools.d/peek_native/windows-dlls",
+                ".steam/debian-installation/compatibilitytools.d/peek_native/windows-dlls",
+                ".local/share/Steam/compatibilitytools.d/peek_native/windows-dlls",
+            ] {
+                let candidate = PathBuf::from(&home).join(sub);
+                if candidate.is_dir() {
+                    return Some(candidate);
+                }
+            }
+        }
+        None
     })
     .clone()
 }

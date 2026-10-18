@@ -26,6 +26,26 @@ fn thread_handles() -> &'static Mutex<HashMap<usize, usize>> {
     THREAD_TO_PROCESS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+pub fn is_child_process(handle: usize) -> bool {
+    child_processes().lock().unwrap().contains_key(&handle)
+}
+
+pub fn duplicate_child_handle(handle: usize) -> Option<usize> {
+    let proc = child_processes().lock().unwrap().get(&handle).cloned();
+    if let Some(proc) = proc {
+        let new_h = NEXT_PROC_HANDLE.fetch_add(16, Ordering::Relaxed);
+        child_processes().lock().unwrap().insert(new_h, proc);
+        return Some(new_h);
+    }
+    let proc_h = thread_handles().lock().unwrap().get(&handle).copied();
+    if let Some(proc_h) = proc_h {
+        let new_h = NEXT_PROC_HANDLE.fetch_add(16, Ordering::Relaxed);
+        thread_handles().lock().unwrap().insert(new_h, proc_h);
+        return Some(new_h);
+    }
+    None
+}
+
 pub fn close_child_handle(handle: usize) -> bool {
     if child_processes().lock().unwrap().remove(&handle).is_some() {
         return true;
@@ -38,26 +58,26 @@ pub fn close_child_handle(handle: usize) -> bool {
 
 pub fn wait_child_process(handle: usize, milliseconds: u32) -> Option<u32> {
     let proc = child_processes().lock().unwrap().get(&handle).cloned()?;
-    let mut child = proc.child.lock().unwrap();
-    if milliseconds == u32::MAX {
-        match child.wait() {
-            Ok(status) => {
-                let code = status.code().unwrap_or(0) as u32;
-                proc.exit_code.store(code, Ordering::SeqCst);
-                Some(0) // WAIT_OBJECT_0
+    let start = std::time::Instant::now();
+    loop {
+        {
+            let mut child = proc.child.lock().unwrap();
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    let code = status.code().unwrap_or(0) as u32;
+                    proc.exit_code.store(code, Ordering::SeqCst);
+                    return Some(0); // WAIT_OBJECT_0
+                }
+                Ok(None) => {}
+                Err(_) => return Some(u32::MAX), // WAIT_FAILED
             }
-            Err(_) => Some(u32::MAX), // WAIT_FAILED
         }
-    } else {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                let code = status.code().unwrap_or(0) as u32;
-                proc.exit_code.store(code, Ordering::SeqCst);
-                Some(0)
-            }
-            Ok(None) => Some(258), // WAIT_TIMEOUT
-            Err(_) => Some(u32::MAX),
+        if milliseconds == 0
+            || (milliseconds != u32::MAX && start.elapsed().as_millis() >= milliseconds as u128)
+        {
+            return Some(258); // WAIT_TIMEOUT
         }
+        std::thread::sleep(std::time::Duration::from_millis(5));
     }
 }
 
@@ -89,25 +109,13 @@ pub(crate) extern "win64" fn exit_process(code: u32) -> ! {
 /// Only the current process is exposed by OpenProcess in this backend.
 /// _exit deliberately skips CRT cleanup, DLL detach and Rust destructors.
 pub(crate) extern "win64" fn terminate_process(handle: usize, code: u32) -> i32 {
-    eprintln!("TerminateProcess called with code {code}");
-    if let Ok(maps) = std::fs::read_to_string("/proc/self/maps") {
-        for line in maps.lines() {
-            if let Some(range) = line.split_whitespace().next() {
-                if let Some((start_str, end_str)) = range.split_once('-') {
-                    if let (Ok(start), Ok(end)) = (usize::from_str_radix(start_str, 16), usize::from_str_radix(end_str, 16)) {
-                        if line.contains("r-xp") || line.contains("rwxp") {
-                            let magic = unsafe { (start as *const u16).read_unaligned() };
-                            if magic == 0x5a4d && start != 0x140000000 {
-                                eprintln!("Found embedded PE at {start:#x}-{end:#x}: {line}");
-                                let slice = unsafe { std::slice::from_raw_parts(start as *const u8, (end - start).min(0x200000)) };
-                                let _ = std::fs::write("/tmp/steamstub_payload.dll", slice);
-                            }
-                        }
-                    }
-                }
-            }
-        }
+    if let Some(proc) = child_processes().lock().unwrap().get(&handle).cloned() {
+        let mut child = proc.child.lock().unwrap();
+        let _ = child.kill();
+        proc.exit_code.store(code, Ordering::SeqCst);
+        return 1;
     }
+    eprintln!("TerminateProcess called with code {code}");
     let rsp_val: usize;
     unsafe { std::arch::asm!("mov {}, rsp", out(reg) rsp_val); }
     let ptr = rsp_val as *const usize;
@@ -118,7 +126,7 @@ pub(crate) extern "win64" fn terminate_process(handle: usize, code: u32) -> i32 
             .unwrap_or_default();
         eprintln!("  stack[{i}] = {val:#x} {desc}");
     }
-    if handle != usize::MAX {
+    if handle != usize::MAX && handle != 1 && handle != std::process::id() as usize {
         super::error::set(6);
         return 0;
     }
@@ -491,6 +499,15 @@ fn spawn_child_process(
         host_exe, args
     );
 
+    let mappings_env = crate::api::memory::mapping::export_inherited();
+    if !mappings_env.is_empty() {
+        command.env("PEEKGAME_INHERITED_MAPPINGS", mappings_env);
+    }
+    let pipes_env = crate::api::filesystem::pipes::export_inherited();
+    if !pipes_env.is_empty() {
+        command.env("PEEKGAME_INHERITED_PIPES", pipes_env);
+    }
+
     match command.spawn() {
         Ok(child) => {
             let pid = child.id();
@@ -566,7 +583,13 @@ pub unsafe extern "win64" fn create_process_a(
 /// GetProcessId: the only process is this one (the current-process pseudo handle
 /// -1, or a handle that duplicates it). Other handles are not processes here.
 pub extern "win64" fn get_process_id(handle: usize) -> u32 {
-    if handle == usize::MAX || handle == crate::api::system::compat::STEAM_PROCESS_HANDLE {
+    if let Some(proc) = child_processes().lock().unwrap().get(&handle) {
+        return proc.pid;
+    }
+    if handle == usize::MAX
+        || handle == 1
+        || handle == crate::api::system::compat::STEAM_PROCESS_HANDLE
+    {
         crate::api::system::startup::process_id()
     } else {
         crate::api::system::error::set(6);

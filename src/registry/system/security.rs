@@ -293,6 +293,215 @@ exports! {
         "converts absolute security descriptor to self-relative",
         security::make_self_relative_sd
     ),
+    export!(
+        "advapi32.dll",
+        "GetKernelObjectSecurity",
+        "security",
+        "implemented",
+        "returns self-relative security descriptor",
+        security::get_kernel_object_security
+    ),
+    export!(
+        "advapi32.dll",
+        "SetKernelObjectSecurity",
+        "security",
+        "partial",
+        "accepted without modifying host kernel object",
+        security::set_kernel_object_security
+    ),
+    export!(
+        "advapi32.dll",
+        "SetSecurityInfo",
+        "security",
+        "partial",
+        "accepted without modifying host object",
+        security::set_security_info
+    ),
+    export!(
+        "advapi32.dll",
+        "GetNamedSecurityInfoW",
+        "security",
+        "partial",
+        "returns default self-relative security descriptor",
+        security::get_named_security_info_w
+    ),
+    export!(
+        "advapi32.dll",
+        "SetNamedSecurityInfoW",
+        "security",
+        "partial",
+        "accepted without modifying host object",
+        security::set_named_security_info_w
+    ),
+    export!(
+        "advapi32.dll",
+        "SetFileSecurityW",
+        "security",
+        "partial",
+        "accepted without modifying host file",
+        security::set_file_security_w
+    ),
+    export!(
+        "advapi32.dll",
+        "AdjustTokenPrivileges",
+        "security",
+        "partial",
+        "accepted with ERROR_SUCCESS",
+        security::adjust_token_privileges
+    ),
+    export!(
+        "advapi32.dll",
+        "LookupPrivilegeValueW",
+        "security",
+        "partial",
+        "allocates LUID for privilege",
+        security::lookup_privilege_value_w
+    ),
+    export!(
+        "advapi32.dll",
+        "LookupPrivilegeValueA",
+        "security",
+        "partial",
+        "allocates LUID for privilege",
+        security::lookup_privilege_value_a
+    ),
+    export!(
+        "advapi32.dll",
+        "AllocateAndInitializeSid",
+        "security",
+        "implemented",
+        "allocates and initializes SID",
+        security::allocate_and_initialize_sid
+    ),
+    export!(
+        "advapi32.dll",
+        "FreeSid",
+        "security",
+        "implemented",
+        "releases SID allocated with AllocateAndInitializeSid",
+        security::free_sid
+    ),
+    export!(
+        "advapi32.dll",
+        "EqualSid",
+        "security",
+        "implemented",
+        "compares two SIDs",
+        security::equal_sid
+    ),
+    export!(
+        "advapi32.dll",
+        "InitializeSid",
+        "security",
+        "implemented",
+        "initializes SID header",
+        security::initialize_sid
+    ),
+    export!(
+        "advapi32.dll",
+        "CreateWellKnownSid",
+        "security",
+        "partial",
+        "constructs well-known SID",
+        security::create_well_known_sid
+    ),
+    export!(
+        "advapi32.dll",
+        "CheckTokenMembership",
+        "security",
+        "partial",
+        "reports membership present",
+        security::check_token_membership
+    ),
+    export!(
+        "advapi32.dll",
+        "DuplicateToken",
+        "security",
+        "partial",
+        "creates duplicate token handle",
+        security::duplicate_token
+    ),
+    export!(
+        "advapi32.dll",
+        "DuplicateTokenEx",
+        "security",
+        "partial",
+        "creates duplicate token handle",
+        security::duplicate_token_ex
+    ),
+    export!(
+        "advapi32.dll",
+        "CreateRestrictedToken",
+        "security",
+        "partial",
+        "creates restricted token handle",
+        security::create_restricted_token
+    ),
+    export!(
+        "advapi32.dll",
+        "SetTokenInformation",
+        "security",
+        "partial",
+        "accepted without modifying host token",
+        security::set_token_information
+    ),
+    export!(
+        "advapi32.dll",
+        "SetThreadToken",
+        "security",
+        "partial",
+        "accepted without modifying host thread",
+        security::set_thread_token
+    ),
+    export!(
+        "advapi32.dll",
+        "RevertToSelf",
+        "security",
+        "implemented",
+        "no-op",
+        security::revert_to_self
+    ),
+    export!(
+        "advapi32.dll",
+        "ImpersonateLoggedOnUser",
+        "security",
+        "partial",
+        "no-op",
+        security::impersonate_logged_on_user
+    ),
+    export!(
+        "advapi32.dll",
+        "ConvertSidToStringSidW",
+        "security",
+        "partial",
+        "returns LocalAlloc UTF-16 SID string",
+        security::convert_sid_to_string_sid_w
+    ),
+    export!(
+        "advapi32.dll",
+        "ConvertSidToStringSidA",
+        "security",
+        "partial",
+        "returns LocalAlloc ASCII SID string",
+        security::convert_sid_to_string_sid_a
+    ),
+    export!(
+        "advapi32.dll",
+        "ConvertStringSidToSidW",
+        "security",
+        "partial",
+        "returns LocalAlloc SID",
+        security::convert_string_sid_to_sid_w
+    ),
+    export!(
+        "advapi32.dll",
+        "ConvertStringSecurityDescriptorToSecurityDescriptorW",
+        "security",
+        "partial",
+        "returns LocalAlloc self-relative security descriptor",
+        security::convert_string_sd_to_sd_w
+    ),
+
     export!("bcrypt.dll", "BCryptOpenAlgorithmProvider", "crypto", "partial", "RNG, AES, SHA-1/256/384/512, MD5 (HMAC flag); others STATUS_NOT_FOUND", random::bcrypt_open_algorithm_provider),
     export!("bcrypt.dll", "BCryptCloseAlgorithmProvider", "crypto", "implemented", "provider handles", random::bcrypt_close_algorithm_provider),
     export!("bcrypt.dll", "BCryptGetProperty", "crypto", "partial", "object/digest/block/key lengths, ChainingMode, GCM tag lengths; others STATUS_NOT_SUPPORTED", random::bcrypt_get_property),

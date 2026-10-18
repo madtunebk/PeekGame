@@ -121,6 +121,14 @@ exports! {
     ),
     export!(
         "dbghelp.dll",
+        "SymInitializeW",
+        "diagnostics",
+        "partial",
+        "accepted; symbol loading no-op",
+        debug::sym_initialize_w
+    ),
+    export!(
+        "dbghelp.dll",
         "SymCleanup",
         "diagnostics",
         "partial",
@@ -169,11 +177,27 @@ exports! {
     ),
     export!(
         "dbghelp.dll",
+        "SymFromAddrW",
+        "diagnostics",
+        "partial",
+        "stub; returns FALSE",
+        debug::sym_from_addr_w
+    ),
+    export!(
+        "dbghelp.dll",
         "SymGetLineFromAddr64",
         "diagnostics",
         "partial",
         "stub; returns FALSE",
         debug::sym_get_line_from_addr64
+    ),
+    export!(
+        "dbghelp.dll",
+        "SymGetLineFromAddrW64",
+        "diagnostics",
+        "partial",
+        "stub; returns FALSE",
+        debug::sym_get_line_from_addr_w64
     ),
     export!(
         "dbghelp.dll",
@@ -185,6 +209,14 @@ exports! {
     ),
     export!(
         "dbghelp.dll",
+        "SymGetModuleInfoW64",
+        "diagnostics",
+        "partial",
+        "stub; returns FALSE",
+        debug::sym_get_module_info_w64
+    ),
+    export!(
+        "dbghelp.dll",
         "SymLoadModuleEx",
         "diagnostics",
         "partial",
@@ -193,11 +225,43 @@ exports! {
     ),
     export!(
         "dbghelp.dll",
+        "SymLoadModuleExW",
+        "diagnostics",
+        "partial",
+        "stub; returns 0",
+        debug::sym_load_module_ex_w
+    ),
+    export!(
+        "dbghelp.dll",
         "SymSetHomeDirectory",
         "diagnostics",
         "partial",
         "stub",
         debug::sym_set_home_directory
+    ),
+    export!(
+        "dbghelp.dll",
+        "SymSetHomeDirectoryW",
+        "diagnostics",
+        "partial",
+        "stub",
+        debug::sym_set_home_directory_w
+    ),
+    export!(
+        "dbghelp.dll",
+        "MiniDumpWriteDump",
+        "diagnostics",
+        "partial",
+        "minidump stub",
+        debug::minidump_write_dump
+    ),
+    export!(
+        "dbghelp.dll",
+        "ImageNtHeader",
+        "diagnostics",
+        "partial",
+        "returns PE NT header",
+        debug::image_nt_header
     ),
 }
 

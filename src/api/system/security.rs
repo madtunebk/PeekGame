@@ -33,23 +33,12 @@ fn is_token(handle: usize) -> bool {
 }
 /// TOKEN_QUERY (8), TOKEN_QUERY_SOURCE (0x10) and READ_CONTROL only.
 pub unsafe extern "win64" fn open_process_token(
-    process: usize,
-    access: u32,
+    _process: usize,
+    _access: u32,
     out: *mut usize,
 ) -> i32 {
     if out.is_null() {
         error::set(87);
-        return 0;
-    }
-    if process != usize::MAX {
-        eprintln!("OpenProcessToken: only the current process is supported");
-        error::set(50);
-        return 0;
-    }
-    // TOKEN_QUERY, TOKEN_QUERY_SOURCE, plus READ_CONTROL / WRITE_DAC / WRITE_OWNER.
-    if access & !(0x18 | 0x000e_0000) != 0 {
-        eprintln!("OpenProcessToken(access {access:#x}): only query access is supported");
-        error::set(5);
         return 0;
     }
     let handle = NEXT.fetch_add(16, Ordering::Relaxed);
@@ -81,7 +70,7 @@ pub unsafe extern "win64" fn token_information(
     size: u32,
     needed: *mut u32,
 ) -> i32 {
-    if !is_token(token) {
+    if !is_token(token) && token < 0x1000 {
         error::set(6);
         return 0;
     }
@@ -90,15 +79,98 @@ pub unsafe extern "win64" fn token_information(
         return 0;
     }
     let root = unsafe { geteuid() } == 0;
+    let write_sid_s_1_5_32_544 = |dst: *mut u8| unsafe {
+        dst.write_bytes(0, 16);
+        *dst = 1;
+        *dst.add(1) = 2;
+        *dst.add(7) = 5;
+        (dst.add(8) as *mut u32).write_unaligned(32);
+        (dst.add(12) as *mut u32).write_unaligned(544);
+    };
     match class {
-        // TokenElevationType (default) and TokenElevation.
-        18 | 20 => {
+        // TokenUser (1): SID_AND_ATTRIBUTES (16 bytes) + 16-byte SID = 32 bytes
+        1 => {
+            unsafe { *needed = 32 };
+            if out.is_null() || size < 32 {
+                error::set(122);
+                return 0;
+            }
+            unsafe {
+                out.write_bytes(0, 32);
+                let sid = out.add(16);
+                (out as *mut usize).write_unaligned(sid as usize);
+                write_sid_s_1_5_32_544(sid);
+            }
+            1
+        }
+        // TokenGroups (2), TokenPrivileges (3), TokenRestrictedSids (12): Count = 0 (24 bytes)
+        2 | 3 | 12 => {
+            unsafe { *needed = 24 };
+            if out.is_null() || size < 24 {
+                error::set(122);
+                return 0;
+            }
+            unsafe { out.write_bytes(0, 24) };
+            1
+        }
+        // TokenOwner (4), TokenPrimaryGroup (5): pointer (8 bytes) + 16-byte SID = 24 bytes
+        4 | 5 => {
+            unsafe { *needed = 24 };
+            if out.is_null() || size < 24 {
+                error::set(122);
+                return 0;
+            }
+            unsafe {
+                out.write_bytes(0, 24);
+                let sid = out.add(8);
+                (out as *mut usize).write_unaligned(sid as usize);
+                write_sid_s_1_5_32_544(sid);
+            }
+            1
+        }
+        // TokenDefaultDacl (6), TokenAppContainerSid (31): null pointer (8 bytes)
+        6 | 31 => {
+            unsafe { *needed = 8 };
+            if out.is_null() || size < 8 {
+                error::set(122);
+                return 0;
+            }
+            unsafe { out.write_bytes(0, 8) };
+            1
+        }
+        // TokenType (8 -> 1=TokenPrimary), TokenImpersonationLevel (9 -> 2=SecurityIdentification),
+        // TokenSessionId (13 -> 1), TokenElevationType (18 -> 1), TokenElevation (20 -> root),
+        // TokenHasRestrictions (21 -> 0), TokenVirtualizationAllowed (23 -> 1),
+        // TokenVirtualizationEnabled (24 -> 0), TokenUIAccess (26 -> 0),
+        // TokenIsAppContainer (29 -> 0), TokenAppContainerNumber (32 -> 0)
+        8 | 9 | 13 | 18 | 20 | 21 | 23 | 24 | 26 | 29 | 32 => {
             unsafe { *needed = 4 };
             if out.is_null() || size < 4 {
                 error::set(122);
                 return 0;
             }
-            unsafe { (out as *mut u32).write_unaligned(if class == 18 { 1 } else { root as u32 }) };
+            let val = match class {
+                8 | 13 | 18 | 23 => 1u32,
+                9 => 2u32,
+                20 => root as u32,
+                _ => 0u32,
+            };
+            unsafe { (out as *mut u32).write_unaligned(val) };
+            1
+        }
+        // TokenStatistics (10): 56 bytes
+        10 => {
+            unsafe { *needed = 56 };
+            if out.is_null() || size < 56 {
+                error::set(122);
+                return 0;
+            }
+            unsafe {
+                out.write_bytes(0, 56);
+                (out as *mut u32).write_unaligned(0x3e7); // TokenId
+                (out.add(8) as *mut u32).write_unaligned(0x3e7); // AuthenticationId
+                (out.add(32) as *mut u32).write_unaligned(1); // TokenPrimary
+            }
             1
         }
         // TokenIntegrityLevel: TOKEN_MANDATORY_LABEL {PSID, SE_GROUP_INTEGRITY} + S-1-16-RID.
@@ -313,14 +385,14 @@ pub unsafe extern "win64" fn get_security_info(
         // Revision = 1, Sbz1 = 0
         *mem = 1;
         *mem.add(1) = 0;
-        // Control = SE_SELF_RELATIVE (0x8000) | SE_DACL_PRESENT (0x0004)
-        (mem.add(2) as *mut u16).write_unaligned(0x8004);
+        // Control = SE_SELF_RELATIVE (0x8000) | SE_SACL_PRESENT (0x0010) | SE_DACL_PRESENT (0x0004)
+        (mem.add(2) as *mut u16).write_unaligned(0x8014);
         // Owner offset = 20
         (mem.add(4) as *mut u32).write_unaligned(20);
         // Group offset = 36
         (mem.add(8) as *mut u32).write_unaligned(36);
-        // Sacl offset = 0
-        (mem.add(12) as *mut u32).write_unaligned(0);
+        // Sacl offset = 52
+        (mem.add(12) as *mut u32).write_unaligned(52);
         // Dacl offset = 52
         (mem.add(16) as *mut u32).write_unaligned(52);
 
@@ -340,7 +412,7 @@ pub unsafe extern "win64" fn get_security_info(
         (group.add(8) as *mut u32).write_unaligned(32);
         (group.add(12) as *mut u32).write_unaligned(544);
 
-        // Empty DACL at 52 (8 bytes)
+        // Empty DACL/SACL at 52 (8 bytes)
         let dacl = mem.add(52);
         *dacl = 2; // AclRevision = ACL_REVISION (2)
         *dacl.add(1) = 0; // Sbz1 = 0
@@ -358,7 +430,7 @@ pub unsafe extern "win64" fn get_security_info(
             *pp_dacl = dacl;
         }
         if !pp_sacl.is_null() {
-            *pp_sacl = std::ptr::null_mut();
+            *pp_sacl = dacl;
         }
         if !pp_security_descriptor.is_null() {
             *pp_security_descriptor = mem;
@@ -947,3 +1019,372 @@ pub unsafe extern "win64" fn set_entries_in_acl_w(
     }
     0 // ERROR_SUCCESS
 }
+
+pub unsafe extern "win64" fn get_kernel_object_security(
+    _handle: usize,
+    _requested_info: u32,
+    sd: *mut u8,
+    length: u32,
+    length_needed: *mut u32,
+) -> i32 {
+    if length_needed.is_null() {
+        error::set(87);
+        return 0;
+    }
+    unsafe { *length_needed = 64 };
+    if sd.is_null() || length < 64 {
+        error::set(122);
+        return 0;
+    }
+    let mut len = length;
+    unsafe { make_self_relative_sd(std::ptr::null(), sd, &mut len) }
+}
+
+pub unsafe extern "win64" fn set_kernel_object_security(
+    _handle: usize,
+    _security_info: u32,
+    _sd: *const u8,
+) -> i32 {
+    1
+}
+
+pub unsafe extern "win64" fn set_security_info(
+    _handle: usize,
+    _object_type: u32,
+    _security_info: u32,
+    _owner: *const u8,
+    _group: *const u8,
+    _dacl: *const u8,
+    _sacl: *const u8,
+) -> u32 {
+    0
+}
+
+pub unsafe extern "win64" fn get_named_security_info_w(
+    _object_name: *const u16,
+    object_type: u32,
+    security_info: u32,
+    ppsid_owner: *mut *mut u8,
+    ppsid_group: *mut *mut u8,
+    pp_dacl: *mut *mut u8,
+    pp_sacl: *mut *mut u8,
+    pp_security_descriptor: *mut *mut u8,
+) -> u32 {
+    unsafe {
+        get_security_info(
+            0,
+            object_type,
+            security_info,
+            ppsid_owner,
+            ppsid_group,
+            pp_dacl,
+            pp_sacl,
+            pp_security_descriptor,
+        )
+    }
+}
+
+pub unsafe extern "win64" fn set_named_security_info_w(
+    _object_name: *const u16,
+    _object_type: u32,
+    _security_info: u32,
+    _owner: *const u8,
+    _group: *const u8,
+    _dacl: *const u8,
+    _sacl: *const u8,
+) -> u32 {
+    0
+}
+
+pub unsafe extern "win64" fn set_file_security_w(
+    _file_name: *const u16,
+    _security_info: u32,
+    _sd: *const u8,
+) -> i32 {
+    1
+}
+
+pub unsafe extern "win64" fn adjust_token_privileges(
+    _token: usize,
+    _disable_all: i32,
+    _new_state: *const u8,
+    _buffer_length: u32,
+    _previous_state: *mut u8,
+    return_length: *mut u32,
+) -> i32 {
+    if !return_length.is_null() {
+        unsafe { *return_length = 0 };
+    }
+    error::set(0);
+    1
+}
+
+pub unsafe extern "win64" fn lookup_privilege_value_w(
+    _system_name: *const u16,
+    _name: *const u16,
+    luid: *mut u32,
+) -> i32 {
+    unsafe { allocate_luid(luid) }
+}
+
+pub unsafe extern "win64" fn lookup_privilege_value_a(
+    _system_name: *const c_char,
+    _name: *const c_char,
+    luid: *mut u32,
+) -> i32 {
+    unsafe { allocate_luid(luid) }
+}
+
+pub unsafe extern "win64" fn allocate_and_initialize_sid(
+    authority: *const u8,
+    count: u8,
+    sa0: u32,
+    sa1: u32,
+    sa2: u32,
+    sa3: u32,
+    sa4: u32,
+    sa5: u32,
+    sa6: u32,
+    sa7: u32,
+    out_sid: *mut *mut u8,
+) -> i32 {
+    if authority.is_null() || out_sid.is_null() || count > 8 {
+        error::set(87);
+        return 0;
+    }
+    let sid = crate::api::memory::local::allocate(0x40, 64) as *mut u8;
+    if sid.is_null() {
+        error::set(8);
+        return 0;
+    }
+    let subs = [sa0, sa1, sa2, sa3, sa4, sa5, sa6, sa7];
+    unsafe {
+        *sid = 1;
+        *sid.add(1) = count;
+        std::ptr::copy_nonoverlapping(authority, sid.add(2), 6);
+        for (i, &val) in subs[..count as usize].iter().enumerate() {
+            (sid.add(8 + i * 4) as *mut u32).write_unaligned(val);
+        }
+        *out_sid = sid;
+    }
+    1
+}
+
+pub unsafe extern "win64" fn free_sid(_sid: *mut u8) -> *mut u8 {
+    std::ptr::null_mut()
+}
+
+pub unsafe extern "win64" fn equal_sid(sid1: *const u8, sid2: *const u8) -> i32 {
+    if unsafe { is_valid_sid(sid1) == 0 || is_valid_sid(sid2) == 0 } {
+        error::set(87);
+        return 0;
+    }
+    let len1 = unsafe { get_length_sid(sid1) } as usize;
+    let len2 = unsafe { get_length_sid(sid2) } as usize;
+    if len1 != len2 {
+        return 0;
+    }
+    let s1 = unsafe { std::slice::from_raw_parts(sid1, len1) };
+    let s2 = unsafe { std::slice::from_raw_parts(sid2, len2) };
+    (s1 == s2) as i32
+}
+
+pub unsafe extern "win64" fn initialize_sid(
+    sid: *mut u8,
+    authority: *const u8,
+    count: u8,
+) -> i32 {
+    if sid.is_null() || authority.is_null() || count > 15 {
+        error::set(87);
+        return 0;
+    }
+    unsafe {
+        *sid = 1;
+        *sid.add(1) = count;
+        std::ptr::copy_nonoverlapping(authority, sid.add(2), 6);
+    }
+    1
+}
+
+pub unsafe extern "win64" fn create_well_known_sid(
+    well_known_sid_type: u32,
+    _domain_sid: *const u8,
+    p_sid: *mut u8,
+    cb_sid: *mut u32,
+) -> i32 {
+    if cb_sid.is_null() {
+        error::set(87);
+        return 0;
+    }
+    let avail = unsafe { *cb_sid };
+    unsafe { *cb_sid = 16 };
+    if p_sid.is_null() || avail < 16 {
+        error::set(122);
+        return 0;
+    }
+    unsafe {
+        p_sid.write_bytes(0, 16);
+        *p_sid = 1;
+        *p_sid.add(1) = 2;
+        *p_sid.add(7) = 5;
+        (p_sid.add(8) as *mut u32).write_unaligned(32);
+        (p_sid.add(12) as *mut u32).write_unaligned(544 + well_known_sid_type);
+    }
+    1
+}
+
+pub unsafe extern "win64" fn check_token_membership(
+    _token: usize,
+    _sid_to_check: *const u8,
+    is_member: *mut i32,
+) -> i32 {
+    if is_member.is_null() {
+        error::set(87);
+        return 0;
+    }
+    unsafe { *is_member = 1 };
+    1
+}
+
+pub unsafe extern "win64" fn duplicate_token(
+    _existing: usize,
+    _impersonation_level: u32,
+    out: *mut usize,
+) -> i32 {
+    unsafe { open_process_token(usize::MAX, 0, out) }
+}
+
+pub unsafe extern "win64" fn duplicate_token_ex(
+    _existing: usize,
+    _access: u32,
+    _attributes: *const u8,
+    _impersonation_level: u32,
+    _token_type: u32,
+    out: *mut usize,
+) -> i32 {
+    unsafe { open_process_token(usize::MAX, 0, out) }
+}
+
+pub unsafe extern "win64" fn create_restricted_token(
+    _existing: usize,
+    _flags: u32,
+    _disable_sid_count: u32,
+    _sids_to_disable: *const u8,
+    _delete_privilege_count: u32,
+    _privileges_to_delete: *const u8,
+    _restricted_sid_count: u32,
+    _sids_to_restrict: *const u8,
+    out: *mut usize,
+) -> i32 {
+    unsafe { open_process_token(usize::MAX, 0, out) }
+}
+
+pub unsafe extern "win64" fn set_token_information(
+    _token: usize,
+    _class: u32,
+    _info: *const u8,
+    _length: u32,
+) -> i32 {
+    1
+}
+
+pub unsafe extern "win64" fn set_thread_token(_thread: *const usize, _token: usize) -> i32 {
+    1
+}
+
+pub extern "win64" fn revert_to_self() -> i32 {
+    1
+}
+
+pub extern "win64" fn impersonate_logged_on_user(_token: usize) -> i32 {
+    1
+}
+
+pub unsafe extern "win64" fn convert_sid_to_string_sid_w(
+    _sid: *const u8,
+    string_sid: *mut *mut u16,
+) -> i32 {
+    if string_sid.is_null() {
+        error::set(87);
+        return 0;
+    }
+    let s: Vec<u16> = "S-1-5-32-544".encode_utf16().chain(std::iter::once(0)).collect();
+    let buf = crate::api::memory::local::allocate(0x40, s.len() * 2) as *mut u16;
+    if buf.is_null() {
+        error::set(8);
+        return 0;
+    }
+    unsafe {
+        std::ptr::copy_nonoverlapping(s.as_ptr(), buf, s.len());
+        *string_sid = buf;
+    }
+    1
+}
+
+pub unsafe extern "win64" fn convert_sid_to_string_sid_a(
+    _sid: *const u8,
+    string_sid: *mut *mut u8,
+) -> i32 {
+    if string_sid.is_null() {
+        error::set(87);
+        return 0;
+    }
+    let s = b"S-1-5-32-544\0";
+    let buf = crate::api::memory::local::allocate(0x40, s.len()) as *mut u8;
+    if buf.is_null() {
+        error::set(8);
+        return 0;
+    }
+    unsafe {
+        std::ptr::copy_nonoverlapping(s.as_ptr(), buf, s.len());
+        *string_sid = buf;
+    }
+    1
+}
+
+pub unsafe extern "win64" fn convert_string_sid_to_sid_w(
+    _string_sid: *const u16,
+    sid: *mut *mut u8,
+) -> i32 {
+    if sid.is_null() {
+        error::set(87);
+        return 0;
+    }
+    let buf = crate::api::memory::local::allocate(0x40, 16) as *mut u8;
+    if buf.is_null() {
+        error::set(8);
+        return 0;
+    }
+    unsafe {
+        buf.write_bytes(0, 16);
+        *buf = 1;
+        *buf.add(1) = 2;
+        *buf.add(7) = 5;
+        (buf.add(8) as *mut u32).write_unaligned(32);
+        (buf.add(12) as *mut u32).write_unaligned(544);
+        *sid = buf;
+    }
+    1
+}
+
+pub unsafe extern "win64" fn convert_string_sd_to_sd_w(
+    _string_sd: *const u16,
+    _revision: u32,
+    sd: *mut *mut u8,
+    sd_size: *mut u32,
+) -> i32 {
+    if sd.is_null() {
+        error::set(87);
+        return 0;
+    }
+    if !sd_size.is_null() {
+        unsafe { *sd_size = 64 };
+    }
+    let mut owner = std::ptr::null_mut();
+    let mut group = std::ptr::null_mut();
+    let mut dacl = std::ptr::null_mut();
+    let mut sacl = std::ptr::null_mut();
+    unsafe { get_security_info(0, 0, 0, &mut owner, &mut group, &mut dacl, &mut sacl, sd) };
+    1
+}
+

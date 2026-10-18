@@ -171,4 +171,11 @@ exports! {
         "DXVK Native with X11/Vulkan WSI; windowed default adapter; testgame COM subset; requires built backend",
         create::create_device_and_swap_chain
     ),
+    export!("d3d9.dll", "D3DPERF_BeginEvent", "graphics/directx/d3d9", "stub", "Direct3D 9 event profiling marker", crate::api::graphics::directx::d3d9::begin_event),
+    export!("d3d9.dll", "D3DPERF_EndEvent", "graphics/directx/d3d9", "stub", "Direct3D 9 event profiling marker", crate::api::graphics::directx::d3d9::end_event),
+    export!("d3d9.dll", "D3DPERF_SetMarker", "graphics/directx/d3d9", "stub", "Direct3D 9 event profiling marker", crate::api::graphics::directx::d3d9::set_marker),
+    export!("d3d9.dll", "D3DPERF_SetOptions", "graphics/directx/d3d9", "stub", "Direct3D 9 event profiling marker", crate::api::graphics::directx::d3d9::set_options),
+    export!("d3d9.dll", "D3DPERF_GetStatus", "graphics/directx/d3d9", "stub", "Direct3D 9 event profiling marker", crate::api::graphics::directx::d3d9::get_status),
+    export!("d3d9.dll", "D3DPERF_QueryRepeatFrame", "graphics/directx/d3d9", "stub", "Direct3D 9 event profiling marker", crate::api::graphics::directx::d3d9::query_repeat_frame),
+    export!("d3d9.dll", "Direct3DCreate9", "graphics/directx/d3d9", "stub", "Direct3D 9 create device stub", crate::api::graphics::directx::d3d9::direct3d_create9),
 }

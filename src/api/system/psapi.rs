@@ -252,3 +252,21 @@ pub unsafe extern "win64" fn performance_info(out: *mut u8, size: u32) -> i32 {
     }
     1
 }
+
+pub unsafe extern "win64" fn enum_processes(
+    pids: *mut u32,
+    cb: u32,
+    needed: *mut u32,
+) -> i32 {
+    if pids.is_null() || needed.is_null() {
+        error::set(87);
+        return 0;
+    }
+    unsafe {
+        if cb >= 4 {
+            *pids = std::process::id();
+        }
+        *needed = 4;
+    }
+    1
+}
