@@ -8,7 +8,7 @@ use crate::{
 };
 use std::{
     collections::HashMap,
-    ffi::{c_char, CStr},
+    ffi::c_char,
     fs::{File, OpenOptions},
     io::{Read, Seek, SeekFrom, Write},
     os::unix::fs::{FileExt, MetadataExt, OpenOptionsExt, PermissionsExt},
@@ -1403,44 +1403,148 @@ pub extern "win64" fn find_close(handle: usize) -> i32 {
     }
 }
 
-/// Directory change notifications. The handle is a manual-reset event that is never
-/// signalled, so the caller observes "no changes" and keeps working: file-system
-/// change monitoring (e.g. config hot-reload) is not wired to inotify here.
+// ---- directory change notifications (inotify-backed) ----------------------
+unsafe extern "C" {
+    fn inotify_init1(flags: i32) -> i32;
+    fn inotify_add_watch(fd: i32, path: *const c_char, mask: u32) -> i32;
+    #[link_name = "poll"]
+    fn inotify_poll(fds: *mut PollFd, count: u64, timeout: i32) -> i32;
+    #[link_name = "read"]
+    fn inotify_read(fd: i32, buffer: *mut std::ffi::c_void, count: usize) -> isize;
+    #[link_name = "close"]
+    fn inotify_close(fd: i32) -> i32;
+}
+#[repr(C)]
+struct PollFd {
+    fd: i32,
+    events: i16,
+    revents: i16,
+}
+/// A watch: the inotify fd, and a flag the reader thread checks to exit.
+struct ChangeWatch {
+    inotify: i32,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+static WATCHES: std::sync::Mutex<Option<HashMap<usize, ChangeWatch>>> = std::sync::Mutex::new(None);
+/// FILE_NOTIFY_CHANGE_* to an inotify mask.
+fn inotify_mask(filter: u32) -> u32 {
+    const IN_MODIFY: u32 = 0x2;
+    const IN_ATTRIB: u32 = 0x4;
+    const IN_CLOSE_WRITE: u32 = 0x8;
+    const IN_MOVED_FROM: u32 = 0x40;
+    const IN_MOVED_TO: u32 = 0x80;
+    const IN_CREATE: u32 = 0x100;
+    const IN_DELETE: u32 = 0x200;
+    let names = IN_CREATE | IN_DELETE | IN_MOVED_FROM | IN_MOVED_TO;
+    let mut mask = 0;
+    if filter & 0x01 != 0 { mask |= names; } // FILE_NAME
+    if filter & 0x02 != 0 { mask |= names; } // DIR_NAME
+    if filter & 0x04 != 0 { mask |= IN_ATTRIB; } // ATTRIBUTES
+    if filter & 0x08 != 0 { mask |= IN_MODIFY | IN_CLOSE_WRITE; } // SIZE
+    if filter & 0x10 != 0 { mask |= IN_CLOSE_WRITE | IN_MODIFY; } // LAST_WRITE
+    if filter & 0x40 != 0 { mask |= IN_CREATE; } // CREATION
+    if filter & 0x100 != 0 { mask |= IN_ATTRIB; } // SECURITY
+    if mask == 0 { names | IN_MODIFY } else { mask }
+}
+/// The shared body: watches `dir` with inotify and signals a manual-reset event when a
+/// matching change happens. inotify is not recursive, so `watch_subtree` only covers
+/// the named directory here. Returns INVALID_HANDLE on failure.
+fn change_notification(dir: PathBuf, watch_subtree: i32, filter: u32) -> usize {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    const IN_NONBLOCK: i32 = 0x800;
+    const IN_CLOEXEC: i32 = 0x8_0000;
+    const POLLIN: i16 = 1;
+    let Ok(c_dir) = std::ffi::CString::new(dir.as_os_str().as_encoded_bytes()) else {
+        return fail(ERROR_PATH_NOT_FOUND, INVALID_HANDLE);
+    };
+    let inotify = unsafe { inotify_init1(IN_NONBLOCK | IN_CLOEXEC) };
+    if inotify < 0 {
+        return fail(crate::host::paths::error(&std::io::Error::last_os_error()), INVALID_HANDLE);
+    }
+    if unsafe { inotify_add_watch(inotify, c_dir.as_ptr(), inotify_mask(filter)) } < 0 {
+        let code = crate::host::paths::error(&std::io::Error::last_os_error());
+        unsafe { inotify_close(inotify) };
+        return fail(code, INVALID_HANDLE);
+    }
+    let handle = crate::api::threading::events::create(true, false, None);
+    if handle == 0 {
+        unsafe { inotify_close(inotify) };
+        return INVALID_HANDLE;
+    }
+    if tracing() {
+        eprintln!("[files] watching {} (subtree={watch_subtree}, filter={filter:#x})", dir.display());
+    }
+    let stop = Arc::new(AtomicBool::new(false));
+    WATCHES.lock().unwrap().get_or_insert_with(HashMap::new).insert(handle, ChangeWatch { inotify, stop: stop.clone() });
+    // One reader thread per watch: poll the inotify fd in short slices so close() is
+    // seen promptly, drain the events, and signal the handle on any change.
+    std::thread::Builder::new().name("inotify-watch".into()).spawn(move || {
+        let mut buffer = [0u8; 4096];
+        loop {
+            if stop.load(Ordering::Acquire) {
+                return;
+            }
+            let mut fds = PollFd { fd: inotify, events: POLLIN, revents: 0 };
+            let ready = unsafe { inotify_poll(&mut fds, 1, 200) };
+            if stop.load(Ordering::Acquire) {
+                return;
+            }
+            if ready <= 0 || fds.revents & POLLIN == 0 {
+                continue;
+            }
+            let n = unsafe { inotify_read(inotify, buffer.as_mut_ptr().cast(), buffer.len()) };
+            if n > 0 {
+                crate::api::threading::events::set(handle);
+            }
+        }
+    }).ok();
+    handle
+}
 pub unsafe extern "win64" fn find_first_change_notification_w(
     path: *const u16,
     watch_subtree: i32,
     filter: u32,
 ) -> usize {
-    if tracing() {
-        let p = if path.is_null() { String::new() } else { unsafe { crate::api::text::string(path) }.unwrap_or_default() };
-        eprintln!("[files] FindFirstChangeNotificationW(path={p:?}, subtree={watch_subtree}, filter={filter:#x}): no change monitoring");
+    let text = match unsafe { crate::api::text::string(path) } {
+        Some(text) => text,
+        None => return fail(ERROR_PATH_NOT_FOUND, INVALID_HANDLE),
+    };
+    match crate::host::paths::host(&text) {
+        Ok(dir) => change_notification(dir, watch_subtree, filter),
+        Err(code) => fail(code, INVALID_HANDLE),
     }
-    let handle = crate::api::threading::events::create(true, false, None);
-    if handle == 0 { INVALID_HANDLE } else { handle }
 }
-
 pub unsafe extern "win64" fn find_first_change_notification_a(
     path: *const c_char,
     watch_subtree: i32,
     filter: u32,
 ) -> usize {
-    if tracing() {
-        let p = if path.is_null() { String::new() } else { unsafe { CStr::from_ptr(path) }.to_string_lossy().into_owned() };
-        eprintln!("[files] FindFirstChangeNotificationA(path={p:?}, subtree={watch_subtree}, filter={filter:#x}): no change monitoring");
+    match unsafe { narrow_path(path) } {
+        Ok(dir) => change_notification(dir, watch_subtree, filter),
+        Err(code) => fail(code, INVALID_HANDLE),
     }
-    let handle = crate::api::threading::events::create(true, false, None);
-    if handle == 0 { INVALID_HANDLE } else { handle }
 }
-
-pub extern "win64" fn find_next_change_notification(_handle: usize) -> i32 {
-    1
+/// Re-arms the watch: clears the signalled state so the next change signals again.
+pub extern "win64" fn find_next_change_notification(handle: usize) -> i32 {
+    if WATCHES.lock().unwrap().as_ref().is_some_and(|w| w.contains_key(&handle)) {
+        crate::api::threading::events::reset(handle);
+        1
+    } else {
+        fail(ERROR_INVALID_HANDLE, 0)
+    }
 }
-
 pub extern "win64" fn find_close_change_notification(handle: usize) -> i32 {
-    if handle != 0 && handle != INVALID_HANDLE {
-        crate::api::threading::events::close(handle);
+    let watch = WATCHES.lock().unwrap().as_mut().and_then(|w| w.remove(&handle));
+    match watch {
+        Some(watch) => {
+            watch.stop.store(true, std::sync::atomic::Ordering::Release);
+            unsafe { inotify_close(watch.inotify) };
+            crate::api::threading::events::close(handle);
+            1
+        }
+        None => fail(ERROR_INVALID_HANDLE, 0),
     }
-    1
 }
 
 // ---- path operations ------------------------------------------------------
