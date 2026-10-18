@@ -34,7 +34,7 @@ The build needs: X11, GL, fontconfig, OpenSSL (`libssl-dev`), ICU (`libicu-dev`)
 
 **Integration tests.** Each `tests/test_<name>.py` is one script of sequential asserts. It compiles a small C fixture `tests/<name>.c` with `x86_64-w64-mingw32-gcc`, usually `-nostdlib` with an entry point named `entry`. It then runs the result through `target/release/peekgame ... --run` and checks the exit code and output, so build in release first. Tests that open windows use a private Xvfb (`tests/private_x11.py`) and never the desktop. Many tests run the same fixture twice: once as a PE and once relinked as an ELF.
 
-**Debug environment variables.** `PEEKGAME_TRACE_{CERTS,GL,INPUT,AUDIO,ERRORS,UNITY_INPUT,FILES,CRYPTO,HTTP,WINDOW}`, `PEEKGAME_IMPORT_TRACE`, `PEEKGAME_X11_ERRORS`. `PEEKGAME_WINDOWS_DLLS` defaults to `windows-dlls/` beside the binary and holds real Windows DLLs that override PeekGame's own (this is how DXVK's d3d11/dxgi are loaded).
+**Debug environment variables.** `PEEKGAME_TRACE_{CERTS,GL,INPUT,AUDIO,ERRORS,UNITY_INPUT,FILES,CRYPTO,HTTP,HTTP_BODY,SSPI,WINDOW}`, `PEEKGAME_TRACE_LAST_ERROR=<module>|all` (call sites that read a nonzero GetLastError/WSAGetLastError), `PEEKGAME_IMPORT_TRACE`, `PEEKGAME_X11_ERRORS`. Vulkan presentation: `PEEKGAME_VULKAN_PRESENT=immediate|mailbox|fifo|relaxed` overrides the swapchain present mode, and `PEEKGAME_VULKAN_FPS=N` caps presents. With FIFO the 4-image queue adds visible mouse latency; mailbox plus a cap at the monitor refresh removes it without tearing. `PEEKGAME_WINDOWS_DLLS` defaults to `windows-dlls/` beside the binary and holds real Windows DLLs that override PeekGame's own (this is how DXVK's d3d11/dxgi are loaded).
 
 ## Architecture
 

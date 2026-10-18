@@ -368,3 +368,93 @@
   from a stale `r_mode "14"` in DOOMEternalConfig.local (fresh config: 1920x1080).
 - Dropped Steam callbacks seen in the log: 336, 1040011, 1040015, 1040044, 1270006,
   1270009 (layouts not bridged).
+
+## GetLastError / WSAGetLastError call-site trace (diagnostic)
+
+- **Trigger:** DOOM Eternal Battlemode "Create Arena" fails with `PARTY_STATE_CHANGE_TYPE_REGIONS_CHANGED failed: 1/8`; PartyError 8 is PartyWin's "unmapped platform error" (a Win32/Winsock error it has no mapping for), so the failing API has to be found.
+- **Contract:** unchanged; both return the calling thread's last error.
+- **Implementation:** both exports enter `peekgame_get_last_error_traced` (`src/api/system/error.rs`), which passes the return address along. With `PEEKGAME_TRACE_LAST_ERROR=PartyWin.dll` (or `all`), each nonzero read prints `[last-error] Module+RVA read error N` (first 3 per call site and code). The RVA points just after the failed call.
+- **Also:** WinHTTP prints `MultiplayerServer/*` response bodies under `PEEKGAME_TRACE_HTTP` (all bodies with `PEEKGAME_TRACE_HTTP_BODY`), with credential-like JSON values redacted.
+- **Verification:** unit test `redact_json_hides_credentials_only`; a mingw fixture showed the expected RVAs for SetLastError/WSASetLastError reads.
+- **Other engines:** no behavior change; the trace is off unless the variable is set.
+
+## CRYPT32 for PlayFab Party's DTLS identity (PartyWin.dll)
+
+- **Trigger:** PartyWin creates its UDP socket, then builds a local self-signed certificate. `CryptEncodeObjectEx(X509_NAME)` returned ERROR_NOT_SUPPORTED, PartyWin turned it into `0x80070032` ("unmapped platform error", PartyError 8) and closed the socket, so regions/QoS never ran (`REGIONS_CHANGED failed: 1/8`, `CreateNewNetwork 1/4202`).
+- **Sequence called** (from the PartyWin call sites):
+  1. `CryptEncodeObjectEx(X509|PKCS7, X509_NAME, CN=<UTF8>)`
+  2. `CertCreateSelfSignCertificate(0, name, 0, NULL, NULL, start, end, NULL)`
+  3. `CryptHashCertificate2(L"SHA256")` and `CertVerifyTimeValidity`
+  4. separately: a collection of the system stores My/Root (CurrentUser and LocalMachine, read-only), searched with `CertFindCertificateInStore(CERT_FIND_SHA1_HASH)`
+- **Implementation (`src/api/network/certificates/`):**
+  - `encode.rs`: X509_NAME DER, covering RDN string types, encoded blobs, the caller's buffer, MORE_DATA and the LocalAlloc flag.
+  - `selfsign.rs`: an OpenSSL RSA-2048 key and a v3 certificate. The signature defaults to sha1RSA as documented; sha256/384/512RSA can be requested. The validity comes from the SYSTEMTIMEs, defaulting to now plus 1 year. The private key is kept host-side, keyed by the certificate DER, for a future SSPI credential.
+  - Collection stores, an empty read-only `MY` system store, SHA1 find, CNG-named certificate hashes, time validity.
+- **Scope limits:** CertCreateSelfSignCertificate rejects caller keys/providers, flags and extensions with ERROR_NOT_SUPPORTED. Other encode structures and find types return ERROR_NOT_SUPPORTED. A writable MY store also returns ERROR_NOT_SUPPORTED.
+- **Verification:** `tests/test_party_certificate.py`. The generated certificate is checked with `openssl x509`/`openssl verify`. Two unit tests cover the DER and OID encoding.
+- **Next for Party:** Schannel DTLS (SspiCli: AcquireCredentialsHandleW, Initialize/AcceptSecurityContext, Encrypt/DecryptMessage), GetAddrInfoExW, and overlapped WSASendTo/WSARecvFrom with WSAGetOverlappedResult. All are still missing (STOP or 10045).
+- **Other engines:** stores and encodes that used to fail now work for these exact cases; everything else is unchanged.
+
+## Overlapped UDP and asynchronous DNS for PlayFab Party (PartyWin.dll)
+
+- **Trigger:** once the DTLS certificate existed, PartyWin posted `WSARecvFrom` with an OVERLAPPED (event, no completion routine) on its dual-stack IPv6 UDP socket and expected `WSA_IO_PENDING`. PeekGame returned 10045. PartyWin's error path then hit `LeaveCriticalSection without ownership` and a SIGSEGV. The QoS hosts (`mpsqosprod.<region>.cloudapp.azure.com`) are resolved with `GetAddrInfoExW` + OVERLAPPED.
+- **Contract:**
+  - Overlapped WSASend/WSASendTo/WSARecv/WSARecvFrom complete synchronously when possible: return 0, fill OVERLAPPED and signal the event.
+  - Otherwise they return WSA_IO_PENDING. Completion writes Internal (status), InternalHigh (bytes) and Offset (flags), then signals hEvent.
+  - WSAGetOverlappedResult returns WSA_IO_INCOMPLETE while pending, waits on hEvent when asked, and reports WSAEMSGSIZE for truncated datagrams. closesocket aborts pending operations with WSA_OPERATION_ABORTED.
+  - GetAddrInfoExW (NS_ALL/NS_DNS) works synchronously or asynchronously: WSA_IO_PENDING, *ppResult set, event signalled, status from GetAddrInfoExOverlappedResult. FreeAddrInfoExW frees the list.
+- **Implementation:** `src/api/network/overlapped.rs` (a poll-thread reactor; per-socket order kept by direction), `src/api/network/resolve.rs` (a host getaddrinfo per async request on a host thread).
+- **Scope limits:** completion routines (WSA and GetAddrInfoEx) return WSAEOPNOTSUPP. IOCP association for sockets is not provided. GetAddrInfoEx timeouts, providers and GetAddrInfoExCancel are not implemented.
+- **Verification:** `tests/test_overlapped_udp.py`.
+- **Other engines:** synchronous WSA calls are unchanged; overlapped calls that used to fail now work in this event-based form.
+
+## UCRT time names for msvcp140 (`_Getdays` and friends)
+
+- **Trigger:** `STOP: missing Windows API api-ms-win-crt-time-l1-1-0.dll!_Getdays`, called from msvcp140.dll (the Microsoft C++ library extracted from the VC redist) when it builds its time facets (`_Locinfo`).
+- **Contract:**
+  - `_Getdays`/`_Getmonths` (and the `_W_` versions) return ":Sun:Sunday:..." / ":Jan:January:..." in CRT memory, freed with `free`.
+  - `_Gettnames`/`_W_Gettnames` return one CRT block: a copy of UCRT's `__crt_lc_time_data` (704 bytes on x64) followed by its strings.
+  - `_Strftime`/`_Wcsftime` are strftime with an explicit time-data argument.
+- **Implementation:** `src/api/crt/cxx_support.rs`. The data is the C locale, the only locale this CRT has, so the time-data argument always describes it.
+- **Verification:** `tests/test_crt_time_names.py` (struct layout static assert, strings, `_Strftime` output).
+- **Other engines:** any program using MSVC's std::time_get/put with msvcp140 benefits.
+
+## Remaining PartyWin / msvcp140 imports (CRT, thread pool, files, WinRT string)
+
+- **Trigger:** `STOP: ...api-ms-win-crt-time-l1-1-0.dll!_mkgmtime64` (PartyWin). The rest of the unresolved list was done in the same change, so the game doesn't stop on each one in turn.
+- **CRT** (`src/api/crt/cxx_support.rs`):
+  - `_mkgmtime64` (normalises the struct tm; range 1970–3000, otherwise -1/EINVAL), `_difftime64`, `fmax`, `_dtest`.
+  - `__stdio_common_vsnprintf_s`: count/_TRUNCATE truncation returns -1; overflowing the buffer empties it with ERANGE.
+  - `__stdio_common_vsscanf`: narrow conversions through the host sscanf. The Windows size prefixes are translated, and secure-CRT buffer sizes become field widths (max 32 conversions). Wide conversions fail with EINVAL.
+- **Thread pool** (`src/api/threading/pool.rs`): work, timer and wait objects, plus FreeLibraryWhenCallbackReturns, IsThreadpoolTimerSet and the Wait*Callbacks functions. Callbacks run on Windows threads. Custom pools, cleanup groups and RaceDll return ERROR_NOT_SUPPORTED.
+- **Files:** `CreateFile2` (extended parameters to CreateFileW). `CopyFile2` with COPY_FILE_FAIL_IF_EXISTS; other flags and callbacks return HRESULT ERROR_NOT_SUPPORTED. `CreateSymbolicLinkW` (relative targets stay relative), `CreateHardLinkW`.
+- **TerminateThread:** works for the calling thread (as ExitThread). Another thread returns ERROR_NOT_SUPPORTED, because stopping a thread at an arbitrary instruction is not safe here.
+- **WindowsConcatString:** a new HSTRING; NULL counts as empty.
+- **Verification:** `tests/test_crt_party_batch.py`, `tests/test_kernel32_party_batch.py`.
+- **Still missing:** SspiCli (Schannel DTLS) for PartyWin.
+
+## GetAdaptersAddresses: DadState and all addresses (PlayFab Party local candidates)
+
+- **Trigger:** with QoS working, Create Arena got as far as `/Party/RequestParty`. Then `ENDPOINT_DESTROYED ... 1/131` and `ConnectToNetwork 10/131`, with no relay packets at all. Public error 131 is PartyWin's internal `0x807a102e`, raised when its local address candidate list is empty. PartyWin keeps only unicast entries with `DadState == IpDadStatePreferred` (and skips loopback and Teredo adapters). PeekGame left DadState at 0 (IpDadStateInvalid), so every address was dropped.
+- **Contract/implementation (`src/api/network/adapters.rs`):**
+  - Every address of each adapter is listed as a unicast entry (AF_UNSPEC: IPv4 then IPv6).
+  - Each entry has DadState Preferred, infinite Valid/Preferred/Lease lifetimes and its OnLinkPrefixLength. Link-local IPv6 addresses carry the interface as scope ID.
+  - Ipv4Enabled/Ipv6Enabled reflect the addresses present.
+- **Scope limit:** origins are "other", because Linux does not say whether an address came from DHCP or was set manually.
+- **Verification:** `tests/test_iphlpapi_adapters.py` (every unicast entry: length, sockaddr size, DadState, lifetimes, family flags; PartyWin's GAA flags).
+
+## WSOCK32 ordinals 10–12 (Battlemode "Invalid host address")
+
+- **Trigger:** Battlemode matchmaking found real players and the lobby filled, then `BattleArenaGameSession error: (state: STATE_TRANSITIONING, error: 0/2) Invalid host address`. The log also showed `ioctlsocket(0x7bc49712)`, `ioctlsocket(0x13)` and similar calls with argument values that are not ioctl commands.
+- **Cause:** DOOMEternalx64vk.exe imports Winsock 1.1 from WSOCK32.dll **by ordinal**. In WSOCK32, 10/11/12 are `inet_addr`/`inet_ntoa`/`ioctlsocket`; in WS2_32 they are `ioctlsocket`/`inet_addr`/`inet_ntoa` (Wine's wsock32.spec and ws2_32.spec agree). PeekGame used the WS2_32 table for both, so `inet_addr("127.0.0.1")` (call site 0x1403e1432, "Sys_InitNetworking: adding loopback interface") and the host-address conversions ran ioctlsocket and got an error instead of an address.
+- **Fix:** `src/registry/ordinals.rs` has WSOCK32's own numbering for 10–12. `src/registry/mod.rs::find_import` picks the table by the DLL actually named, since WSOCK32 still canonicalizes to ws2_32 for name lookups.
+- **Verification:** unit tests `winsock_ordinals_differ_at_10_to_12` and `import_by_ordinal_uses_the_dll_s_own_numbering`. The game still has to be re-run.
+- **Other engines:** any program importing WSOCK32 #10–#12 by ordinal was affected the same way.
+
+## Windowed mode stuck at 32x32 (GNOME applies the creation size at first map)
+
+- **Trigger:** starting DOOM Eternal in windowed mode (or switching to it) left the window at 32x32, and the game saved `r_windowWidth/Height "32"`, which made it permanent. The trace (`PEEKGAME_TRACE_WINDOW`) showed `SetWindowPos 1280x720`, X confirming 1280x720, then an unrequested `X Configure (0,66) 32x32` from the window manager after `XMapWindow`. DOOM creates its window as a 32x32 popup and resizes it before showing it.
+- **Ruled out:** the size hints (resizable, no min/max after the style change), the resize-before-map order, update_fullscreen.
+- **Fix:** `Window::map_guard` (`src/api/window/state.rs`) is set when a top-level window is first mapped and holds the program's size. A later SetWindowPos updates it. Within 2 s, the first window-manager configure with a different size is answered once by requesting the program's size again (`src/api/window/pump.rs`) instead of being reported as WM_SIZE. On Windows the program's size stands.
+- **Also:** the window trace now covers style changes, AdjustWindowRectEx, Get/SetWindowPlacement, client-size changes, WM_NORMAL_HINTS and XMapWindow. A temporary opt-in focus hack (`PEEKGAME_TINY_WINDOW_720P`) was removed.
+- **Verification:** user run on GNOME/X11: the window keeps the configured size (1920x1080) and the config is no longer overwritten. This can't be reproduced in the Xvfb tests (no window manager).
