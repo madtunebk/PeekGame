@@ -47,6 +47,5 @@ pub unsafe extern "win64" fn is_os(feature: u32) -> i32 {
             0
         }
     };
-    eprintln!("IsOS({feature:#x}) -> {result}");
     result
 }

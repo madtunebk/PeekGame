@@ -1403,23 +1403,20 @@ pub extern "win64" fn find_close(handle: usize) -> i32 {
     }
 }
 
+/// Directory change notifications. The handle is a manual-reset event that is never
+/// signalled, so the caller observes "no changes" and keeps working: file-system
+/// change monitoring (e.g. config hot-reload) is not wired to inotify here.
 pub unsafe extern "win64" fn find_first_change_notification_w(
     path: *const u16,
     watch_subtree: i32,
     filter: u32,
 ) -> usize {
-    let p = if !path.is_null() {
-        unsafe { crate::api::text::string(path) }.unwrap_or_default()
-    } else {
-        String::new()
-    };
-    eprintln!("FindFirstChangeNotificationW(path={p:?}, subtree={watch_subtree}, filter={filter:#x})");
-    let handle = crate::api::threading::events::create(false, false, None);
-    if handle == 0 {
-        INVALID_HANDLE
-    } else {
-        handle
+    if tracing() {
+        let p = if path.is_null() { String::new() } else { unsafe { crate::api::text::string(path) }.unwrap_or_default() };
+        eprintln!("[files] FindFirstChangeNotificationW(path={p:?}, subtree={watch_subtree}, filter={filter:#x}): no change monitoring");
     }
+    let handle = crate::api::threading::events::create(true, false, None);
+    if handle == 0 { INVALID_HANDLE } else { handle }
 }
 
 pub unsafe extern "win64" fn find_first_change_notification_a(
@@ -1427,27 +1424,19 @@ pub unsafe extern "win64" fn find_first_change_notification_a(
     watch_subtree: i32,
     filter: u32,
 ) -> usize {
-    let p = if !path.is_null() {
-        unsafe { CStr::from_ptr(path) }.to_string_lossy().into_owned()
-    } else {
-        String::new()
-    };
-    eprintln!("FindFirstChangeNotificationA(path={p:?}, subtree={watch_subtree}, filter={filter:#x})");
-    let handle = crate::api::threading::events::create(false, false, None);
-    if handle == 0 {
-        INVALID_HANDLE
-    } else {
-        handle
+    if tracing() {
+        let p = if path.is_null() { String::new() } else { unsafe { CStr::from_ptr(path) }.to_string_lossy().into_owned() };
+        eprintln!("[files] FindFirstChangeNotificationA(path={p:?}, subtree={watch_subtree}, filter={filter:#x}): no change monitoring");
     }
+    let handle = crate::api::threading::events::create(true, false, None);
+    if handle == 0 { INVALID_HANDLE } else { handle }
 }
 
-pub extern "win64" fn find_next_change_notification(handle: usize) -> i32 {
-    eprintln!("FindNextChangeNotification(handle={handle:#x})");
+pub extern "win64" fn find_next_change_notification(_handle: usize) -> i32 {
     1
 }
 
 pub extern "win64" fn find_close_change_notification(handle: usize) -> i32 {
-    eprintln!("FindCloseChangeNotification(handle={handle:#x})");
     if handle != 0 && handle != INVALID_HANDLE {
         crate::api::threading::events::close(handle);
     }
