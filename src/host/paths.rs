@@ -46,6 +46,17 @@ pub fn host(text: &str) -> Result<PathBuf, u32> {
                     }
                 }
             }
+            // Launched through Steam: share the game's Proton compatibility prefix
+            // (STEAM_COMPAT_DATA_PATH/pfx/drive_c) as C:. Saves then land where Steam
+            // Cloud (auto-cloud) looks and where Proton keeps them, so progress syncs
+            // and is shared between PeekGame and Proton. A standalone run keeps its own
+            // prefix under the data directory.
+            if let Some(compat) = std::env::var_os("STEAM_COMPAT_DATA_PATH") {
+                let drive_c = PathBuf::from(compat).join("pfx/drive_c");
+                if drive_c.is_dir() {
+                    return Ok(resolve_case(drive_c.join(relative)));
+                }
+            }
             let base = std::env::var_os("XDG_DATA_HOME")
                 .map(PathBuf::from)
                 .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
