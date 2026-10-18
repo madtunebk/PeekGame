@@ -3,8 +3,12 @@
 //! these certificates does not skip signature, hostname or chain verification.
 pub(crate) mod chain;
 mod der;
+mod encode;
 mod openssl;
 mod pem;
+mod selfsign;
+pub use encode::encode_object_ex;
+pub use selfsign::create_self_sign;
 use crate::{api::system::error, host::paths};
 use der::Certificate;
 use std::{
@@ -34,6 +38,20 @@ unsafe impl Send for Reference {}
 struct Store {
     certificates: Mutex<Vec<Arc<Certificate>>>,
     readonly: bool,
+    /// CERT_STORE_PROV_COLLECTION: the sibling stores whose certificates it presents.
+    siblings: Option<Mutex<Vec<Arc<Store>>>>,
+}
+impl Store {
+    /// The certificates the store presents: its own, then each sibling's in order.
+    fn all(&self) -> Vec<Arc<Certificate>> {
+        let mut out = self.certificates.lock().unwrap().clone();
+        if let Some(siblings) = &self.siblings {
+            for sibling in siblings.lock().unwrap().iter() {
+                out.extend(sibling.all());
+            }
+        }
+        out
+    }
 }
 #[derive(Default)]
 struct Registry {
@@ -82,29 +100,6 @@ fn release(r: &mut Registry, pointer: usize) -> bool {
     }
     true
 }
-/// Diagnostic boundary for CryptEncodeObjectEx. Encoding is format-specific;
-/// unsupported structures must fail instead of returning fabricated DER.
-pub unsafe extern "win64" fn encode_object_ex(
-    encoding: u32, struct_type: *const c_char, _info: *const c_void,
-    flags: u32, _params: *const c_void, _encoded: *mut c_void, size: *mut u32,
-) -> i32 {
-    let name = if (struct_type as usize) < 65536 {
-        format!("#{:#x}", struct_type as usize)
-    } else {
-        let mut bytes = Vec::new();
-        for i in 0..128 {
-            let byte = unsafe { *struct_type.add(i) as u8 };
-            if byte == 0 { break; }
-            bytes.push(byte);
-        }
-        String::from_utf8_lossy(&bytes).into_owned()
-    };
-    eprintln!("crypt32: CryptEncodeObjectEx encoding={encoding:#x} type={name:?} flags={flags:#x}: unsupported");
-    if size.is_null() { return fail(87, 0); }
-    unsafe { *size = 0 };
-    fail(50, 0)
-}
-
 pub unsafe extern "win64" fn open(
     provider: *const c_char,
     _encoding: u32,
@@ -124,7 +119,7 @@ pub unsafe extern "win64" fn open(
     } else {
         provider as usize
     };
-    if !matches!(kind, 2 | 9 | 10) {
+    if !matches!(kind, 2 | 9 | 10 | 11) {
         return fail(50, 0);
     }
     // No-crypt-release, deferred close, read-only, open-existing; other operations
@@ -135,7 +130,7 @@ pub unsafe extern "win64" fn open(
     if flags & 0x6000 == 0x6000 {
         return fail(87, 0);
     }
-    let (certificates, readonly) = if kind == 2 {
+    let (certificates, readonly) = if kind == 2 || kind == 11 {
         if flags >> 16 != 0 {
             return fail(87, 0);
         }
@@ -153,12 +148,20 @@ pub unsafe extern "win64" fn open(
             Ok(name) => name,
             Err(code) => return fail(code, 0),
         };
-        if !name.eq_ignore_ascii_case("ROOT") {
-            return fail(2, 0);
-        }
         if flags & 0x2000 != 0 {
             return fail(0x80092005, 0);
         }
+        if name.eq_ignore_ascii_case("MY") {
+            // The personal store exists and is empty: nothing persists host certificates
+            // with private keys for Windows programs.
+            if flags & 0x8000 == 0 {
+                eprintln!("crypt32: writable MY store is not supported");
+                return fail(50, 0);
+            }
+            (Vec::new(), true)
+        } else if !name.eq_ignore_ascii_case("ROOT") {
+            return fail(2, 0);
+        } else {
         match pem::roots() {
             Ok(certs) => {
                 eprintln!(
@@ -169,6 +172,7 @@ pub unsafe extern "win64" fn open(
             }
             Err(code) => return fail(code, 0),
         }
+        }
     };
     let handle = NEXT.fetch_add(16, Ordering::Relaxed);
     registry().lock().unwrap().stores.insert(
@@ -176,6 +180,7 @@ pub unsafe extern "win64" fn open(
         Arc::new(Store {
             certificates: Mutex::new(certificates),
             readonly,
+            siblings: (kind == 11).then(|| Mutex::new(Vec::new())),
         }),
     );
     handle
@@ -201,7 +206,7 @@ pub extern "win64" fn enumerate(store: usize, previous: *const Context) -> *cons
     let Some(opened) = r.stores.get(&store) else {
         return fail(6, std::ptr::null());
     };
-    let certificates = opened.certificates.lock().unwrap();
+    let certificates = opened.all();
     let next = match previous {
         None => 0,
         Some((owner, cert)) => {
@@ -336,3 +341,153 @@ fn same_identity(a: &Certificate, b: &Certificate) -> bool {
 }
 
 pub(crate) mod properties;
+
+/// CertAddStoreToCollection: flags and priority do not change enumeration order here
+/// (siblings are presented in the order they were added).
+pub extern "win64" fn add_store_to_collection(collection: usize, sibling: usize, _flags: u32, _priority: u32) -> i32 {
+    let r = registry().lock().unwrap();
+    let (Some(collection), Some(sibling)) = (r.stores.get(&collection), r.stores.get(&sibling)) else {
+        return fail(6, 0);
+    };
+    let Some(siblings) = &collection.siblings else {
+        return fail(87, 0);
+    };
+    siblings.lock().unwrap().push(sibling.clone());
+    1
+}
+/// CertFindCertificateInStore: CERT_FIND_ANY and CERT_FIND_SHA1_HASH (CRYPT_HASH_BLOB).
+/// Other find types fail with ERROR_NOT_SUPPORTED. The previous context is released.
+pub unsafe extern "win64" fn find(
+    store: usize, encoding: u32, flags: u32, kind: u32, parameter: *const c_void, previous: *const Context,
+) -> *const Context {
+    const CERT_FIND_ANY: u32 = 0;
+    const CERT_FIND_SHA1_HASH: u32 = 1 << 16;
+    let mut r = registry().lock().unwrap();
+    let after = if previous.is_null() {
+        None
+    } else {
+        let Some(reference) = r.contexts.get(&(previous as usize)) else {
+            return fail(87, std::ptr::null());
+        };
+        let certificate = reference.certificate.clone();
+        release(&mut r, previous as usize);
+        Some(certificate)
+    };
+    if encoding & 0xffff != 1 && kind != CERT_FIND_ANY {
+        return fail(87, std::ptr::null());
+    }
+    let wanted = match kind {
+        CERT_FIND_ANY => None,
+        CERT_FIND_SHA1_HASH => {
+            if parameter.is_null() {
+                return fail(87, std::ptr::null());
+            }
+            let (size, data) = unsafe { (*parameter.cast::<u32>(), *parameter.cast::<u8>().add(8).cast::<*const u8>()) };
+            if size != 0 && data.is_null() {
+                return fail(87, std::ptr::null());
+            }
+            Some(if size == 0 { Vec::new() } else { unsafe { std::slice::from_raw_parts(data, size as usize) }.to_vec() })
+        }
+        _ => {
+            eprintln!("crypt32: CertFindCertificateInStore type {kind:#x} flags {flags:#x}: unsupported");
+            return fail(50, std::ptr::null());
+        }
+    };
+    let Some(opened) = r.stores.get(&store) else {
+        return fail(6, std::ptr::null());
+    };
+    let all = opened.all();
+    let start = match &after {
+        None => 0,
+        Some(cert) => match all.iter().position(|c| Arc::ptr_eq(c, cert)) {
+            Some(index) => index + 1,
+            None => return fail(87, std::ptr::null()),
+        },
+    };
+    for certificate in &all[start..] {
+        let matched = match &wanted {
+            None => true,
+            Some(hash) => openssl::digest(&certificate.encoded, 3).is_ok_and(|h| &h == hash),
+        };
+        if matched {
+            return new_context(&mut r, store, certificate.clone());
+        }
+    }
+    fail(0x80092004, std::ptr::null())
+}
+/// CryptHashCertificate2: a CNG algorithm name (SHA1, SHA256, SHA384, SHA512, MD5).
+pub unsafe extern "win64" fn hash_certificate2(
+    algorithm: *const u16, flags: u32, reserved: *const c_void,
+    data: *const u8, size: u32, hash: *mut u8, hash_size: *mut u32,
+) -> i32 {
+    if algorithm.is_null() || hash_size.is_null() || (data.is_null() && size != 0) {
+        return fail(87, 0);
+    }
+    if flags != 0 || !reserved.is_null() {
+        return fail(87, 0);
+    }
+    let name = match unsafe { paths::wide(algorithm) } {
+        Ok(name) => name.to_ascii_uppercase(),
+        Err(code) => return fail(code, 0),
+    };
+    let name = match name.as_str() {
+        "SHA1" => c"SHA1",
+        "SHA256" => c"SHA256",
+        "SHA384" => c"SHA384",
+        "SHA512" => c"SHA512",
+        "MD5" => c"MD5",
+        _ => return fail(0x80090008, 0), // NTE_BAD_ALGID
+    };
+    let input = if size == 0 { &[][..] } else { unsafe { std::slice::from_raw_parts(data, size as usize) } };
+    let digest = match openssl::digest_named(input, name) {
+        Ok(digest) => digest,
+        Err(code) => return fail(code, 0),
+    };
+    let capacity = unsafe { *hash_size } as usize;
+    unsafe { *hash_size = digest.len() as u32 };
+    if hash.is_null() {
+        return 1;
+    }
+    if capacity < digest.len() {
+        return fail(234, 0);
+    }
+    unsafe { std::ptr::copy_nonoverlapping(digest.as_ptr(), hash, digest.len()) };
+    1
+}
+/// CertVerifyTimeValidity: -1 before NotBefore, 1 after NotAfter, otherwise 0.
+/// `time` is a FILETIME, or NULL for the current time.
+pub unsafe extern "win64" fn verify_time_validity(time: *const u64, info: *const c_void) -> i32 {
+    if info.is_null() {
+        return fail(87, 0);
+    }
+    let now = if time.is_null() {
+        let since = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+        since.as_secs() * 10_000_000 + since.subsec_nanos() as u64 / 100 + 116_444_736_000_000_000
+    } else {
+        unsafe { time.read_unaligned() }
+    };
+    let info = unsafe { &*info.cast::<der::Info>() };
+    let filetime = |t: [u32; 2]| t[0] as u64 | (t[1] as u64) << 32;
+    if now < filetime(info.not_before) {
+        -1
+    } else if now > filetime(info.not_after) {
+        1
+    } else {
+        0
+    }
+}
+
+/// The DER bytes of a certificate context this module handed out.
+pub(crate) fn context_der(context: *const c_void) -> Option<Vec<u8>> {
+    let r = registry().lock().unwrap();
+    r.contexts.get(&(context as usize)).map(|reference| reference.certificate.encoded.to_vec())
+}
+/// A new standalone certificate context (freed with CertFreeCertificateContext).
+pub(crate) fn context_from_der(der: Vec<u8>) -> Option<*const c_void> {
+    let certificate = Arc::new(Certificate::parse(der).ok()?);
+    Some(new_context(&mut registry().lock().unwrap(), 0, certificate).cast())
+}
+/// The private key created with a self-signed certificate (OpenSSL DER), if any.
+pub(crate) fn private_key(der: &[u8]) -> Option<Vec<u8>> {
+    selfsign::private_key(der)
+}

@@ -21,7 +21,9 @@ const HOST_LIBS: &[&str] = &[
     "-lpng16",
     "-lXrandr",
     "-lXinerama",
+    "-lssl",
     "-lcrypto",
+    "-l:libcurl.so.4", // as the runtime links it (no libcurl-dev needed)
     "-lpulse",
     "-lgio-2.0",
     "-lglib-2.0",

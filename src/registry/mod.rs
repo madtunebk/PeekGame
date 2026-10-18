@@ -174,6 +174,9 @@ fn canonical(dll: &str) -> String {
     {
         return "version".into();
     }
+    if lower.starts_with("api-ms-win-devices-config-") {
+        return "cfgmgr32".into();
+    }
     if lower.starts_with("api-ms-win-") || lower.starts_with("ext-ms-win-") {
         return "kernel32".into();
     }
@@ -185,6 +188,14 @@ pub fn find(dll: &str, name: &str) -> Option<&'static Export> {
         .find(|e| e.dll.strip_suffix(".dll").unwrap_or(e.dll) == normalized && e.name == name);
     if direct.is_some() {
         return direct;
+    }
+    if normalized == "msvcrt" || normalized == "vcruntime140" || normalized == "vcruntime140_1" {
+        let lookup = name.strip_prefix("_o_").unwrap_or(name);
+        if let Some(found) = entries()
+            .find(|e| (e.dll == "msvcrt.dll" || e.dll == "vcruntime140.dll") && e.name == lookup)
+        {
+            return Some(found);
+        }
     }
     // Core/security API contracts can expose ADVAPI32 functions too. Keep this
     // fallback limited to those contracts: arbitrary DLLs must not gain exports.
@@ -201,9 +212,20 @@ pub fn find(dll: &str, name: &str) -> Option<&'static Export> {
 pub fn find_import(dll: &str, name: Option<&str>, ordinal: Option<u16>) -> Option<&'static Export> {
     let name = match name {
         Some(name) => name,
-        None => ordinals::name(&canonical(dll), ordinal?)?,
+        None => ordinals::name(&ordinal_table(dll), ordinal?)?,
     };
     find(dll, name)
+}
+/// The ordinal table for `dll`: its canonical name, except WSOCK32, whose Winsock 1.1
+/// ordinals differ from WS2_32's although it serves the same functions.
+fn ordinal_table(dll: &str) -> String {
+    let lower = dll.to_ascii_lowercase();
+    let leaf = lower.rsplit(['/', '\\']).next().unwrap_or(&lower);
+    if leaf == "wsock32.dll" || leaf == "wsock32" {
+        "wsock32".into()
+    } else {
+        canonical(dll)
+    }
 }
 /// Does PeekGame implement `dll` (at least partly)? Such a DLL is never loaded from disk.
 pub fn provides(dll: &str) -> bool {

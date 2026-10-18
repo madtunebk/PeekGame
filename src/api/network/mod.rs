@@ -8,7 +8,9 @@
 pub(crate) mod afd;
 pub(crate) mod certificates;
 pub(crate) mod events;
+pub(crate) mod overlapped;
 pub(crate) mod resolve;
+pub(crate) mod schannel;
 pub(crate) mod sockets;
 pub(crate) mod sspi;
 pub(crate) mod winhttp;
@@ -186,9 +188,6 @@ pub extern "win64" fn cleanup() -> i32 {
         error::set(10093); // WSANOTINITIALISED
         -1
     }
-}
-pub extern "win64" fn get_last_error() -> i32 {
-    error::get_last_error() as i32
 }
 pub extern "win64" fn set_last_error(code: i32) {
     error::set(code as u32);

@@ -1,5 +1,5 @@
 //! Socket calls: creation, connection, data transfer, options, select.
-use super::{errno, events, fail, family_to_host, set_errno, Address, INVALID_SOCKET};
+use super::{errno, events, fail, family_to_host, overlapped, set_errno, Address, INVALID_SOCKET};
 use crate::api::system::error;
 use std::ffi::c_void;
 
@@ -134,6 +134,7 @@ pub extern "win64" fn wsa_socket(
 }
 pub extern "win64" fn close_socket(s: usize) -> i32 {
     events::note(fd(s), events::Note::Close);
+    overlapped::cancel(fd(s));
     if unsafe { close(fd(s)) } != 0 {
         fail()
     } else {
@@ -353,9 +354,11 @@ unsafe fn iov(buffers: *const WsaBuffer, count: u32) -> Option<Vec<IoVec>> {
             .collect(),
     )
 }
+/// Completion routines are not supported; overlapped calls with an OVERLAPPED (and
+/// its event) go through `overlapped::start_operation` instead.
 fn no_overlapped(what: &str, overlapped: usize, routine: usize) -> bool {
-    if overlapped != 0 || routine != 0 {
-        eprintln!("{what}: overlapped operations are not supported");
+    if routine != 0 {
+        eprintln!("{what}: completion routines are not supported (overlapped {overlapped:#x})");
         error::set(10045);
         return false;
     }
@@ -450,6 +453,9 @@ pub unsafe extern "win64" fn wsa_send(
     if !no_overlapped("WSASend", overlapped, routine) {
         return -1;
     }
+    if overlapped != 0 {
+        return unsafe { overlapped::start_operation(fd(s), buffers.cast(), count, done, std::ptr::null_mut(), flags, overlapped::send(None), overlapped) };
+    }
     unsafe { send_message(s, buffers, count, done, flags, None) }
 }
 pub unsafe extern "win64" fn wsa_send_to(
@@ -474,6 +480,9 @@ pub unsafe extern "win64" fn wsa_send_to(
             None => return -1,
         }
     };
+    if overlapped != 0 {
+        return unsafe { overlapped::start_operation(fd(s), buffers.cast(), count, done, std::ptr::null_mut(), flags, overlapped::send(a), overlapped) };
+    }
     unsafe { send_message(s, buffers, count, done, flags, a.as_ref()) }
 }
 pub unsafe extern "win64" fn wsa_recv(
@@ -487,6 +496,9 @@ pub unsafe extern "win64" fn wsa_recv(
 ) -> i32 {
     if !no_overlapped("WSARecv", overlapped, routine) {
         return -1;
+    }
+    if overlapped != 0 {
+        return unsafe { overlapped::start_operation(fd(s), buffers.cast(), count, done, flags, 0, overlapped::receive(0, 0), overlapped) };
     }
     unsafe { receive_message(s, buffers, count, done, flags, None) }
 }
@@ -503,6 +515,9 @@ pub unsafe extern "win64" fn wsa_recv_from(
 ) -> i32 {
     if !no_overlapped("WSARecvFrom", overlapped, routine) {
         return -1;
+    }
+    if overlapped != 0 {
+        return unsafe { overlapped::start_operation(fd(s), buffers.cast(), count, done, flags, 0, overlapped::receive(from as usize, from_length as usize), overlapped) };
     }
     let mut a = Address::empty();
     let rc = unsafe { receive_message(s, buffers, count, done, flags, Some(&mut a)) };
@@ -996,7 +1011,8 @@ pub unsafe extern "win64" fn wsa_ioctl(
 ) -> i32 {
     if overlapped != 0
         || routine != 0
-        || ![0x4800_0022, 0x4800_001b, 0x4800_001c, 0x4800_001d].contains(&code)
+        || (![0x4800_0022, 0x4800_001b, 0x4800_001c, 0x4800_001d].contains(&code)
+            && code != 0x4004_747b)
     {
         eprintln!(
             "WSAIoctl({code:#x}){} is not supported",
@@ -1012,6 +1028,19 @@ pub unsafe extern "win64" fn wsa_ioctl(
     if !is_socket(s) {
         error::set(10038);
         return -1;
+    }
+    if code == 0x4004_747b {
+        if output.is_null() || output_length < 4 {
+            error::set(10014);
+            return -1;
+        }
+        unsafe {
+            output.cast::<u32>().write_unaligned(65536);
+            if !returned.is_null() {
+                *returned = 4;
+            }
+        }
+        return 0;
     }
     if output.is_null() || output_length < 8 {
         error::set(10014);

@@ -166,6 +166,10 @@ pub(super) fn digest(bytes: &[u8], kind: u32) -> Result<Vec<u8>, u32> {
         107 => c"SHA256",
         _ => return Err(0x80092004),
     };
+    digest_named(bytes, name)
+}
+/// A digest by OpenSSL name ("SHA256", "SHA1", ...).
+pub(super) fn digest_named(bytes: &[u8], name: &std::ffi::CStr) -> Result<Vec<u8>, u32> {
     let mut out = vec![0u8; 64];
     let mut size = out.len();
     if unsafe {

@@ -1,6 +1,8 @@
 //! Exports programs import by ordinal from DLLs PeekGame implements. These numbers
-//! are fixed parts of the Windows ABI (WS2_32 keeps the Winsock 1.1 numbering;
-//! OLEAUT32's BSTR, VARIANT and SAFEARRAY entry points), the same for every program.
+//! are fixed parts of the Windows ABI (WS2_32 and WSOCK32 keep the Winsock 1.1
+//! numbering, except that WSOCK32 has inet_addr/inet_ntoa/ioctlsocket at 10/11/12 where
+//! WS2_32 has ioctlsocket/inet_addr/inet_ntoa; OLEAUT32's BSTR, VARIANT and SAFEARRAY
+//! entry points), the same for every program.
 const WS2_32: &[(u16, &str)] = &[
     (1, "accept"),
     (2, "bind"),
@@ -75,6 +77,7 @@ const OLEAUT32: &[(u16, &str)] = &[
     (25, "SafeArrayGetElement"),
     (26, "SafeArrayPutElement"),
     (27, "SafeArrayCopy"),
+    (77, "SafeArrayGetVartype"),
     (149, "SysStringByteLen"),
     (150, "SysAllocStringByteLen"),
     (159, "LoadTypeLib"),
@@ -82,7 +85,15 @@ const OLEAUT32: &[(u16, &str)] = &[
     (161, "RegisterTypeLib"),
     (162, "QueryPathOfRegTypeLib"),
     (181, "LoadTypeLibEx"),
-    (184, "UnRegisterTypeLib"),
+    (184, "SystemTimeToVariantTime"),
+    (185, "VariantTimeToSystemTime"),
+    (186, "UnRegisterTypeLib"),
+    (200, "GetErrorInfo"),
+    (201, "SetErrorInfo"),
+    (202, "CreateErrorInfo"),
+    (277, "VarCmp"),
+    (314, "VarBstrCmp"),
+    (411, "SafeArrayCreateVector"),
     (440, "RegisterTypeLibForUser"),
     (441, "UnRegisterTypeLibForUser"),
 ];
@@ -105,14 +116,77 @@ const XINPUT: &[(u16, &str)] = &[
     (10, "XInputGetAudioDeviceIds"),
     (100, "XInputGetStateEx"),
 ];
+const DSOUND: &[(u16, &str)] = &[
+    (1, "DirectSoundCreate"),
+    (2, "DirectSoundEnumerateA"),
+    (3, "DirectSoundEnumerateW"),
+    (6, "DirectSoundCaptureCreate"),
+    (7, "DirectSoundCaptureEnumerateA"),
+    (8, "DirectSoundCaptureEnumerateW"),
+    (11, "DirectSoundCreate8"),
+    (12, "DirectSoundCaptureCreate8"),
+];
+const SHELL32: &[(u16, &str)] = &[
+    (2, "SHChangeNotifyRegister"),
+    (4, "SHChangeNotifyDeregister"),
+    (680, "IsUserAnAdmin"),
+];
+const SHLWAPI: &[(u16, &str)] = &[
+    (12, "SHAllocShared"),
+    (219, "QISearch"),
+    (437, "IsOS"),
+];
+const UXTHEME: &[(u16, &str)] = &[
+    (47, "DrawThemeBackground"),
+];
+const WINSPOOL: &[(u16, &str)] = &[
+    (203, "ConnectToPrinterDlg"),
+];
 /// The name of export `ordinal` of `dll` (canonical, without ".dll").
 pub(super) fn name(dll: &str, ordinal: u16) -> Option<&'static str> {
     let table = match dll {
-        "ws2_32" | "wsock32" => WS2_32,
+        "ws2_32" => WS2_32,
+        "wsock32" => {
+            // Same numbering as WS2_32 except 10..=12 (wsock32.spec/ws2_32.spec).
+            return match ordinal {
+                10 => Some("inet_addr"),
+                11 => Some("inet_ntoa"),
+                12 => Some("ioctlsocket"),
+                _ => WS2_32.iter().find(|(o, _)| *o == ordinal).map(|(_, n)| *n),
+            };
+        }
         "oleaut32" => OLEAUT32,
         "d3d12" => D3D12,
         "xinput1_3" | "xinput1_4" => XINPUT,
+        "dsound" => DSOUND,
+        "shell32" => SHELL32,
+        "shlwapi" => SHLWAPI,
+        "uxtheme" => UXTHEME,
+        "winspool.drv" | "winspool" => WINSPOOL,
         _ => return None,
     };
     table.iter().find(|(o, _)| *o == ordinal).map(|(_, n)| *n)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn winsock_ordinals_differ_at_10_to_12() {
+        assert_eq!(super::name("ws2_32", 10), Some("ioctlsocket"));
+        assert_eq!(super::name("ws2_32", 11), Some("inet_addr"));
+        assert_eq!(super::name("ws2_32", 12), Some("inet_ntoa"));
+        assert_eq!(super::name("wsock32", 10), Some("inet_addr"));
+        assert_eq!(super::name("wsock32", 11), Some("inet_ntoa"));
+        assert_eq!(super::name("wsock32", 12), Some("ioctlsocket"));
+        assert_eq!(super::name("wsock32", 9), Some("htons"));
+        assert_eq!(super::name("wsock32", 23), Some("socket"));
+    }
+    #[test]
+    fn import_by_ordinal_uses_the_dll_s_own_numbering() {
+        let name = |dll, ordinal| super::super::find_import(dll, None, Some(ordinal)).map(|e| e.name);
+        assert_eq!(name("WSOCK32.dll", 10), Some("inet_addr"));
+        assert_eq!(name("WSOCK32.dll", 12), Some("ioctlsocket"));
+        assert_eq!(name("WS2_32.dll", 10), Some("ioctlsocket"));
+        assert_eq!(name("WS2_32.dll", 11), Some("inet_addr"));
+    }
 }

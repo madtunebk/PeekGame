@@ -3,8 +3,19 @@ use super::*;
 use crate::api::network::{self, events, resolve, sockets, sspi, winhttp};
 use crate::api::threading::events as win_events;
 exports! {
+    export!("sspicli.dll", "AcquireCredentialsHandleW", "network", "partial", "Schannel (Unified provider) DTLS 1.0/1.2 over OpenSSL: SCHANNEL_CRED v4 with a CertCreateSelfSignCertificate certificate, or PSK-only", network::schannel::acquire_credentials_handle_w),
+    export!("sspicli.dll", "FreeCredentialsHandle", "network", "implemented", "Schannel credential handles", network::schannel::free_credentials_handle),
+    export!("sspicli.dll", "InitializeSecurityContextW", "network", "partial", "DTLS client (ISC_REQ_DATAGRAM): one datagram per token, SEC_I_MESSAGE_FRAGMENT for multi-datagram flights, PSK buffers; peer validated by the caller; stream TLS unsupported", network::schannel::initialize_security_context_w),
+    export!("sspicli.dll", "AcceptSecurityContext", "network", "partial", "DTLS server (ASC_REQ_DATAGRAM), client certificate requested; PSK with a supplied key; stream TLS unsupported", network::schannel::accept_security_context),
+    export!("sspicli.dll", "DeleteSecurityContext", "network", "implemented", "Schannel context handles", network::schannel::delete_security_context),
+    export!("sspicli.dll", "QueryContextAttributesW", "network", "partial", "SECPKG_ATTR_STREAM_SIZES and SECPKG_ATTR_REMOTE_CERT_CONTEXT", network::schannel::query_context_attributes_w),
+    export!("sspicli.dll", "EncryptMessage", "network", "partial", "one DTLS record into STREAM_HEADER/DATA/STREAM_TRAILER", network::schannel::encrypt_message),
+    export!("sspicli.dll", "DecryptMessage", "network", "partial", "first DTLS record of a datagram in place; further records as SECBUFFER_EXTRA", network::schannel::decrypt_message),
+    export!("sspicli.dll", "FreeContextBuffer", "network", "implemented", "buffers allocated for ISC/ASC_REQ_ALLOCATE_MEMORY", network::schannel::free_context_buffer),
     export!("crypt32.dll", "CryptBinaryToStringA", "network", "partial", "Base64 and PEM certificate headers, CRLF/NOCR/NOCRLF, character-count buffers", network::crypt_strings::binary_to_string_a),
     export!("crypt32.dll", "CryptBinaryToStringW", "network", "partial", "UTF-16 Base64/PEM certificate output with character-count buffers", network::crypt_strings::binary_to_string_w),
+    export!("crypt32.dll", "CryptProtectData", "network", "partial", "DPAPI data protection", network::crypt_strings::crypt_protect_data),
+    export!("crypt32.dll", "CryptUnprotectData", "network", "partial", "DPAPI data unprotection", network::crypt_strings::crypt_unprotect_data),
 
     export!("crypt32.dll", "CertGetCertificateContextProperty", "network", "partial", "real SHA1/MD5/SHA256 certificate hashes; unattached extended properties: CRYPT_E_NOT_FOUND", network::certificates::properties::get),
 
@@ -12,14 +23,19 @@ exports! {
     export!("crypt32.dll", "CertFreeCertificateChain", "network", "partial", "owned Windows chain contexts", network::certificates::chain::free),
     export!("crypt32.dll", "CertDuplicateCertificateChain", "network", "partial", "reference-counted chain contexts", network::certificates::chain::duplicate),
     export!("crypt32.dll", "CertVerifyCertificateChainPolicy", "network", "partial", "BASE/SSL: trust, signatures, expiry, EKU and DNS/IP names", network::certificates::chain::policy),
-    export!("crypt32.dll", "CertOpenStore", "network", "partial", "memory and read-only host ROOT stores", network::certificates::open),
+    export!("crypt32.dll", "CertOpenStore", "network", "partial", "memory and collection stores, read-only host ROOT, empty read-only MY", network::certificates::open),
     export!("crypt32.dll", "CertOpenSystemStoreA", "network", "partial", "read-only host ROOT", network::certificates::open_system_a),
     export!("crypt32.dll", "CertOpenSystemStoreW", "network", "partial", "read-only host ROOT", network::certificates::open_system_w),
     export!("crypt32.dll", "CertEnumCertificatesInStore", "network", "partial", "DER and CERT_INFO; consumes previous reference", network::certificates::enumerate),
     export!("crypt32.dll", "CertDuplicateCertificateContext", "network", "partial", "reference-counted contexts", network::certificates::duplicate),
     export!("crypt32.dll", "CertFreeCertificateContext", "network", "partial", "releases a context reference", network::certificates::free),
     export!("crypt32.dll", "CertCloseStore", "network", "partial", "normal/check close; external contexts survive", network::certificates::close),
-    export!("crypt32.dll", "CryptEncodeObjectEx", "network", "partial", "reports requested structure and returns ERROR_NOT_SUPPORTED", network::certificates::encode_object_ex),
+    export!("crypt32.dll", "CryptEncodeObjectEx", "network", "partial", "X509_NAME (CERT_NAME_INFO) to DER; caller buffer or LocalAlloc; other structures ERROR_NOT_SUPPORTED", network::certificates::encode_object_ex),
+    export!("crypt32.dll", "CertCreateSelfSignCertificate", "network", "partial", "new RSA-2048 key via OpenSSL, caller subject name, sha1/sha256/384/512RSA, optional SYSTEMTIME validity; caller keys, flags and extensions ERROR_NOT_SUPPORTED", network::certificates::create_self_sign),
+    export!("crypt32.dll", "CertAddStoreToCollection", "network", "partial", "collection stores present siblings in insertion order; priority ignored", network::certificates::add_store_to_collection),
+    export!("crypt32.dll", "CertFindCertificateInStore", "network", "partial", "CERT_FIND_ANY and CERT_FIND_SHA1_HASH; other find types ERROR_NOT_SUPPORTED", network::certificates::find),
+    export!("crypt32.dll", "CryptHashCertificate2", "network", "implemented", "SHA1/SHA256/SHA384/SHA512/MD5 by CNG name", network::certificates::hash_certificate2),
+    export!("crypt32.dll", "CertVerifyTimeValidity", "network", "implemented", "NotBefore/NotAfter against a FILETIME or now", network::certificates::verify_time_validity),
     export!("crypt32.dll", "CertCreateCertificateContext", "network", "partial", "bounds-checked X.509 metadata", network::certificates::create_context),
     export!("crypt32.dll", "CertAddEncodedCertificateToStore", "network", "partial", "memory stores: new/use-existing/replace/always", network::certificates::add),
     export!(
@@ -29,6 +45,14 @@ exports! {
         "partial",
         "no proxy",
         winhttp::ie_proxy_config
+    ),
+    export!(
+        "winhttp.dll",
+        "WinHttpGetDefaultProxyConfiguration",
+        "network",
+        "partial",
+        "no proxy",
+        winhttp::default_proxy_config
     ),
     export!("winhttp.dll", "WinHttpCrackUrl", "network", "partial", "HTTP(S) URL components; caller buffers or input slices", winhttp::crack_url),
     export!("winhttp.dll", "WinHttpOpen", "network", "partial", "sync/async GET/HEAD through host libcurl; TLS verified", winhttp::open),
@@ -242,8 +266,8 @@ exports! {
         "WSAGetLastError",
         "network",
         "partial",
-        "the thread's last error",
-        network::get_last_error
+        "the thread's last error; PEEKGAME_TRACE_LAST_ERROR logs nonzero reads",
+        crate::api::system::error::get_last_error_traced
     ),
     export!(
         "ws2_32.dll",
@@ -418,7 +442,7 @@ exports! {
         "WSASend",
         "network",
         "partial",
-        "synchronous only",
+        "synchronous, or overlapped with OVERLAPPED.hEvent (WSA_IO_PENDING, completed by a poll thread); completion routines unsupported",
         sockets::wsa_send
     ),
     export!(
@@ -426,7 +450,7 @@ exports! {
         "WSASendTo",
         "network",
         "partial",
-        "synchronous only",
+        "synchronous, or overlapped with OVERLAPPED.hEvent (WSA_IO_PENDING, completed by a poll thread); completion routines unsupported",
         sockets::wsa_send_to
     ),
     export!(
@@ -434,7 +458,7 @@ exports! {
         "WSARecv",
         "network",
         "partial",
-        "synchronous only",
+        "synchronous, or overlapped with OVERLAPPED.hEvent (WSA_IO_PENDING, completed by a poll thread); completion routines unsupported",
         sockets::wsa_recv
     ),
     export!(
@@ -442,9 +466,20 @@ exports! {
         "WSARecvFrom",
         "network",
         "partial",
-        "synchronous only",
+        "synchronous, or overlapped with OVERLAPPED.hEvent (WSA_IO_PENDING, completed by a poll thread); completion routines unsupported",
         sockets::wsa_recv_from
     ),
+    export!(
+        "ws2_32.dll",
+        "WSAGetOverlappedResult",
+        "network",
+        "partial",
+        "overlapped send/receive status, bytes and flags; waiting needs OVERLAPPED.hEvent",
+        network::overlapped::get_overlapped_result
+    ),
+    export!("ws2_32.dll", "GetAddrInfoExW", "network", "partial", "NS_ALL/NS_DNS via host getaddrinfo; synchronous or OVERLAPPED.hEvent (WSA_IO_PENDING); completion routines and providers unsupported", resolve::get_addr_info_ex_w),
+    export!("ws2_32.dll", "GetAddrInfoExOverlappedResult", "network", "implemented", "status of an asynchronous GetAddrInfoExW (WSAEINPROGRESS while pending)", resolve::get_addr_info_ex_overlapped_result),
+    export!("ws2_32.dll", "FreeAddrInfoExW", "network", "implemented", "frees GetAddrInfoExW lists", resolve::free_addr_info_ex_w),
     export!(
         "ws2_32.dll",
         "ioctlsocket",
@@ -647,6 +682,46 @@ exports! {
     ),
     export!(
         "ws2_32.dll",
+        "WSALookupServiceBeginW",
+        "network",
+        "partial",
+        "service lookup begin",
+        resolve::wsa_lookup_service_begin_w
+    ),
+    export!(
+        "ws2_32.dll",
+        "WSALookupServiceBeginA",
+        "network",
+        "partial",
+        "service lookup begin",
+        resolve::wsa_lookup_service_begin_a
+    ),
+    export!(
+        "ws2_32.dll",
+        "WSALookupServiceNextW",
+        "network",
+        "partial",
+        "service lookup next",
+        resolve::wsa_lookup_service_next_w
+    ),
+    export!(
+        "ws2_32.dll",
+        "WSALookupServiceNextA",
+        "network",
+        "partial",
+        "service lookup next",
+        resolve::wsa_lookup_service_next_a
+    ),
+    export!(
+        "ws2_32.dll",
+        "WSALookupServiceEnd",
+        "network",
+        "partial",
+        "service lookup end",
+        resolve::wsa_lookup_service_end
+    ),
+    export!(
+        "ws2_32.dll",
         "WSAEventSelect",
         "network",
         "partial",
@@ -724,5 +799,29 @@ exports! {
         "partial",
         "returns adapter index 1 matching GetAdaptersInfo",
         network::get_best_interface
+    ),
+    export!(
+        "iphlpapi.dll",
+        "NotifyAddrChange",
+        "network",
+        "partial",
+        "interface address change notifications",
+        network::adapters::notify_addr_change
+    ),
+    export!(
+        "iphlpapi.dll",
+        "NotifyRouteChange",
+        "network",
+        "partial",
+        "IPv4 routing table change notifications",
+        network::adapters::notify_route_change
+    ),
+    export!(
+        "iphlpapi.dll",
+        "CancelIPChangeNotify",
+        "network",
+        "partial",
+        "cancel IP change notification",
+        network::adapters::cancel_ip_change_notify
     ),
 }

@@ -611,3 +611,236 @@ pub unsafe extern "win64" fn get_host_by_name(name: *const c_char) -> *const u8 
 fn list_ptr(owned: &mut Owned, items: Vec<*const c_char>) -> *const *const c_char {
     list(owned, items)
 }
+
+pub const WSA_E_NO_MORE: u32 = 10110;
+
+pub unsafe extern "win64" fn wsa_lookup_service_begin_w(
+    _restrictions: usize,
+    _control_flags: u32,
+    lookup: *mut usize,
+) -> i32 {
+    if lookup.is_null() {
+        error::set(10014); // WSAEFAULT
+        return -1;
+    }
+    unsafe { *lookup = 0x5753_4101 };
+    error::set(0);
+    0
+}
+
+pub unsafe extern "win64" fn wsa_lookup_service_begin_a(
+    _restrictions: usize,
+    _control_flags: u32,
+    lookup: *mut usize,
+) -> i32 {
+    if lookup.is_null() {
+        error::set(10014); // WSAEFAULT
+        return -1;
+    }
+    unsafe { *lookup = 0x5753_4101 };
+    error::set(0);
+    0
+}
+
+pub unsafe extern "win64" fn wsa_lookup_service_next_w(
+    _lookup: usize,
+    _control_flags: u32,
+    _buffer_length: *mut u32,
+    _results: usize,
+) -> i32 {
+    error::set(WSA_E_NO_MORE);
+    -1
+}
+
+pub unsafe extern "win64" fn wsa_lookup_service_next_a(
+    _lookup: usize,
+    _control_flags: u32,
+    _buffer_length: *mut u32,
+    _results: usize,
+) -> i32 {
+    error::set(WSA_E_NO_MORE);
+    -1
+}
+
+pub extern "win64" fn wsa_lookup_service_end(_lookup: usize) -> i32 {
+    0
+}
+
+// ---- GetAddrInfoExW ----------------------------------------------------------------------------
+/// ADDRINFOEXW (x64): flags, family, socktype, protocol, size_t addrlen @16, canonname @24,
+/// addr @32, blob @40, bufferlength @48, provider @56, next @64. Freed by FreeAddrInfoExW.
+#[repr(C)]
+pub struct WinAddrInfoEx {
+    flags: i32,
+    family: i32,
+    socktype: i32,
+    protocol: i32,
+    addrlen: usize,
+    canonname: *mut u16,
+    addr: *mut c_void,
+    blob: *mut c_void,
+    bufferlength: usize,
+    provider: *mut c_void,
+    next: *mut WinAddrInfoEx,
+    // Private tail.
+    storage: [u8; 128],
+    canon_length: usize,
+    magic: u32,
+}
+const MAGIC_EX: u32 = 0x5041_4958;
+const NS_ALL: u32 = 0;
+const NS_DNS: u32 = 12;
+const WSA_IO_PENDING: i32 = 997;
+const WSAEINPROGRESS: usize = 10036;
+/// A host lookup as a Windows ADDRINFOEXW list (an address pointer value, so it can
+/// cross threads), or the WSA error.
+fn lookup_ex(node: Option<CString>, service: Option<CString>, hints: [i32; 4]) -> Result<usize, i32> {
+    let mut h: HostAddrInfo = unsafe { std::mem::zeroed() };
+    h.flags = flags_to_host(hints[0]);
+    h.family = family_to_host(hints[1]);
+    h.socktype = hints[2];
+    h.protocol = hints[3];
+    let mut list = std::ptr::null_mut();
+    let rc = unsafe {
+        getaddrinfo(
+            node.as_ref().map_or(std::ptr::null(), |n| n.as_ptr()),
+            service.as_ref().map_or(std::ptr::null(), |s| s.as_ptr()),
+            &h,
+            &mut list,
+        )
+    };
+    if rc != 0 {
+        return Err(eai_to_wsa(rc) as i32);
+    }
+    let mut first: *mut WinAddrInfoEx = std::ptr::null_mut();
+    let mut tail: *mut *mut WinAddrInfoEx = &mut first;
+    let mut a = list;
+    while !a.is_null() {
+        let host = unsafe { &*a };
+        let mut node = Box::new(WinAddrInfoEx {
+            flags: hints[0],
+            family: family_to_windows(host.family),
+            socktype: host.socktype,
+            protocol: host.protocol,
+            addrlen: host.addrlen as usize,
+            canonname: std::ptr::null_mut(),
+            addr: std::ptr::null_mut(),
+            blob: std::ptr::null_mut(),
+            bufferlength: 0,
+            provider: std::ptr::null_mut(),
+            next: std::ptr::null_mut(),
+            storage: [0; 128],
+            canon_length: 0,
+            magic: MAGIC_EX,
+        });
+        let n = (host.addrlen as usize).min(128);
+        unsafe { std::ptr::copy_nonoverlapping(host.addr.cast::<u8>(), node.storage.as_mut_ptr(), n) };
+        node.storage[..2].copy_from_slice(&(node.family as u16).to_le_bytes());
+        node.addr = node.storage.as_mut_ptr().cast();
+        if !host.canonname.is_null() {
+            let mut w: Vec<u16> = unsafe { CStr::from_ptr(host.canonname) }.to_string_lossy().encode_utf16().collect();
+            w.push(0);
+            node.canon_length = w.len();
+            node.canonname = Box::leak(w.into_boxed_slice()).as_mut_ptr();
+        }
+        let raw = Box::into_raw(node);
+        unsafe {
+            *tail = raw;
+            tail = &mut (*raw).next;
+        }
+        a = host.next;
+    }
+    unsafe { freeaddrinfo(list) };
+    Ok(first as usize)
+}
+/// GetAddrInfoExW for the default/DNS namespace. Synchronous, or asynchronous with an
+/// OVERLAPPED whose hEvent is signalled when *result is set (the status is then read
+/// with GetAddrInfoExOverlappedResult). Completion routines are not supported.
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "win64" fn get_addr_info_ex_w(
+    name: *const u16,
+    service: *const u16,
+    namespace: u32,
+    provider: *const c_void,
+    hints: *const i32,
+    result: *mut *mut WinAddrInfoEx,
+    _timeout: *const c_void,
+    overlapped: usize,
+    routine: usize,
+    handle: *mut usize,
+) -> i32 {
+    let fail = |code: i32| {
+        error::set(code as u32);
+        code
+    };
+    if result.is_null() {
+        return fail(10014);
+    }
+    unsafe { *result = std::ptr::null_mut() };
+    if !matches!(namespace, NS_ALL | NS_DNS) || !provider.is_null() {
+        return fail(10022);
+    }
+    if routine != 0 {
+        eprintln!("GetAddrInfoExW: completion routines are not supported");
+        return fail(10045);
+    }
+    let hints = if hints.is_null() { [0; 4] } else { unsafe { [*hints, *hints.add(1), *hints.add(2), *hints.add(3)] } };
+    let (node, service) = unsafe { (from_wide(name), from_wide(service)) };
+    if overlapped == 0 {
+        return match lookup_ex(node, service, hints) {
+            Ok(list) => {
+                unsafe { *result = list as *mut WinAddrInfoEx };
+                error::set(0);
+                0
+            }
+            Err(code) => fail(code),
+        };
+    }
+    // OVERLAPPED.Internal holds the status (WSAEINPROGRESS while pending); hEvent @24.
+    let internal = unsafe { &*(overlapped as *const std::sync::atomic::AtomicUsize) };
+    internal.store(WSAEINPROGRESS, std::sync::atomic::Ordering::Release);
+    if !handle.is_null() {
+        unsafe { *handle = overlapped };
+    }
+    let result = result as usize;
+    let spawned = std::thread::Builder::new().name("getaddrinfoex".into()).spawn(move || {
+        let status = match lookup_ex(node, service, hints) {
+            Ok(list) => {
+                unsafe { *(result as *mut usize) = list };
+                0
+            }
+            Err(code) => code as usize,
+        };
+        let internal = unsafe { &*(overlapped as *const std::sync::atomic::AtomicUsize) };
+        internal.store(status, std::sync::atomic::Ordering::Release);
+        let event = unsafe { *((overlapped + 24) as *const usize) } & !1;
+        if event != 0 {
+            crate::api::threading::events::set(event);
+        }
+    });
+    if spawned.is_err() {
+        return fail(8);
+    }
+    error::set(WSA_IO_PENDING as u32);
+    WSA_IO_PENDING
+}
+/// The status of an asynchronous GetAddrInfoExW: 0, a WSA error, or WSAEINPROGRESS.
+pub unsafe extern "win64" fn get_addr_info_ex_overlapped_result(overlapped: usize) -> i32 {
+    if overlapped == 0 {
+        return 10022;
+    }
+    unsafe { &*(overlapped as *const std::sync::atomic::AtomicUsize) }.load(std::sync::atomic::Ordering::Acquire) as i32
+}
+pub unsafe extern "win64" fn free_addr_info_ex_w(mut list: *mut WinAddrInfoEx) {
+    while !list.is_null() {
+        if unsafe { (*list).magic } != MAGIC_EX {
+            eprintln!("FreeAddrInfoExW: not a list from GetAddrInfoExW");
+            return;
+        }
+        let node = unsafe { Box::from_raw(list) };
+        list = node.next;
+        if !node.canonname.is_null() {
+            drop(unsafe { Box::from_raw(std::ptr::slice_from_raw_parts_mut(node.canonname, node.canon_length)) });
+        }
+    }
+}
