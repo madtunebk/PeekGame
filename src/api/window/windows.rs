@@ -236,6 +236,8 @@ unsafe fn create(
                 icons: [0; 2],
                 track_leave: false,
                 expected: None,
+                expected_from: None,
+                map_guard: None,
                 own_unmaps: 0,
             },
         );
@@ -361,6 +363,12 @@ fn set_visible(hwnd: usize, visible: bool) -> Option<bool> {
         if visible {
             w.paint = true;
         }
+        // Window managers may apply their own initial size when they first manage a
+        // window (GNOME restores DOOM's 32x32 creation size over the 1280x720 it set
+        // before ShowWindow). On Windows the program's size stands.
+        if visible && !old && w.native != 0 && w.parent == 0 && !w.minimized && !w.maximized {
+            w.map_guard = Some((w.width, w.height, std::time::Instant::now() + std::time::Duration::from_secs(2)));
+        }
         if let Some(s) = &w.surface {
             s.raw.visible.store(visible as u32, Ordering::Release);
         }
@@ -464,6 +472,10 @@ pub(crate) unsafe extern "win64" fn adjust_window_rect_ex(
     if menu != 0 {
         return fail(50, 0); // menus are not supported
     }
+    if trace_window() {
+        let r = unsafe { *rect };
+        eprintln!("[window] AdjustWindowRectEx ({},{})-({},{}) unchanged (no frame here)", r.left, r.top, r.right, r.bottom);
+    }
     1
 }
 pub(crate) unsafe extern "win64" fn adjust_window_rect_ex_for_dpi(
@@ -484,7 +496,8 @@ pub(crate) unsafe extern "win64" fn adjust_window_rect(
 }
 
 /// Applies a position/size change and tells the window (WM_WINDOWPOSCHANGING/CHANGED).
-/// `PEEKGAME_TRACE_WINDOW`: log ShowWindow, CloseWindow and SetWindowPos calls.
+/// `PEEKGAME_TRACE_WINDOW`: log CreateWindowEx, ShowWindow, CloseWindow, SetWindowPos,
+/// style changes, AdjustWindowRectEx, window placement and client-size changes.
 fn trace_window() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var_os("PEEKGAME_TRACE_WINDOW").is_some())
@@ -536,6 +549,10 @@ pub(crate) extern "win64" fn set_window_pos(
             w.width = nw;
             w.height = nh;
             w.expected = Some((nw, nh));
+            w.expected_from = Some((ow, oh));
+            if let Some((_, _, until)) = w.map_guard {
+                w.map_guard = Some((nw, nh, until));
+            }
             w.paint = true;
             if let Some(s) = &w.surface {
                 s.raw.width.store(nw.max(1) as u32, Ordering::Release);
@@ -637,6 +654,10 @@ fn get_long(hwnd: usize, index: i32, bytes: usize) -> isize {
     }
 }
 fn set_long(hwnd: usize, index: i32, value: isize, bytes: usize) -> isize {
+    if trace_window() && matches!(index, -16 | -20) {
+        let name = if index == -16 { "GWL_STYLE" } else { "GWL_EXSTYLE" };
+        eprintln!("[window] SetWindowLong {hwnd:#x} {name}={value:#x}");
+    }
     let old = get_long(hwnd, index, bytes);
     if error::get_last_error() != 0 {
         return 0;
@@ -711,6 +732,15 @@ pub(crate) unsafe extern "win64" fn get_client_rect(hwnd: usize, rect: *mut Rect
     };
     match size {
         Some((w, h)) => {
+            if trace_window() && hwnd != DESKTOP {
+                // Only changes, so per-frame polling does not flood the log.
+                static LAST: std::sync::Mutex<Option<(usize, i32, i32)>> = std::sync::Mutex::new(None);
+                let mut last = LAST.lock().unwrap();
+                if *last != Some((hwnd, w, h)) {
+                    *last = Some((hwnd, w, h));
+                    eprintln!("[window] GetClientRect {hwnd:#x} -> {w}x{h}");
+                }
+            }
             unsafe {
                 rect.write(Rect {
                     left: 0,
@@ -760,6 +790,81 @@ pub(crate) unsafe extern "win64" fn get_window_rect(hwnd: usize, rect: *mut Rect
         }
         None => fail(ERROR_WINDOW, 0),
     }
+}
+pub(crate) unsafe extern "win64" fn get_window_info(hwnd: usize, info: *mut WindowInfo) -> i32 {
+    if info.is_null() {
+        return fail(87, 0);
+    }
+    if unsafe { (*info).size } != std::mem::size_of::<WindowInfo>() as u32 {
+        return fail(87, 0);
+    }
+    if hwnd == DESKTOP {
+        let (w, h) = crate::host::x11::primary_size().unwrap_or((1920, 1080));
+        let rect = Rect {
+            left: 0,
+            top: 0,
+            right: w,
+            bottom: h,
+        };
+        unsafe {
+            (*info).window = rect;
+            (*info).client = rect;
+            (*info).style = WS_VISIBLE;
+            (*info).ex_style = 0;
+            (*info).window_status = 1;
+            (*info).border_x = 0;
+            (*info).border_y = 0;
+            (*info).window_type = 0;
+            (*info).creator_version = 0x0400;
+        }
+        return 1;
+    }
+
+    let win = state::with_window(hwnd, |w| {
+        (
+            w.style,
+            w.ex_style,
+            w.class,
+            w.minimized,
+            w.x,
+            w.y,
+            w.width,
+            w.height,
+        )
+    });
+    let Ok((style, ex_style, class, minimized, x, y, width, height)) = win else {
+        return fail(ERROR_WINDOW, 0);
+    };
+
+    let w_rect = screen_rect(hwnd).unwrap_or(Rect {
+        left: x,
+        top: y,
+        right: x + width,
+        bottom: y + height,
+    });
+    let c_rect = if minimized {
+        Rect {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        }
+    } else {
+        w_rect
+    };
+
+    unsafe {
+        (*info).window = w_rect;
+        (*info).client = c_rect;
+        (*info).style = style;
+        (*info).ex_style = ex_style;
+        (*info).window_status = 1;
+        (*info).border_x = 0;
+        (*info).border_y = 0;
+        (*info).window_type = class;
+        (*info).creator_version = 0x0400;
+    }
+    1
 }
 pub(crate) unsafe extern "win64" fn client_to_screen(hwnd: usize, point: *mut Point) -> i32 {
     let Some(r) = screen_rect(hwnd) else {
@@ -1095,6 +1200,9 @@ pub(crate) unsafe extern "win64" fn get_window_placement(hwnd: usize, out: *mut 
     };
     let (minimized, maximized, visible) =
         state::with_window(hwnd, |w| (w.minimized, w.maximized, w.visible)).unwrap_or_default();
+    if trace_window() {
+        eprintln!("[window] GetWindowPlacement {hwnd:#x} normal=({},{})-({},{}) min={minimized} max={maximized}", rect.left, rect.top, rect.right, rect.bottom);
+    }
     unsafe {
         out.write(Placement {
             length: 44,
@@ -1124,6 +1232,9 @@ pub(crate) unsafe extern "win64" fn set_window_placement(
     }
     let p = unsafe { &*placement };
     let r = p.normal;
+    if trace_window() {
+        eprintln!("[window] SetWindowPlacement {hwnd:#x} normal=({},{})-({},{}) show={}", r.left, r.top, r.right, r.bottom, p.show);
+    }
     set_window_pos(
         hwnd,
         0,

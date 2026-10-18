@@ -41,6 +41,12 @@ pub(super) struct Window {
     pub track_leave: bool,
     /// Size set by PeekGame itself, whose X confirmation is not news.
     pub expected: Option<(i32, i32)>,
+    /// The size before that request: a ConfigureNotify with it is stale and dropped.
+    /// Any other size while `expected` is pending is the window manager's decision.
+    pub expected_from: Option<(i32, i32)>,
+    /// After a top-level window is mapped: the size the program gave it and until when
+    /// a different size from the window manager is answered by requesting it again.
+    pub map_guard: Option<(i32, i32, std::time::Instant)>,
     /// Unmaps PeekGame asked for, whose UnmapNotify is not a minimize.
     pub own_unmaps: u32,
 }

@@ -494,6 +494,11 @@ pub(crate) unsafe extern "win64" fn create_swapchain(
     if let Some(mode) = override_mode {
         unsafe { slot.write_unaligned(mode) };
     }
+    if std::env::var_os("PEEKGAME_TRACE_WINDOW").is_some() {
+        // VkSwapchainCreateInfoKHR.imageExtent @44 (width) and @48 (height).
+        let (w, h) = unsafe { ((info as *const u8).add(44).cast::<u32>().read_unaligned(), (info as *const u8).add(48).cast::<u32>().read_unaligned()) };
+        eprintln!("[window] vkCreateSwapchainKHR extent {w}x{h}");
+    }
     if std::env::var_os("PEEKGAME_TRACE_GL").is_some() {
         match override_mode {
             Some(mode) => eprintln!("[gl] vkCreateSwapchainKHR present mode {requested} -> {mode}"),

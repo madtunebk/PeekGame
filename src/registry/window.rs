@@ -25,6 +25,8 @@ exports! {
     window!("wsprintfA", "formats string into buffer", misc::wsprintf_a),
     window!("wvsprintfW", "formats string with va_list into buffer", misc::wvsprintf_w),
     window!("wvsprintfA", "formats string with va_list into buffer", misc::wvsprintf_a),
+    export!("comctl32.dll", "InitCommonControlsEx", "window", "implemented", "registers common control classes", misc::init_common_controls_ex),
+    export!("comctl32.dll", "InitCommonControls", "window", "implemented", "registers common control classes", misc::init_common_controls),
 
     export!("xinput1_3.dll", "XInputGetState", "input", "partial", "every slot ERROR_DEVICE_NOT_CONNECTED (no controller backend)", crate::api::window::input::xinput::get_state),
     export!("xinput1_3.dll", "XInputSetState", "input", "partial", "every slot ERROR_DEVICE_NOT_CONNECTED (no controller backend)", crate::api::window::input::xinput::set_state),
@@ -49,15 +51,34 @@ exports! {
     export!("user32.dll", "CreateIconFromResourceEx", "window", "partial", "PNG and 32-bit DIB icons; nearest-neighbor size selection; X11 WM_SETICON", crate::api::window::icons::create),
 
     export!("gdi32.dll", "CreateRectRgn", "graphics/gdi", "partial", "owned rectangular regions", crate::api::window::regions::create),
+    export!("gdi32.dll", "CreateRoundRectRgn", "graphics/gdi", "partial", "owned rectangular region approximation", crate::api::window::regions::create_round_rect_rgn),
     export!("gdi32.dll", "CreateSolidBrush", "graphics/gdi", "partial", "owned solid brush token handle", crate::api::window::regions::create_solid_brush),
     export!("gdi32.dll", "CreatePen", "graphics/gdi", "partial", "owned pen token handle", crate::api::window::regions::create_pen),
     export!("gdi32.dll", "CreateFontIndirectA", "graphics/gdi", "partial", "owned font token handle", crate::api::window::regions::create_font_indirect_a),
+    export!("gdi32.dll", "CreateFontIndirectW", "graphics/gdi", "partial", "owned font token handle", crate::api::window::regions::create_font_indirect_w),
     export!("gdi32.dll", "CreateFontA", "graphics/gdi", "partial", "owned font token handle", crate::api::window::regions::create_font_a),
+    export!("gdi32.dll", "CreateFontW", "graphics/gdi", "partial", "owned font token handle", crate::api::window::regions::create_font_w),
+    export!("gdi32.dll", "CreateBitmap", "graphics/gdi", "partial", "owned bitmap token handle", crate::api::window::regions::create_bitmap),
+    export!("gdi32.dll", "CreateDIBSection", "graphics/gdi", "partial", "allocates backing pixel buffer and returns bitmap handle", crate::api::window::regions::create_dib_section),
     export!("gdi32.dll", "GetStockObject", "graphics/gdi", "partial", "stock GDI object token handles (0..=21)", crate::api::window::regions::get_stock_object),
     export!("gdi32.dll", "GetObjectA", "graphics/gdi", "partial", "LOGFONTA and LOGBRUSH/LOGPEN metadata for font/brush/stock handles", crate::api::window::regions::get_object_a),
+    export!("gdi32.dll", "GetObjectW", "graphics/gdi", "partial", "LOGFONTW and LOGBRUSH/LOGPEN metadata for font/brush/stock handles", crate::api::window::regions::get_object_w),
     export!("gdi32.dll", "SelectObject", "graphics/gdi", "partial", "select GDI object into DC; returns previous stock handle or region complexity", crate::api::window::regions::select_object),
+    export!("gdi32.dll", "SetBkMode", "graphics/gdi", "partial", "accepted", crate::api::window::regions::set_bk_mode),
+    export!("gdi32.dll", "SetBkColor", "graphics/gdi", "partial", "accepted", crate::api::window::regions::set_bk_color),
+    export!("gdi32.dll", "SetTextColor", "graphics/gdi", "partial", "accepted", crate::api::window::regions::set_text_color),
+    export!("gdi32.dll", "SetTextAlign", "graphics/gdi", "partial", "accepted", crate::api::window::regions::set_text_align),
+    export!("gdi32.dll", "MoveToEx", "graphics/gdi", "partial", "accepted", crate::api::window::regions::move_to_ex),
+    export!("gdi32.dll", "LineTo", "graphics/gdi", "partial", "accepted", crate::api::window::regions::line_to),
+    export!("gdi32.dll", "Rectangle", "graphics/gdi", "partial", "accepted", crate::api::window::regions::rectangle),
+    export!("gdi32.dll", "RoundRect", "graphics/gdi", "partial", "accepted", crate::api::window::regions::round_rect),
+    export!("gdi32.dll", "Polygon", "graphics/gdi", "partial", "accepted", crate::api::window::regions::polygon),
+    export!("gdi32.dll", "TextOutW", "graphics/gdi", "partial", "accepted", crate::api::window::regions::text_out_w),
+    export!("gdi32.dll", "ExtTextOutW", "graphics/gdi", "partial", "accepted", crate::api::window::regions::ext_text_out_w),
+    export!("gdi32.dll", "GetTextExtentPoint32W", "graphics/gdi", "partial", "fixed 8x16 cell metrics", crate::api::window::regions::get_text_extent_point32_w),
     export!("gdi32.dll", "CombineRgn", "graphics/gdi", "partial", "rectangular RGN_AND and RGN_COPY; other operations unsupported", crate::api::window::regions::combine),
     export!("gdi32.dll", "GetRgnBox", "graphics/gdi", "partial", "rectangle bounds and region complexity", crate::api::window::regions::bounds),
+    export!("gdi32.dll", "PtInRegion", "graphics/gdi", "partial", "test point in region", crate::api::window::regions::pt_in_region),
     export!("gdi32.dll", "DeleteObject", "graphics/gdi", "partial", "deletes owned rectangular regions and brushes; other GDI object types unavailable", crate::api::window::regions::delete),
     export!("user32.dll", "SetWindowRgn", "window", "partial", "rectangular full-window regions; shaped windows unsupported; transfers region ownership", crate::api::window::regions::set_window),
 
@@ -349,6 +370,11 @@ exports! {
         "GetWindowRect",
         "client area on screen (frame is the compositor's)",
         windows::get_window_rect
+    ),
+    window!(
+        "GetWindowInfo",
+        "complete",
+        windows::get_window_info
     ),
     window!(
         "ClientToScreen",
@@ -680,6 +706,14 @@ exports! {
         "objects and queue input",
         queue::msg_wait
     ),
+    export!(
+        "user32.dll",
+        "GetQueueStatus",
+        "window",
+        "implemented",
+        "QS_* kinds queued (high word) and added since the last GetQueueStatus/Get/PeekMessage (low word)",
+        queue::get_queue_status
+    ),
     window!(
         "MsgWaitForMultipleObjectsEx",
         "objects, queue input, alertable",
@@ -859,6 +893,16 @@ exports! {
         "LoadCursorA",
         "as W",
         input::load_cursor_a
+    ),
+    window!(
+        "LoadCursorFromFileW",
+        "shows IDC_ARROW",
+        input::load_cursor_from_file_w
+    ),
+    window!(
+        "LoadCursorFromFileA",
+        "shows IDC_ARROW",
+        input::load_cursor_from_file_a
     ),
     window!(
         "SetCursor",
@@ -1467,6 +1511,54 @@ exports! {
         misc::imm_set_composition_window
     ),
     export!(
+        "imm32.dll",
+        "ImmCreateContext",
+        "window",
+        "partial",
+        "no input method",
+        misc::imm_create_context
+    ),
+    export!(
+        "imm32.dll",
+        "ImmDestroyContext",
+        "window",
+        "partial",
+        "no input method",
+        misc::imm_destroy_context
+    ),
+    export!(
+        "imm32.dll",
+        "ImmGetProperty",
+        "window",
+        "partial",
+        "IME_PROP_UNICODE or 0",
+        misc::imm_get_property
+    ),
+    export!(
+        "imm32.dll",
+        "ImmIsIME",
+        "window",
+        "partial",
+        "returns 0",
+        misc::imm_is_ime
+    ),
+    export!(
+        "imm32.dll",
+        "ImmGetIMEFileNameW",
+        "window",
+        "partial",
+        "returns 0",
+        misc::imm_get_ime_file_name_w
+    ),
+    export!(
+        "imm32.dll",
+        "ImmGetIMEFileNameA",
+        "window",
+        "partial",
+        "returns 0",
+        misc::imm_get_ime_file_name_a
+    ),
+    export!(
         "dwmapi.dll",
         "DwmGetWindowAttribute",
         "window",
@@ -1530,4 +1622,30 @@ exports! {
         "per-monitor aware",
         misc::get_process_dpi_awareness
     ),
+    window!("SetParent", "returns desktop HWND", misc::set_parent),
+    window!("IsChild", "returns 0", misc::is_child),
+    window!("VkKeyScanExW", "ASCII virtual key scan", misc::vk_key_scan_ex_w),
+    window!("VkKeyScanW", "ASCII virtual key scan", misc::vk_key_scan_ex_w),
+    window!("GetWindowDisplayAffinity", "returns WDA_NONE (0)", misc::get_window_display_affinity),
+    window!("ChangeDisplaySettingsW", "current mode succeeds", misc::change_display_settings_w),
+    window!("IsDialogMessageW", "returns 0", misc::is_dialog_message_w),
+    window!("DrawIconEx", "no-op", misc::draw_icon_ex),
+    window!("GetClassLongPtrW", "returns 0", misc::get_class_long_ptr_w),
+    window!("GetClassLongW", "returns 0", misc::get_class_long_ptr_w),
+    window!("FillRect", "no-op", misc::fill_rect),
+    window!("SetLayeredWindowAttributes", "accepted", misc::set_layered_window_attributes),
+    window!("RegisterHotKey", "accepted", misc::register_hot_key),
+    window!("UnregisterHotKey", "accepted", misc::unregister_hot_key),
+    window!("GetDlgItem", "returns NULL", misc::get_dlg_item),
+    window!("GetDlgItemTextW", "returns empty", misc::get_dlg_item_text_w),
+    window!("DrawStateW", "no-op", misc::draw_state_w),
+    window!("DrawTextW", "returns height 16", misc::draw_text_w),
+    window!("CreatePopupMenu", "token menu handle", misc::create_popup_menu),
+    window!("InsertMenuItemW", "accepted", misc::insert_menu_item_w),
+    window!("TrackPopupMenu", "returns 0", misc::track_popup_menu),
+    window!("DeleteMenu", "accepted", misc::delete_menu),
+    export!("imm32.dll", "ImmGetDescriptionW", "window", "partial", "returns 0", misc::imm_get_description_w),
+    export!("dwmapi.dll", "DwmGetCompositionTimingInfo", "window", "partial", "60 Hz timing info", misc::dwm_get_composition_timing_info),
+    export!("uxtheme.dll", "SetWindowTheme", "window", "partial", "returns S_OK", misc::set_window_theme),
 }
+

@@ -36,6 +36,8 @@ struct Queue {
     timers: Vec<Timer>,
     last_time: u32,
     last_point: Point,
+    /// QS_* bits of messages added since the last GetQueueStatus/GetMessage/PeekMessage.
+    added: u32,
 }
 static QUEUES: Mutex<Option<HashMap<u32, Queue>>> = Mutex::new(None);
 static SIGNAL: Condvar = Condvar::new();
@@ -116,6 +118,7 @@ pub(super) fn post_to(thread: u32, message: Message) {
                 q.posted.remove(index);
             }
         }
+        q.added |= category(message.message) | QS_ALLPOSTMESSAGE;
         q.posted.push_back(message);
     });
     notify();
@@ -144,6 +147,7 @@ pub(super) fn notify_window(hwnd: usize, msg: u32, wparam: usize, lparam: isize)
         return;
     };
     with(thread, |q| {
+        q.added |= QS_SENDMESSAGE;
         q.sent.push_back(Sent {
             message: message(hwnd, msg, wparam, lparam),
             reply: None,
@@ -156,11 +160,14 @@ pub(super) fn notify_window(hwnd: usize, msg: u32, wparam: usize, lparam: isize)
 /// pointer into the event pump's stack or invoke game code under its mutex.
 pub(super) fn notify_position(hwnd: usize, position: WindowPos) {
     let Some(thread) = owner(hwnd) else { return; };
-    with(thread, |q| q.sent.push_back(Sent {
-        message: message(hwnd, WM_WINDOWPOSCHANGED, 0, 0),
-        reply: None,
-        position: Some(position),
-    }));
+    with(thread, |q| {
+        q.added |= QS_SENDMESSAGE;
+        q.sent.push_back(Sent {
+            message: message(hwnd, WM_WINDOWPOSCHANGED, 0, 0),
+            reply: None,
+            position: Some(position),
+        })
+    });
     notify();
 }
 pub(super) fn procedure(hwnd: usize) -> Option<WndProc> {
@@ -211,6 +218,7 @@ pub(super) fn send(
         done: Condvar::new(),
     });
     with(thread, |q| {
+        q.added |= QS_SENDMESSAGE;
         q.sent.push_back(Sent {
             message: message(hwnd, msg, wparam, lparam),
             reply: Some(reply.clone()),
@@ -270,6 +278,7 @@ pub(super) fn retrieve(hwnd: usize, min: u32, max: u32, remove: bool) -> Option<
     pump::pump();
     run_sent();
     let me = state::current_thread();
+    with(me, |q| q.added = 0);
     let found = loop {
         let candidate = with(me, |q| {
             let index = q.posted.iter().position(|m| matches(m, hwnd, min, max))?;
@@ -367,6 +376,40 @@ pub(super) fn has_input(mask: u32) -> bool {
             && state::windows()
                 .values()
                 .any(|w| w.owner == me && w.paint))
+}
+const QS_SENDMESSAGE: u32 = 0x40;
+const QS_ALLPOSTMESSAGE: u32 = 0x100;
+/// GetQueueStatus: high word = QS_* kinds of messages in the calling thread's queue,
+/// low word = kinds added since the last GetQueueStatus, GetMessage or PeekMessage;
+/// both limited to `flags`, and the reported "added" bits are cleared.
+pub(crate) extern "win64" fn get_queue_status(flags: u32) -> u32 {
+    const QS_ALL: u32 = 0x1dff; // QS_ALLINPUT, QS_ALLPOSTMESSAGE, QS_RAWINPUT, QS_TOUCH, QS_POINTER
+    if flags & !QS_ALL != 0 {
+        return fail(1004, 0); // ERROR_INVALID_FLAGS
+    }
+    pump::pump();
+    let me = state::current_thread();
+    let now = Instant::now();
+    let (mut present, added) = with(me, |q| {
+        let mut present = 0;
+        for m in &q.posted {
+            present |= category(m.message) | QS_ALLPOSTMESSAGE;
+        }
+        if !q.sent.is_empty() {
+            present |= QS_SENDMESSAGE;
+        }
+        if q.timers.iter().any(|t| t.due <= now) {
+            present |= 0x10;
+            q.added |= 0x10;
+        }
+        let added = q.added & flags;
+        q.added &= !flags;
+        (present, added)
+    });
+    if state::windows().values().any(|w| w.owner == me && w.paint) {
+        present |= 0x20;
+    }
+    ((present & flags) << 16) | added
 }
 /// QS_* category of a message.
 fn category(message: u32) -> u32 {

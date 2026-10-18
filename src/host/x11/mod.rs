@@ -241,6 +241,9 @@ impl Connection {
         }
     }
     pub(crate) fn show(&self, window: u64, visible: bool) {
+        if std::env::var_os("PEEKGAME_TRACE_WINDOW").is_some() {
+            eprintln!("[window] {} {window:#x}", if visible { "XMapWindow" } else { "XUnmapWindow" });
+        }
         unsafe {
             if visible {
                 ffi::XMapWindow(self.display, window);
@@ -313,6 +316,13 @@ impl Connection {
             hints.max_width = width;
             hints.min_height = height;
             hints.max_height = height;
+        }
+        if std::env::var_os("PEEKGAME_TRACE_WINDOW").is_some() {
+            if resizable {
+                eprintln!("[window] WM_NORMAL_HINTS {window:#x} resizable (flags={:#x})", hints.flags);
+            } else {
+                eprintln!("[window] WM_NORMAL_HINTS {window:#x} fixed {width}x{height} (flags={:#x})", hints.flags);
+            }
         }
         unsafe {
             ffi::XSetWMNormalHints(self.display, window, &mut hints);

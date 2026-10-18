@@ -72,9 +72,55 @@ pub(super) fn pump() {
                     let expected=state::with_window(hwnd,|w|w.expected).ok().flatten();
                     eprintln!("[window] X Configure {hwnd:#x} ({x},{y}) {width}x{height} expected={expected:?}");
                 }
+                // X may deliver an old ConfigureNotify after SetWindowPos has
+                // already requested a new size. Do not report that old size back
+                // to the game as a fresh WM_SIZE (or save it for focus restore).
+                // Shortly after the first map, a size from the window manager that
+                // differs from the program's is answered once with the program's size
+                // (see Window::map_guard) instead of being reported to the program.
+                let guard = state::with_window(hwnd, |w| {
+                    let g = w.map_guard.take();
+                    match g {
+                        Some((gw, gh, until)) if std::time::Instant::now() <= until && w.expected.is_none() => {
+                            if (width, height) != (gw, gh) && !w.minimized && !w.maximized {
+                                w.expected = Some((gw, gh));
+                                w.expected_from = Some((width, height));
+                                Some((w.native, gw, gh))
+                            } else {
+                                // Matching size: keep guarding until the deadline.
+                                w.map_guard = g;
+                                None
+                            }
+                        }
+                        Some((_, _, until)) if std::time::Instant::now() <= until => {
+                            w.map_guard = g;
+                            None
+                        }
+                        _ => None,
+                    }
+                }).ok().flatten();
+                if let Some((native, gw, gh)) = guard {
+                    if std::env::var_os("PEEKGAME_TRACE_WINDOW").is_some() {
+                        eprintln!("[window] window manager gave {hwnd:#x} {width}x{height} after map; requesting the program's {gw}x{gh} again");
+                    }
+                    if let Ok(c) = super::state::connection() {
+                        c.move_resize(native, x, y, gw.max(1) as u32, gh.max(1) as u32, true);
+                    }
+                    continue;
+                }
+                // While a requested size is pending, only the size from before the
+                // request is a stale event to drop. Another size is the window
+                // manager's decision (e.g. a framed screen-sized window fitted below
+                // the panel) and is reported to the program like any resize.
+                let (pending, previous) = state::with_window(hwnd, |w| (w.expected, w.expected_from)).unwrap_or((None, None));
+                if let Some((wanted_width, wanted_height)) = pending {
+                    if (width, height) != (wanted_width, wanted_height) && previous == Some((width, height)) {
+                        continue;
+                    }
+                }
                 let changed=state::with_window(hwnd,|w|{
                     let moved=(w.x,w.y)!=(x,y);w.x=x;w.y=y;
-                    let resized=(w.width,w.height)!=(width,height);w.expected=None;
+                    let resized=(w.width,w.height)!=(width,height);w.expected=None;w.expected_from=None;
                     w.width=width;w.height=height;
                     if resized{w.paint=true;if let Some(s)=&w.surface{s.raw.width.store(width.max(1) as u32,Ordering::Release);s.raw.height.store(height.max(1) as u32,Ordering::Release);}}
                     (moved,resized,if w.maximized{2}else{0})
@@ -87,7 +133,7 @@ pub(super) fn pump() {
                             flags: 4 | 0x10 | if moved { 0 } else { 2 } | if resized { 0 } else { 1 },
                         });
                     }
-                    if moved{super::windows::update_fullscreen(hwnd);}
+                    if moved || resized { super::windows::update_fullscreen(hwnd); }
                 }
             }
             NativeEvent::Close { .. } => post(hwnd, queue::message(hwnd, WM_CLOSE, 0, 0)),
