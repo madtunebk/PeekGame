@@ -451,6 +451,10 @@ pub extern "win64" fn flush_view(address: usize, length: usize) -> i32 {
     unsafe { msync(start, end - start, 4) }; // MS_SYNC
     1
 }
+
+pub fn is_mapping(handle: usize) -> bool {
+    with(|s| s.handles.contains_key(&handle))
+}
 /// CloseHandle for mappings. False if not one.
 pub fn close(handle: usize) -> bool {
     with(|s| s.handles.remove(&handle)).is_some()

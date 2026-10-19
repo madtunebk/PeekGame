@@ -67,6 +67,19 @@ pub extern "win64" fn chsize(fd: i32, size: i32) -> i32 {
     }
     unsafe { ftruncate(fd, size as i64) }
 }
+pub extern "win64" fn chsize_s(fd: i32, size: i64) -> i32 {
+    if fd < 0 || size < 0 {
+        unsafe { *stdio::errno() = 22 };
+        return 22;
+    }
+    if unsafe { ftruncate(fd, size) } == 0 {
+        0
+    } else {
+        let code = std::io::Error::last_os_error().raw_os_error().unwrap_or(22);
+        unsafe { *stdio::errno() = code };
+        code
+    }
+}
 pub unsafe extern "win64" fn fstat(fd: i32, out: *mut u8) -> i32 {
     let mut full = [0u8; 56];
     if out.is_null() {

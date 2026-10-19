@@ -41,6 +41,8 @@ fn system_message(code: u32) -> Option<&'static str> {
         0x8007_0005 => "Access is denied.",
         0x8007_0057 => "The parameter is incorrect.",
         0x8009_0302 => "The function requested is not supported.",
+        0x8009_0304 => "An internal error occurred.",
+        0x8009_030D => "The credentials supplied to the package were not recognized.",
         0x887a_0001 => "The application made a call that is invalid.",
         0x887a_0004 => "The specified device interface or feature level is not supported on this system.",
         _ => return None,

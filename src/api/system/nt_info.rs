@@ -174,3 +174,129 @@ pub unsafe extern "win64" fn query_information_thread(
     }
     STATUS_SUCCESS
 }
+
+fn get_handle_object_type(handle: usize) -> Option<&'static str> {
+    if handle == usize::MAX || handle == 1 || handle == std::process::id() as usize || handle == crate::api::system::compat::STEAM_PROCESS_HANDLE {
+        return Some("Process");
+    }
+    if handle == usize::MAX - 1 {
+        return Some("Thread");
+    }
+    if crate::api::filesystem::files::is_file(handle)
+        || crate::api::filesystem::pipes::known(handle)
+        || crate::api::network::afd::is_afd(handle)
+    {
+        return Some("File");
+    }
+    if crate::api::memory::mapping::is_mapping(handle) {
+        return Some("Section");
+    }
+    if crate::api::threading::events::is_event(handle) {
+        return Some("Event");
+    }
+    if let Some(t) = crate::api::threading::objects::object_type(handle) {
+        return Some(t);
+    }
+    if crate::api::threading::iocp::is_iocp(handle) {
+        return Some("IoCompletion");
+    }
+    if crate::api::threading::threads::is_thread(handle)
+        || crate::api::system::process::is_child_thread(handle)
+    {
+        return Some("Thread");
+    }
+    if crate::api::system::process::is_child_process(handle) {
+        return Some("Process");
+    }
+    if crate::api::system::security::is_token(handle) {
+        return Some("Token");
+    }
+    if crate::api::system::registry_keys::is_key(handle) {
+        return Some("Key");
+    }
+    None
+}
+
+pub unsafe extern "win64" fn query_object(
+    handle: usize,
+    class: u32,
+    info: *mut c_void,
+    length: u32,
+    ret_len: *mut u32,
+) -> i32 {
+    match class {
+        0 => {
+            let needed = 56u32;
+            if !ret_len.is_null() {
+                unsafe { *ret_len = needed };
+            }
+            if length < needed {
+                return STATUS_INFO_LENGTH_MISMATCH;
+            }
+            if info.is_null() {
+                return 0xC000000Du32 as i32;
+            }
+            unsafe {
+                let p = info as *mut u8;
+                p.write_bytes(0, needed as usize);
+                (p.add(4) as *mut u32).write_unaligned(0x001F0000 | 0x000F0000);
+                (p.add(8) as *mut u32).write_unaligned(1);
+                (p.add(12) as *mut u32).write_unaligned(1);
+            }
+            STATUS_SUCCESS
+        }
+        1 => {
+            let needed = 16u32;
+            if !ret_len.is_null() {
+                unsafe { *ret_len = needed };
+            }
+            if length < needed {
+                return STATUS_INFO_LENGTH_MISMATCH;
+            }
+            if info.is_null() {
+                return 0xC000000Du32 as i32;
+            }
+            unsafe {
+                let p = info as *mut u8;
+                p.write_bytes(0, needed as usize);
+            }
+            STATUS_SUCCESS
+        }
+        2 => {
+            let type_name = match get_handle_object_type(handle) {
+                Some(name) => name,
+                None => {
+                    eprintln!("[nt] NtQueryObject: unknown handle {handle:#x}");
+                    return STATUS_INVALID_HANDLE;
+                }
+            };
+            let utf16: Vec<u16> = type_name.encode_utf16().collect();
+            let str_bytes = (utf16.len() + 1) * 2;
+            let needed = (0x68 + str_bytes) as u32;
+            if !ret_len.is_null() {
+                unsafe { *ret_len = needed };
+            }
+            if length < needed {
+                return STATUS_INFO_LENGTH_MISMATCH;
+            }
+            if info.is_null() {
+                return 0xC000000Du32 as i32;
+            }
+            unsafe {
+                let p = info as *mut u8;
+                p.write_bytes(0, 0x68);
+                (p as *mut u16).write_unaligned((utf16.len() * 2) as u16);
+                (p.add(2) as *mut u16).write_unaligned(str_bytes as u16);
+                let buf_ptr = p.add(0x68) as *mut u16;
+                (p.add(8) as *mut usize).write_unaligned(buf_ptr as usize);
+                std::ptr::copy_nonoverlapping(utf16.as_ptr(), buf_ptr, utf16.len());
+                *buf_ptr.add(utf16.len()) = 0;
+            }
+            STATUS_SUCCESS
+        }
+        _ => {
+            eprintln!("[nt] NtQueryObject: unsupported class {class}");
+            STATUS_INVALID_INFO_CLASS
+        }
+    }
+}

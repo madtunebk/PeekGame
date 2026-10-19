@@ -47,7 +47,9 @@ Every refusal goes to the log and to Steam's original stderr.
 
 ## Environment and logging
 
-- **Steam's environment and working directory are passed through, with one exception.** `peek-launch` adds nothing. It removes the Steam-runtime directories (`*/steam-runtime*`, `*/pinned_libs_*`) from `LD_LIBRARY_PATH`, because `peek` is linked against the system libraries, and the runtime's older libcurl (without `CURL_OPENSSL_4`) stops the loader from starting. `LD_PRELOAD` (the Steam overlay) is kept. The test checks that `SteamAppId`, `STEAM_COMPAT_DATA_PATH` with a space in it, and a value containing tabs and quotes all reach the loader byte for byte, and that the working directory is kept.
+- **Steam's environment and working directory are passed through with two filters.** `peek-launch` removes Steam-runtime directories (`*/steam-runtime*`, `*/pinned_libs_*`) from `LD_LIBRARY_PATH`, because the loader needs host libraries. It also removes the incompatible 32-bit Steam overlay from `LD_PRELOAD` while keeping the 64-bit overlay. The test checks that `SteamAppId`, `STEAM_COMPAT_DATA_PATH` with a space in it, and a value containing tabs and quotes all reach the loader byte for byte, and that the working directory is kept.
+
+For Palworld CEF diagnosis, each `EpicWebHelper.exe` launch logs whether its Mojo pipe handle was exported, and the child logs whether that handle was imported. `PEEKGAME_BLOCK_PALWORLD_CEF=1` is an opt-in fallback that rejects only Palworld's CEF helper launches. It can disable web views and related online UI; remove the variable to restore normal launches.
 - **Log location:** `${PEEK_LOG_DIR:-${XDG_STATE_HOME:-~/.local/state}/peek-compat}/steam-<SteamAppId>-<time>-<pid>.log`, with a `latest.log` symlink.
 - **Log contents:** argv, the working directory, the tool and loader paths, and the Steam-related environment (`Steam*`, `STEAM_*`, `SDL_*`, `DXVK_*`, `VK_*`, display variables, `LD_*`), followed by the loader's own output.
 - **Process:** `exec` keeps the PID Steam started, so Steam's Stop button and exit tracking reach `peek` directly. The loader's exit status is Steam's exit status.

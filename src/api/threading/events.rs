@@ -161,6 +161,9 @@ pub fn duplicate(handle: usize) -> Option<usize> {
     events().lock().unwrap().insert(target, event);
     Some(target)
 }
+pub fn is_event(handle: usize) -> bool {
+    events().lock().unwrap().contains_key(&handle)
+}
 pub extern "win64" fn close(handle: usize) -> i32 {
     if handle == crate::api::system::compat::STEAM_PROCESS_HANDLE
         || crate::api::system::process::close_child_handle(handle)

@@ -30,6 +30,8 @@ struct RawState {
     exposed: HashSet<usize>,
     next: usize,
     last: Option<(i32, i32)>,
+    /// Sub-integer carry for XInput2 raw deltas (lLastX/lLastY are whole counts).
+    residual: (f64, f64),
 }
 static RAW: std::sync::LazyLock<Mutex<RawState>> = std::sync::LazyLock::new(|| {
     Mutex::new(RawState {
@@ -39,6 +41,7 @@ static RAW: std::sync::LazyLock<Mutex<RawState>> = std::sync::LazyLock::new(|| {
         exposed: HashSet::new(),
         next: 0x0008_0000,
         last: None,
+        residual: (0.0, 0.0),
     })
 });
 /// The window registered for a generic-desktop usage (2 mouse, 6 keyboard), or the
@@ -129,53 +132,94 @@ pub(in crate::api::window) fn merge_raw_mouse(thread: u32, handle: usize, dx: i3
     bytes[40..44].copy_from_slice(&y.to_le_bytes());
     true
 }
+/// Posts a RAWMOUSE motion packet (buttons 0), coalescing it into a pending,
+/// unread motion packet or WM_MOUSEMOVE run when possible.
 /// RAWMOUSE: usFlags, (pad), usButtonFlags, usButtonData, ulRawButtons, lLastX,
 /// lLastY, ulExtraInformation.
-pub(in crate::api::window) fn raw_mouse(
-    event_window: usize,
-    buttons: u16,
-    data: i16,
-    x_root: Option<(i32, i32)>,
-) {
-    let Some(target) = raw_target(2, event_window) else {
-        if let Some(p) = x_root {
-            RAW.lock().unwrap().last = Some(p);
-        }
-        return;
-    };
-    let (dx, dy) = match x_root {
-        Some((x, y)) => {
-            let delta = {
-                let mut raw = RAW.lock().unwrap();
-                let delta = raw.last.map_or((0, 0), |(lx, ly)| (x - lx, y - ly));
-                raw.last = Some((x, y));
-                delta
-            };
-            // While the game captures the mouse for camera look (cursor hidden and
-            // clipped), recenter the pointer so raw deltas never stop at an edge.
-            if let Some(center) = super::cursor::recenter_captured(x, y) {
-                RAW.lock().unwrap().last = Some(center);
-            }
-            delta
-        }
-        None => (0, 0),
-    };
-    if buttons == 0 && dx == 0 && dy == 0 {
+fn emit_motion(target: usize, dx: i32, dy: i32) {
+    if dx == 0 && dy == 0 {
         return;
     }
-    if buttons == 0 {
-        if let (Some((x, y)), Some(thread)) = (x_root, queue::owner(target)) {
-            if queue::merge_pending_raw_mouse(thread, target, dx, dy, Point { x, y }) {
-                return;
-            }
+    let point = connection()
+        .ok()
+        .map(|c| {
+            let (x, y, _) = c.pointer();
+            Point { x, y }
+        })
+        .unwrap_or_default();
+    if let Some(thread) = queue::owner(target) {
+        if queue::merge_pending_raw_mouse(thread, target, dx, dy, point) {
+            return;
         }
     }
     let mut body = [0u8; 24];
-    body[4..6].copy_from_slice(&buttons.to_le_bytes());
-    body[6..8].copy_from_slice(&data.to_le_bytes());
     body[12..16].copy_from_slice(&dx.to_le_bytes());
     body[16..20].copy_from_slice(&dy.to_le_bytes());
     deliver(target, MOUSE_DEVICE, 0, &body);
+}
+/// True while unaccelerated XInput2 deltas own the raw motion stream: the server
+/// has it and a focused game is in relative capture (camera look). The core
+/// pointer path then only tracks position, so motion is never counted twice.
+fn xi_owns_motion() -> bool {
+    connection().is_ok_and(|c| c.raw_motion_enabled()) && super::cursor::relative_capture()
+}
+/// A mouse button or wheel RAWINPUT (no motion).
+/// RAWMOUSE: usFlags, (pad), usButtonFlags, usButtonData, ...
+pub(in crate::api::window) fn raw_mouse(event_window: usize, buttons: u16, data: i16) {
+    if buttons == 0 {
+        return;
+    }
+    let Some(target) = raw_target(2, event_window) else {
+        return;
+    };
+    let mut body = [0u8; 24];
+    body[4..6].copy_from_slice(&buttons.to_le_bytes());
+    body[6..8].copy_from_slice(&data.to_le_bytes());
+    deliver(target, MOUSE_DEVICE, 0, &body);
+}
+/// Core-pointer motion: tracks the delta anchor and recenters a hidden pointer so
+/// it cannot drift to a screen edge. It posts the WM_INPUT delta itself, unless
+/// XInput2 raw motion owns the stream (then it only keeps the anchor current).
+pub(in crate::api::window) fn raw_motion_core(event_window: usize, x_root: i32, y_root: i32) {
+    let Some(target) = raw_target(2, event_window) else {
+        RAW.lock().unwrap().last = Some((x_root, y_root));
+        return;
+    };
+    let delta = {
+        let mut raw = RAW.lock().unwrap();
+        let delta = raw.last.map_or((0, 0), |(lx, ly)| (x_root - lx, y_root - ly));
+        raw.last = Some((x_root, y_root));
+        delta
+    };
+    if let Some(center) = super::cursor::recenter_captured(x_root, y_root) {
+        RAW.lock().unwrap().last = Some(center);
+    }
+    if xi_owns_motion() {
+        return;
+    }
+    emit_motion(target, delta.0, delta.1);
+}
+/// XInput2 raw relative motion: unaccelerated device deltas for camera look,
+/// routed to the focused game. Only while that game is in relative capture, so
+/// it never competes with the core-pointer path for a visible cursor. The
+/// fractional carry keeps slow, sub-count motion from being dropped.
+pub(in crate::api::window) fn raw_mouse_relative(dx: f64, dy: f64) {
+    if !super::cursor::relative_capture() {
+        return;
+    }
+    let Some(target) = raw_target(2, super::focus::focus()) else {
+        return;
+    };
+    let (ix, iy) = {
+        let mut raw = RAW.lock().unwrap();
+        raw.residual.0 += dx;
+        raw.residual.1 += dy;
+        let (ix, iy) = (raw.residual.0.trunc(), raw.residual.1.trunc());
+        raw.residual.0 -= ix;
+        raw.residual.1 -= iy;
+        (ix as i32, iy as i32)
+    };
+    emit_motion(target, ix, iy);
 }
 /// RAWKEYBOARD: MakeCode, Flags (RI_KEY_BREAK 1, RI_KEY_E0 2), Reserved, VKey,
 /// Message, ExtraInformation.

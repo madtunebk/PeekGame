@@ -21,6 +21,14 @@ pub unsafe fn wide(p: *const u16) -> Result<String, u32> {
     }
     String::from_utf16(unsafe { std::slice::from_raw_parts(p, len) }).map_err(|_| 1113)
 }
+pub fn peekgame_root() -> PathBuf {
+    std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .join("peekgame")
+}
+
 pub fn host(text: &str) -> Result<PathBuf, u32> {
     let mut text = text.replace('\\', "/");
     if text.starts_with("//?/") {
@@ -46,23 +54,57 @@ pub fn host(text: &str) -> Result<PathBuf, u32> {
                     }
                 }
             }
-            // Launched through Steam: map C: to the game's Steam compatibility prefix
-            // (STEAM_COMPAT_DATA_PATH/pfx/drive_c). Saves then land where Steam Cloud
-            // (auto-cloud) looks, so progress syncs and is shared with Proton if used.
-            // PeekGame creates the prefix itself, so Proton need not have run. A
-            // standalone run keeps its own prefix under the data directory.
-            if let Some(compat) = std::env::var_os("STEAM_COMPAT_DATA_PATH") {
-                let drive_c = PathBuf::from(compat).join("pfx/drive_c");
-                return Ok(resolve_case(drive_c.join(relative)));
+            if lower.contains("gameoverlayrenderer64.dll") {
+                if let Ok(home) = std::env::var("HOME") {
+                    let candidates = [
+                        PathBuf::from(&home).join(".steam/debian-installation/GameOverlayRenderer64.dll"),
+                        PathBuf::from(&home).join(".steam/debian-installation/legacycompat/GameOverlayRenderer64.dll"),
+                        PathBuf::from(&home).join(".steam/steam/GameOverlayRenderer64.dll"),
+                        PathBuf::from(&home).join(".steam/root/GameOverlayRenderer64.dll"),
+                    ];
+                    for cand in &candidates {
+                        if cand.is_file() {
+                            return Ok(cand.clone());
+                        }
+                    }
+                }
             }
-            let base = std::env::var_os("XDG_DATA_HOME")
-                .map(PathBuf::from)
-                .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
-                .unwrap_or_else(|| PathBuf::from("/tmp"))
-                .join("peekgame");
-            let drive_c = base.join("drive_c");
-            let target_root = if drive_c.is_dir() { drive_c } else { base };
-            return Ok(resolve_case(target_root.join(relative)));
+            let root = peekgame_root();
+            let norm = relative.replace('\\', "/");
+            let lower = norm.to_ascii_lowercase();
+
+            if let Some(rest) = lower.strip_prefix("users/steamuser/appdata/local/") {
+                return Ok(resolve_case(root.join("Local").join(&norm[norm.len() - rest.len()..])));
+            } else if lower == "users/steamuser/appdata/local" {
+                return Ok(resolve_case(root.join("Local")));
+            } else if let Some(rest) = lower.strip_prefix("users/steamuser/appdata/locallow/") {
+                return Ok(resolve_case(root.join("LocalLow").join(&norm[norm.len() - rest.len()..])));
+            } else if lower == "users/steamuser/appdata/locallow" {
+                return Ok(resolve_case(root.join("LocalLow")));
+            } else if let Some(rest) = lower.strip_prefix("users/steamuser/saved games/") {
+                return Ok(resolve_case(root.join("Saved Games").join(&norm[norm.len() - rest.len()..])));
+            } else if lower == "users/steamuser/saved games" {
+                return Ok(resolve_case(root.join("Saved Games")));
+            } else if let Some(rest) = lower.strip_prefix("users/steamuser/documents/") {
+                return Ok(resolve_case(root.join("Documents").join(&norm[norm.len() - rest.len()..])));
+            } else if lower == "users/steamuser/documents" {
+                return Ok(resolve_case(root.join("Documents")));
+            } else if let Some(rest) = lower.strip_prefix("users/steamuser/desktop/") {
+                return Ok(resolve_case(root.join("Desktop").join(&norm[norm.len() - rest.len()..])));
+            } else if lower == "users/steamuser/desktop" {
+                return Ok(resolve_case(root.join("Desktop")));
+            } else if let Some(rest) = lower.strip_prefix("users/steamuser/downloads/") {
+                return Ok(resolve_case(root.join("Downloads").join(&norm[norm.len() - rest.len()..])));
+            } else if lower == "users/steamuser/downloads" {
+                return Ok(resolve_case(root.join("Downloads")));
+            } else if let Some(rest) = lower.strip_prefix("programdata/") {
+                return Ok(resolve_case(root.join("ProgramData").join(&norm[norm.len() - rest.len()..])));
+            } else if lower == "programdata" {
+                return Ok(resolve_case(root.join("ProgramData")));
+            }
+
+            let drive_c = root.join("drive_c");
+            return Ok(resolve_case(drive_c.join(relative)));
         } else if !drive.eq_ignore_ascii_case(&b'z') {
             return Err(3);
         }

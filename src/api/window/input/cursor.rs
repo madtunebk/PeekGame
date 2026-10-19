@@ -7,7 +7,7 @@ use crate::api::window::{
 use std::{
     collections::HashMap,
     sync::{
-        atomic::{AtomicI32, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering},
         Mutex,
     },
 };
@@ -96,18 +96,28 @@ pub(crate) unsafe extern "win64" fn clip_cursor(rect: *const Rect) -> i32 {
     apply_clip(r);
     1
 }
-/// During camera capture — the cursor is hidden (ShowCursor < 0) and confined by
-/// ClipCursor — keep the pointer near the centre of the clip rectangle so relative
-/// (raw) motion never stops at a screen or window edge, as it would on Windows where
-/// the device keeps reporting deltas. Called after a raw motion with the pointer at
-/// (`x`, `y`) in screen coordinates; returns the new centre when it warped there, so
-/// the raw delta anchor can follow. Only warps once the pointer leaves the central
-/// half, to keep warps rare.
+/// Keep relative motion flowing while a focused game hides the cursor. Some games
+/// do not call ClipCursor, but X11 pointer motion still stops at the screen edge.
+/// A requested clip rectangle takes priority; otherwise use the focused window.
+/// Return the warp destination so raw input can reset its delta anchor.
+/// The focused game has the mouse captured for relative look: the cursor is
+/// hidden (ShowCursor(FALSE)) or blank (SetCursor(NULL)). This is when WM_INPUT
+/// deltas feed a camera, so unaccelerated XInput2 motion should own them.
+pub(super) fn relative_capture() -> bool {
+    let hidden = SHOW.load(Ordering::Acquire) < 0
+        || (CURSOR_SET.load(Ordering::Acquire) && CURRENT.load(Ordering::Acquire) == 0);
+    hidden && super::focus::focus() != 0
+}
 pub(super) fn recenter_captured(x: i32, y: i32) -> Option<(i32, i32)> {
-    if SHOW.load(Ordering::Acquire) >= 0 {
+    if !relative_capture() {
         return None;
     }
-    let r = (*CLIP.lock().unwrap())?;
+    let focused = super::focus::focus();
+    let r = (*CLIP.lock().unwrap())
+        .or_else(|| crate::api::window::windows::screen_rect(focused))?;
+    if r.right <= r.left || r.bottom <= r.top {
+        return None;
+    }
     let (cx, cy) = ((r.left + r.right) / 2, (r.top + r.bottom) / 2);
     if (x - cx).abs() * 4 <= (r.right - r.left) && (y - cy).abs() * 4 <= (r.bottom - r.top) {
         return None; // still well inside: no warp needed yet
@@ -154,6 +164,7 @@ pub(crate) unsafe extern "win64" fn get_clip_cursor(out: *mut Rect) -> i32 {
 /// Cursor handle -> X cursor.
 static CURSORS: Mutex<Option<HashMap<usize, u64>>> = Mutex::new(None);
 static CURRENT: AtomicUsize = AtomicUsize::new(0);
+static CURSOR_SET: AtomicBool = AtomicBool::new(false);
 static SHOW: AtomicI32 = AtomicI32::new(0);
 const CURSOR_BASE: usize = 0x0006_0000;
 /// The cursorfont shape for an IDC_* id.
@@ -238,6 +249,7 @@ fn apply_cursor() {
 }
 pub(in crate::api::window) fn set_cursor(handle: usize) -> usize {
     let previous = CURRENT.swap(handle, Ordering::AcqRel);
+    CURSOR_SET.store(true, Ordering::Release);
     if previous != handle {
         apply_cursor();
     }

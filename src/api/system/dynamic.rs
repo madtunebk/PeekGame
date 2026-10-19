@@ -98,7 +98,7 @@ fn load(name: &str, flags: u32) -> usize {
         error::set(images::ERROR_MOD_NOT_FOUND);
         return 0;
     }
-    if images::builtin(name) {
+    if images::builtin(name) && !crate::quirks::suppresses_builtin(name) {
         record("<LoadLibrary>", "runtime_module");
         return builtin_handle(name);
     }

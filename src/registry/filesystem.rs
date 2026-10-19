@@ -283,12 +283,30 @@ exports! {
         files::move_ex_w
     ),
     implemented!(
+        "MoveFileA",
+        "filesystem",
+        "partial",
+        "rename ANSI wrapper",
+        crate::api::system::compat::move_file_a
+    ),
+    implemented!(
         "ReplaceFileW",
         "filesystem",
         "partial",
         "replace without backup",
         files::replace_w
     ),
+    implemented!(
+        "ReplaceFileA",
+        "filesystem",
+        "partial",
+        "replace without backup ANSI wrapper",
+        crate::api::system::compat::replace_file_a
+    ),
+    implemented!("PathCchRemoveFileSpec", "filesystem", "implemented", "removes the last element of a path", paths::path_cch_remove_file_spec),
+    implemented!("PathCchCombineEx", "filesystem", "implemented", "combines two path fragments and canonicalizes", paths::path_cch_combine_ex),
+    implemented!("PathCchCombine", "filesystem", "implemented", "combines two path fragments", paths::path_cch_combine),
+    implemented!("PathCchAddBackslash", "filesystem", "implemented", "appends a backslash to path if needed", paths::path_cch_add_backslash),
     implemented!(
         "CopyFileW",
         "filesystem",
@@ -440,6 +458,7 @@ exports! {
         "host current directory through Z: root mapping",
         paths::set_current_w
     ),
+    implemented!("SetCurrentDirectoryA", "filesystem", "partial", "ANSI path through host current directory", paths::set_current_a),
     implemented!(
         "GetFullPathNameW",
         "filesystem",

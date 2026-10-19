@@ -25,7 +25,7 @@ root = Path(__file__).resolve().parents[1]
 default = Path.home() / '.steam/debian-installation/steamapps/common/Steamworks Shared/_CommonRedist/vcredist/2022/VC_redist.x64.exe'
 arguments = [a for a in sys.argv[1:] if a != '--with-vcruntime']
 with_vcruntime = '--with-vcruntime' in sys.argv[1:]
-prefixes = ('msvcp140', 'vcruntime140') if with_vcruntime else ('msvcp140',)
+prefixes = ('msvcp140', 'vcruntime140', 'concrt140') if with_vcruntime else ('msvcp140', 'concrt140')
 installer = Path(arguments[0]) if arguments else default
 if not installer.is_file():
     raise SystemExit(f'VC++ redistributable not found: {installer}')

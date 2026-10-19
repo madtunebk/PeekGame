@@ -84,22 +84,28 @@ unsafe fn purpose(parameters: *const u8) -> Result<(u32, Vec<String>), u32> {
     if !(32..=96).contains(&size) {
         return Err(87);
     }
-    // Extra issuance-policy, strong-signing and revocation-freshness controls
-    // are not implemented; non-default settings must not be ignored.
-    for (offset, width) in [
-        (40usize, 4usize),
-        (56, 4),
-        (60, 4),
-        (64, 4),
-        (72, 8),
-        (80, 8),
-        (88, 4),
-    ] {
+    // Extra issuance-policy and revocation-freshness controls are not implemented;
+    // non-default settings must not be ignored. Strong-signing (offsets 80/88) is
+    // handled separately by strong_sign() so the well-known policy can be honored.
+    for (offset, width) in [(40usize, 4usize), (56, 4), (60, 4), (64, 4), (72, 8)] {
         if size >= offset + width
             && unsafe { std::slice::from_raw_parts(parameters.add(offset), width) }
                 .iter()
                 .any(|b| *b != 0)
         {
+            if std::env::var_os("PEEKGAME_TRACE_CERTS").is_some() {
+                let field = match offset {
+                    40 => "RequestedIssuancePolicy",
+                    56 => "dwUrlRetrievalTimeout",
+                    60 => "fCheckRevocationFreshnessTime",
+                    64 => "dwRevocationFreshnessTime",
+                    72 => "pftCacheResync",
+                    _ => "unknown",
+                };
+                eprintln!(
+                    "crypt32: GetCertificateChain rejected (error 50): unsupported CERT_CHAIN_PARA field {field} (offset {offset}) is set"
+                );
+            }
             return Err(50);
         }
     }
@@ -137,6 +143,91 @@ unsafe fn purpose(parameters: *const u8) -> Result<(u32, Vec<String>), u32> {
     Ok((match_type, oids))
 }
 
+/// Interpret CERT_CHAIN_PARA's strong-signature policy (offsets 80/88). Returns
+/// `Ok(true)` when a policy that forbids weak signatures is requested — either the
+/// well-known Windows "OS current" OID or a serialized SHA-2-only algorithm list —
+/// honored as OpenSSL auth level 2 (no SHA-1/MD5, RSA >= 2048). Returns `Ok(false)`
+/// when no strong-sign policy is set, and `Err(50)` for a flagged, empty, or
+/// weak-permitting policy that cannot be reproduced faithfully on a single level.
+unsafe fn strong_sign(parameters: *const u8) -> Result<bool, u32> {
+    if parameters.is_null() {
+        return Ok(false);
+    }
+    let size = unsafe { parameters.cast::<u32>().read_unaligned() } as usize;
+    if size < 88 {
+        return Ok(false);
+    }
+    let para = unsafe { parameters.add(80).cast::<*const u8>().read_unaligned() };
+    if para.is_null() {
+        return Ok(false);
+    }
+    // dwStrongSignFlags: only 0 (enforce over the whole chain) can be honored; a
+    // selective-exemption flag cannot map onto OpenSSL's chain-wide level.
+    if size >= 92 && unsafe { parameters.add(88).cast::<u32>().read_unaligned() } != 0 {
+        return strong_unsupported("dwStrongSignFlags is non-zero");
+    }
+    // CERT_STRONG_SIGN_PARA: cbSize @0, dwInfoChoice @4, union pointer @8.
+    let info_choice = unsafe { para.add(4).cast::<u32>().read_unaligned() };
+    let info = unsafe { para.add(8).cast::<*const u8>().read_unaligned() };
+    if info.is_null() {
+        return Err(87);
+    }
+    match info_choice {
+        // CERT_STRONG_SIGN_OID_INFO_CHOICE: the union holds an LPSTR OID directly.
+        2 => {
+            let oid = unsafe { CStr::from_ptr(info as *const c_char) }
+                .to_str()
+                .map_err(|_| 87u32)?;
+            // szOID_CERT_STRONG_SIGN_OS_1 == szOID_CERT_STRONG_SIGN_OS_CURRENT.
+            if oid == "1.3.6.1.4.1.311.72.1.1" {
+                Ok(true)
+            } else {
+                strong_unsupported(&format!("unknown strong-sign OID {oid}"))
+            }
+        }
+        // CERT_STRONG_SIGN_SERIALIZED_INFO_CHOICE: the union holds a
+        // CERT_STRONG_SIGN_SERIALIZED_INFO { dwFlags @0, pwszCNGSignHashAlgids @8,
+        // pwszCNGPubKeyMinBitLengths @16 }. This is the form Chromium/CEF sends: a
+        // semicolon-separated "ALG/HASH" list such as "RSA/SHA256;ECDSA/SHA384;...".
+        1 => {
+            let algids_ptr = unsafe { info.add(8).cast::<*const u16>().read_unaligned() };
+            if algids_ptr.is_null() {
+                return strong_unsupported("serialized strong-sign with no hash algorithm list");
+            }
+            let algids = unsafe { paths::wide(algids_ptr) }.map_err(|_| 87u32)?;
+            // Every listed hash must be SHA-256 or stronger for auth level 2 to be a
+            // faithful enforcement; a list that still permits SHA-1/MD5 cannot be
+            // mapped onto a single OpenSSL level, so it is rejected rather than
+            // under-enforced.
+            let mut saw_pair = false;
+            for pair in algids.split(';').filter(|entry| !entry.trim().is_empty()) {
+                saw_pair = true;
+                let hash = pair.rsplit('/').next().unwrap_or("").trim().to_ascii_uppercase();
+                if !matches!(hash.as_str(), "SHA256" | "SHA384" | "SHA512") {
+                    return strong_unsupported(&format!(
+                        "serialized strong-sign permits a non-SHA2 hash in {algids:?}"
+                    ));
+                }
+            }
+            if saw_pair {
+                Ok(true)
+            } else {
+                strong_unsupported("serialized strong-sign hash list is empty")
+            }
+        }
+        other => strong_unsupported(&format!("unsupported strong-sign dwInfoChoice {other}")),
+    }
+}
+
+/// Log the reason a strong-sign policy could not be honored (under
+/// `PEEKGAME_TRACE_CERTS`) and return ERROR_NOT_SUPPORTED.
+fn strong_unsupported(reason: &str) -> Result<bool, u32> {
+    if std::env::var_os("PEEKGAME_TRACE_CERTS").is_some() {
+        eprintln!("crypt32: GetCertificateChain rejected (error 50): {reason}");
+    }
+    Err(50)
+}
+
 pub unsafe extern "win64" fn get(
     engine: usize,
     cert: *const Context,
@@ -155,7 +246,10 @@ pub unsafe extern "win64" fn get(
     }
     if std::env::var_os("PEEKGAME_TRACE_CERTS").is_some() {
         eprintln!(
-            "crypt32: GetCertificateChain engine={engine}, flags={flags:#x}, parameter size={}",
+            "crypt32: GetCertificateChain engine={engine:#x}, cert={:#x}, time={:#x}, additional_store={additional:#x}, flags={flags:#x}, reserved={:#x}, parameter size={}",
+            cert as usize,
+            time as usize,
+            reserved as usize,
             if parameters.is_null() {
                 0
             } else {
@@ -164,10 +258,21 @@ pub unsafe extern "win64" fn get(
         );
     }
     if engine > 1 || !reserved.is_null() || flags & !(0xf0000000 | 1 | 4 | 0x100 | 0x2000) != 0 {
+        if std::env::var_os("PEEKGAME_TRACE_CERTS").is_some() {
+            let bad_flags = flags & !(0xf0000000 | 1 | 4 | 0x100 | 0x2000);
+            eprintln!(
+                "crypt32: GetCertificateChain rejected (error 50): engine={engine} (>1 is a custom chain engine), reserved={}, unsupported flag bits={bad_flags:#x}",
+                !reserved.is_null()
+            );
+        }
         return fail(50, 0);
     }
     let usage = match unsafe { purpose(parameters) } {
         Ok(usage) => usage,
+        Err(code) => return fail(code, 0),
+    };
+    let require_strong = match unsafe { strong_sign(parameters) } {
+        Ok(strong) => strong,
         Err(code) => return fail(code, 0),
     };
     let (leaf, untrusted) = {
@@ -179,6 +284,9 @@ pub unsafe extern "win64" fn get(
         let mut stores = reference.owner.iter().cloned().collect::<Vec<_>>();
         if additional != 0 {
             let Some(store) = r.stores.get(&additional) else {
+                if std::env::var_os("PEEKGAME_TRACE_CERTS").is_some() {
+                    eprintln!("crypt32: GetCertificateChain ERROR_INVALID_HANDLE: additional_store={additional:#x} is not an open PeekGame store (known stores: {})", r.stores.len());
+                }
                 return fail(6, 0);
             };
             stores.push(store.clone());
@@ -195,7 +303,7 @@ pub unsafe extern "win64" fn get(
     } else {
         Some((unsafe { time.read_unaligned() } / 10000000) as i64 - 11644473600)
     };
-    let verified = match openssl::verify(&leaf, &untrusted, time, 0) {
+    let verified = match openssl::verify(&leaf, &untrusted, time, 0, require_strong) {
         Ok(verified) => verified,
         Err(code) => return fail(code, 0),
     };
@@ -416,6 +524,7 @@ pub unsafe extern "win64" fn policy(
             &encoded[1..],
             time,
             if auth == 2 { 2 } else { 1 },
+            false,
         ) {
             Ok(value) => value,
             Err(code) => return fail(code, 0),

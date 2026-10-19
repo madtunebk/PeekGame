@@ -16,11 +16,19 @@ struct Process {
     threads: u32,
     name: String,
 }
+struct SnapshotModule {
+    base: usize,
+    size: u32,
+    name: String,
+    path: String,
+}
 struct Snapshot {
     processes: Vec<Process>,
     process_next: usize,
     threads: Vec<u32>,
     thread_next: usize,
+    modules: Vec<SnapshotModule>,
+    module_next: usize,
 }
 static SNAPSHOTS: Mutex<Option<HashMap<usize, Snapshot>>> = Mutex::new(None);
 static NEXT: AtomicUsize = AtomicUsize::new(0x6800_0000);
@@ -54,10 +62,10 @@ fn read_process(pid: u32) -> Option<Process> {
         name,
     })
 }
-pub extern "win64" fn create_snapshot(flags: u32, _pid: u32) -> usize {
-    if flags & !(2 | 4 | 0x8000_0000) != 0 {
+pub extern "win64" fn create_snapshot(flags: u32, pid: u32) -> usize {
+    if flags & !(2 | 4 | 8 | 0x10 | 0x8000_0000) != 0 {
         eprintln!(
-            "CreateToolhelp32Snapshot({flags:#x}): only process and thread snapshots are supported"
+            "CreateToolhelp32Snapshot({flags:#x}): unsupported snapshot flags"
         );
         error::set(50);
         return usize::MAX;
@@ -87,6 +95,24 @@ pub extern "win64" fn create_snapshot(flags: u32, _pid: u32) -> usize {
             Vec::new()
         },
         thread_next: 0,
+        modules: if flags & (8 | 0x10) != 0 {
+            if pid == 0 || pid == std::process::id() {
+                images::all()
+                    .into_iter()
+                    .map(|m| SnapshotModule {
+                        base: m.base,
+                        size: m.size as u32,
+                        name: m.name.clone(),
+                        path: crate::host::paths::windows(&m.path),
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            }
+        } else {
+            Vec::new()
+        },
+        module_next: 0,
     };
     let handle = NEXT.fetch_add(16, Ordering::Relaxed);
     SNAPSHOTS
@@ -178,3 +204,63 @@ pub unsafe extern "win64" fn thread32_first(h: usize, e: *mut u8) -> i32 {
 pub unsafe extern "win64" fn thread32_next(h: usize, e: *mut u8) -> i32 {
     unsafe { thread(h, e, false) }
 }
+
+/// MODULEENTRY32 (568 bytes) / MODULEENTRY32W (1080 bytes)
+unsafe fn module(handle: usize, entry: *mut u8, first: bool, wide: bool) -> i32 {
+    let mut snapshots = SNAPSHOTS.lock().unwrap();
+    let Some(s) = snapshots.as_mut().and_then(|s| s.get_mut(&handle)) else {
+        error::set(6);
+        return 0;
+    };
+    let size = if wide { 1080 } else { 568 };
+    if entry.is_null() || unsafe { (entry as *const u32).read_unaligned() } < size {
+        error::set(24);
+        return 0;
+    }
+    if first {
+        s.module_next = 0;
+    }
+    let Some(m) = s.modules.get(s.module_next) else {
+        error::set(18);
+        return 0;
+    };
+    s.module_next += 1;
+    unsafe {
+        entry.add(4).write_bytes(0, size as usize - 4);
+        (entry.add(4) as *mut u32).write_unaligned(1);
+        (entry.add(8) as *mut u32).write_unaligned(std::process::id());
+        (entry.add(12) as *mut u32).write_unaligned(0xffff);
+        (entry.add(16) as *mut u32).write_unaligned(0xffff);
+        (entry.add(24) as *mut usize).write_unaligned(m.base);
+        (entry.add(32) as *mut u32).write_unaligned(m.size);
+        (entry.add(40) as *mut usize).write_unaligned(m.base);
+        if wide {
+            for (i, u) in m.name.encode_utf16().take(255).enumerate() {
+                (entry.add(48 + i * 2) as *mut u16).write_unaligned(u);
+            }
+            for (i, u) in m.path.encode_utf16().take(259).enumerate() {
+                (entry.add(560 + i * 2) as *mut u16).write_unaligned(u);
+            }
+        } else {
+            let name_bytes = &m.name.as_bytes()[..m.name.len().min(255)];
+            std::ptr::copy_nonoverlapping(name_bytes.as_ptr(), entry.add(48), name_bytes.len());
+            let path_bytes = &m.path.as_bytes()[..m.path.len().min(259)];
+            std::ptr::copy_nonoverlapping(path_bytes.as_ptr(), entry.add(304), path_bytes.len());
+        }
+    }
+    1
+}
+
+pub unsafe extern "win64" fn module32_first(h: usize, e: *mut u8) -> i32 {
+    unsafe { module(h, e, true, false) }
+}
+pub unsafe extern "win64" fn module32_next(h: usize, e: *mut u8) -> i32 {
+    unsafe { module(h, e, false, false) }
+}
+pub unsafe extern "win64" fn module32_first_w(h: usize, e: *mut u8) -> i32 {
+    unsafe { module(h, e, true, true) }
+}
+pub unsafe extern "win64" fn module32_next_w(h: usize, e: *mut u8) -> i32 {
+    unsafe { module(h, e, false, true) }
+}
+

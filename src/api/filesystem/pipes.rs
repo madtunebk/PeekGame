@@ -111,6 +111,16 @@ fn table() -> &'static Mutex<HashMap<usize, Arc<Pipe>>> {
             }
             NEXT.fetch_max(max_h, Ordering::Relaxed);
         }
+        if let Some(mojo) = std::env::args().find_map(|arg| {
+            arg.strip_prefix("--mojo-platform-channel-handle=")?
+                .parse::<usize>().ok()
+        }) {
+            eprintln!(
+                "CEF IPC child: mojo={mojo:#x}, imported={}, inherited_pipes={}",
+                map.contains_key(&mojo),
+                map.len()
+            );
+        }
         Mutex::new(map)
     })
 }
@@ -628,7 +638,27 @@ fn run(pipe: Arc<Pipe>) {
     loop {
         let mut state = pipe.state.lock().unwrap();
         while state.requests.is_empty() && !state.closed {
-            state = pipe.changed.wait(state).unwrap();
+            state = pipe.changed.wait_timeout(state, Duration::from_secs(1)).unwrap().0;
+            // A CEF child may exit without closing the parent's pipe handle.
+            // Its worker must not stay asleep forever after the peer is gone.
+            if state.requests.is_empty() && pipe.listener.is_none() {
+                if let Some(stream) = state.stream.as_ref() {
+                    let mut fd = PollFd {
+                        fd: stream.as_raw_fd(),
+                        events: 0,
+                        revents: 0,
+                    };
+                    let mut buffered = 0i32;
+                    if unsafe { poll(&mut fd, 1, 0) } > 0
+                        && fd.revents & (8 | 16 | 32) != 0
+                        && unsafe { ioctl(fd.fd, 0x541B, &mut buffered) } == 0
+                        && buffered == 0
+                    {
+                        state.closed = true;
+                        state.stream = None;
+                    }
+                }
+            }
         }
         if state.closed {
             return;

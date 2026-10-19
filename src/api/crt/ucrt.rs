@@ -928,6 +928,11 @@ pub extern "win64" fn div(numer: i32, denom: i32) -> u64 {
     let rem = (numer % denom) as u32 as u64;
     quot | (rem << 32)
 }
+/// MSVCRT/UCRT ldiv uses Windows' 32-bit `long`, so its 8-byte struct return
+/// has the same packed quotient/remainder ABI as `div` on x64.
+pub extern "win64" fn ldiv(numer: i32, denom: i32) -> u64 {
+    div(numer, denom)
+}
 pub extern "win64" fn putenv(_s: *const c_char) -> i32 {
     0
 }

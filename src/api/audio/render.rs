@@ -46,10 +46,31 @@ unsafe extern "win64" fn release_buffer(this: *mut Object, frames: u32, flags: u
         buffer[..bytes].fill(f.silence);
     }
     let buffer = s.pending.take().unwrap();
+    let trace = std::env::var_os("PEEKGAME_TRACE_AUDIO").is_some();
+    let contains_audio = bytes > 0 && buffer[..bytes].iter().any(|sample| *sample != f.silence);
+    if bytes > 0 && !s.traced_first_write && trace {
+        eprintln!(
+            "WASAPI: first render buffer: {} frames, silent_flag={}, contains_audio={}, started={}",
+            frames,
+            flags & 2 != 0,
+            contains_audio,
+            s.started
+        );
+        s.traced_first_write = true;
+    }
+    if contains_audio && !s.traced_non_silent && trace {
+        eprintln!("WASAPI: non-silent audio received after {} frames", s.written);
+        s.traced_non_silent = true;
+    }
     if bytes > 0 && s.stream.as_ref().unwrap().write(&buffer[..bytes]).is_err() {
+        eprintln!("WASAPI: PulseAudio/PipeWire playback write failed");
         return INVALIDATED;
     }
     s.written += frames as u64;
+    if trace && !s.traced_one_second && s.written >= f.rate as u64 {
+        eprintln!("WASAPI: rendered {} frames; non_silent_seen={}", s.written, s.traced_non_silent);
+        s.traced_one_second = true;
+    }
     0
 }
 table!(RENDER_TABLE, qi, addref, release, get, release_buffer);

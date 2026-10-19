@@ -303,6 +303,145 @@ pub extern "win64" fn get_profile_int_a(
 ) -> u32 {
     default.max(0) as u32
 }
+pub unsafe extern "win64" fn direct_input8_create(
+    instance: usize,
+    version: u32,
+    iid: *const u8,
+    out: *mut *mut std::ffi::c_void,
+    outer: *mut std::ffi::c_void,
+) -> i32 {
+    unsafe { super::dinput8::direct_input8_create(instance, version, iid, out, outer) }
+}
+/// Read a string from a Windows profile (INI) file. Missing files, sections,
+/// and keys use the caller's default, matching the common Win32 lookup path.
+pub unsafe extern "win64" fn get_private_profile_string_w(
+    section: *const u16,
+    key: *const u16,
+    default: *const u16,
+    out: *mut u16,
+    capacity: u32,
+    filename: *const u16,
+) -> u32 {
+    let requested_section = unsafe { crate::api::text::units(section) };
+    let requested_key = unsafe { crate::api::text::units(key) };
+    let default = unsafe { crate::api::text::units(default) };
+    let filename = unsafe { crate::host::paths::wide(filename) }.ok();
+    let content = filename
+        .and_then(|name| crate::host::paths::host(&name).ok())
+        .and_then(|path| std::fs::read_to_string(path).ok());
+    let mut active_section = false;
+    let mut value = None;
+    if let Some(content) = content {
+        for raw in content.lines() {
+            let line = raw.trim().trim_start_matches('\u{feff}').trim();
+            if line.is_empty() || line.starts_with(';') || line.starts_with('#') {
+                continue;
+            }
+            if line.starts_with('[') && line.ends_with(']') {
+                active_section = line[1..line.len() - 1]
+                    .trim()
+                    .eq_ignore_ascii_case(&String::from_utf16_lossy(requested_section));
+                continue;
+            }
+            if active_section {
+                if let Some((name, val)) = line.split_once('=') {
+                    if name.trim().eq_ignore_ascii_case(&String::from_utf16_lossy(requested_key)) {
+                        value = Some(val.trim().to_owned());
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    let result = value
+        .map(|s| s.encode_utf16().collect::<Vec<_>>())
+        .unwrap_or_else(|| default.to_vec());
+    unsafe { crate::api::text::copy_out(&result, out, capacity) }
+}
+/// Update one INI key in place. A null value deletes the key; a null section
+/// is the Win32 cache-flush form and succeeds without changing the file.
+pub unsafe extern "win64" fn write_private_profile_string_w(
+    section: *const u16,
+    key: *const u16,
+    value: *const u16,
+    filename: *const u16,
+) -> i32 {
+    if section.is_null() {
+        return 1;
+    }
+    let section = String::from_utf16_lossy(unsafe { crate::api::text::units(section) });
+    let key = if key.is_null() {
+        None
+    } else {
+        Some(String::from_utf16_lossy(unsafe { crate::api::text::units(key) }))
+    };
+    let value = if value.is_null() {
+        None
+    } else {
+        Some(String::from_utf16_lossy(unsafe { crate::api::text::units(value) }))
+    };
+    let Ok(filename) = (unsafe { crate::host::paths::wide(filename) }) else {
+        return 0;
+    };
+    let Ok(path) = crate::host::paths::host(&filename) else {
+        return 0;
+    };
+    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    let mut lines: Vec<String> = existing.lines().map(str::to_owned).collect();
+    let mut start = None;
+    let mut end = lines.len();
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            if let Some(section_start) = start {
+                end = i;
+                let _ = section_start;
+                break;
+            }
+            if trimmed[1..trimmed.len() - 1].trim().eq_ignore_ascii_case(&section) {
+                start = Some(i);
+            }
+        }
+    }
+    if let Some(section_start) = start {
+        let section_end = end;
+        if let Some(key) = key.as_deref() {
+            let found = (section_start + 1..section_end).find(|&i| {
+                lines[i]
+                    .split_once('=')
+                    .is_some_and(|(name, _)| name.trim().eq_ignore_ascii_case(key))
+            });
+            match (found, value) {
+                (Some(i), Some(value)) => lines[i] = format!("{key}={value}"),
+                (Some(i), None) => {
+                    lines.remove(i);
+                }
+                (None, Some(value)) => lines.insert(section_end, format!("{key}={value}")),
+                (None, None) => {}
+            }
+        } else if value.is_none() {
+            lines.drain(section_start..section_end);
+        }
+    } else if let (Some(key), Some(value)) = (key, value) {
+        if lines.last().is_some_and(|line| !line.is_empty()) {
+            lines.push(String::new());
+        }
+        lines.push(format!("[{section}]"));
+        lines.push(format!("{key}={value}"));
+    } else {
+        return 1;
+    }
+    let mut output = lines.join("\r\n");
+    if !output.is_empty() {
+        output.push_str("\r\n");
+    }
+    if let Some(parent) = path.parent() {
+        if std::fs::create_dir_all(parent).is_err() {
+            return 0;
+        }
+    }
+    std::fs::write(path, output).is_ok() as i32
+}
 pub extern "win64" fn mul_div(number: i32, numerator: i32, denominator: i32) -> i32 {
     let d = denominator as i64;
     if d == 0 {
@@ -579,6 +718,44 @@ pub extern "win64" fn assoc_query_string_w(
     0x80004005u32 as i32
 }
 
+pub unsafe extern "win64" fn url_escape_a(
+    url: *const c_char,
+    escaped: *mut u8,
+    escaped_len: *mut u32,
+    _flags: u32,
+) -> i32 {
+    if url.is_null() || escaped_len.is_null() {
+        return -2147024809; // E_INVALIDARG
+    }
+    let url_str = match unsafe { CStr::from_ptr(url) }.to_str() {
+        Ok(s) => s,
+        Err(_) => return -2147024809,
+    };
+    let mut result = Vec::new();
+    for &b in url_str.as_bytes() {
+        match b {
+            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' | b':' | b'?' | b'#' | b'[' | b']' | b'@' | b'!' | b'$' | b'&' | b'\'' | b'(' | b')' | b'*' | b'+' | b',' | b';' | b'=' => {
+                result.push(b);
+            }
+            _ => {
+                result.extend_from_slice(format!("%{:02X}", b).as_bytes());
+            }
+        }
+    }
+    result.push(0);
+
+    let required = result.len() as u32;
+    if escaped.is_null() || unsafe { *escaped_len } < required {
+        unsafe { *escaped_len = required };
+        return -2147467261; // E_POINTER
+    }
+    unsafe {
+        std::ptr::copy_nonoverlapping(result.as_ptr(), escaped, result.len());
+        *escaped_len = required - 1;
+    }
+    0 // S_OK
+}
+
 pub extern "win64" fn draw_theme_background(
     _htheme: usize,
     _hdc: usize,
@@ -818,6 +995,38 @@ pub extern "win64" fn cm_locate_devnode_w(
     0x0000000D // CR_NO_SUCH_DEVNODE
 }
 
+pub extern "win64" fn cm_locate_devnode_a(
+    pdn_dev_inst: *mut u32,
+    _p_device_id: *const u8,
+    _ul_flags: u32,
+) -> u32 {
+    if !pdn_dev_inst.is_null() {
+        unsafe { *pdn_dev_inst = 0 };
+    }
+    0x0000000D // CR_NO_SUCH_DEVNODE
+}
+
+pub extern "win64" fn cm_get_parent(
+    pdn_dev_inst: *mut u32,
+    _dn_dev_inst: u32,
+    _ul_flags: u32,
+) -> u32 {
+    if !pdn_dev_inst.is_null() {
+        unsafe { *pdn_dev_inst = 0 };
+    }
+    0x0000000D // CR_NO_SUCH_DEVNODE
+}
+
+pub extern "win64" fn cm_get_device_id_a(
+    _dn_dev_inst: u32,
+    _buffer: *mut u8,
+    _buffer_len: u32,
+    _ul_flags: u32,
+) -> u32 {
+    0x0000000D // CR_NO_SUCH_DEVNODE
+}
+
+
 pub extern "win64" fn cm_get_devnode_property_w(
     _dn_dev_inst: u32,
     _prop_key: usize,
@@ -1004,7 +1213,7 @@ pub extern "win64" fn crypt_stub_false(_a: usize, _b: usize, _c: usize, _d: usiz
 }
 
 pub extern "win64" fn win_verify_trust(_hwnd: usize, _action_id: usize, _data: usize) -> i32 {
-    0 // ERROR_SUCCESS
+    0x800b_0001u32 as i32 // TRUST_E_PROVIDER_UNKNOWN: no Authenticode provider here.
 }
 
 pub extern "win64" fn complete_auth_token(_context: usize, _token: usize) -> i32 {
@@ -1014,6 +1223,136 @@ pub extern "win64" fn complete_auth_token(_context: usize, _token: usize) -> i32
 pub extern "win64" fn get_current_thread_stack_limits(low: *mut usize, high: *mut usize) {
     crate::host::teb::current_stack_limits(low, high);
 }
+
+pub unsafe extern "win64" fn move_file_a(existing: *const c_char, new: *const c_char) -> i32 {
+    let (e, n) = (wide(existing), wide(new));
+    unsafe { files::move_w(ptr(&e), ptr(&n)) }
+}
+
+pub unsafe extern "win64" fn replace_file_a(
+    replaced: *const c_char,
+    replacement: *const c_char,
+    backup: *const c_char,
+    flags: u32,
+    exclude: usize,
+    reserved: usize,
+) -> i32 {
+    let (r, rep, b) = (wide(replaced), wide(replacement), wide(backup));
+    unsafe { files::replace_w(ptr(&r), ptr(&rep), ptr(&b), flags, exclude, reserved) }
+}
+
+pub unsafe extern "win64" fn process_id_to_session_id(_pid: u32, session_id: *mut u32) -> i32 {
+    if session_id.is_null() {
+        error::set(87); // ERROR_INVALID_PARAMETER
+        0
+    } else {
+        unsafe { *session_id = 1 };
+        1
+    }
+}
+
+pub extern "win64" fn is_dbcs_lead_byte_ex(_codepage: u32, _test_char: u8) -> i32 {
+    0
+}
+
+pub extern "win64" fn d3dkmt_not_supported(
+    _a: usize,
+    _b: usize,
+    _c: usize,
+    _d: usize,
+    _e: usize,
+) -> i32 {
+    0xC000_00BBu32 as i32 // STATUS_NOT_SUPPORTED
+}
+
+pub extern "win64" fn nt_power_information(
+    _level: u32,
+    _input_buf: *const std::ffi::c_void,
+    _input_len: u32,
+    output_buf: *mut std::ffi::c_void,
+    output_len: u32,
+) -> i32 {
+    if !output_buf.is_null() && output_len > 0 {
+        unsafe {
+            std::ptr::write_bytes(output_buf as *mut u8, 0, output_len as usize);
+        }
+    }
+    0 // STATUS_SUCCESS
+}
+
+pub extern "win64" fn call_nt_power_information(
+    level: u32,
+    input_buf: *const std::ffi::c_void,
+    input_len: u32,
+    output_buf: *mut std::ffi::c_void,
+    output_len: u32,
+) -> i32 {
+    nt_power_information(level, input_buf, input_len, output_buf, output_len)
+}
+
+pub unsafe extern "win64" fn power_register_suspend_resume_notification(
+    flags: u32,
+    recipient: usize,
+    registration_handle: *mut usize,
+) -> u32 {
+    if registration_handle.is_null() {
+        return 87; // ERROR_INVALID_PARAMETER
+    }
+    unsafe {
+        *registration_handle = crate::api::window::misc::register_suspend_resume_notification(recipient, flags);
+    }
+    0 // ERROR_SUCCESS
+}
+
+pub extern "win64" fn power_unregister_suspend_resume_notification(
+    registration_handle: usize,
+) -> u32 {
+    crate::api::window::misc::unregister_suspend_resume_notification(registration_handle);
+    0 // ERROR_SUCCESS
+}
+
+pub extern "win64" fn power_determine_platform_role_ex(_version: u32) -> u32 {
+    1 // PlatformRoleDesktop
+}
+
+pub unsafe extern "win64" fn get_pwr_capabilities(lpspc: *mut u8) -> i32 {
+    if !lpspc.is_null() {
+        unsafe { std::ptr::write_bytes(lpspc, 0, 76) };
+    }
+    1 // TRUE
+}
+
+pub extern "win64" fn get_package_family_name(
+    _process: usize,
+    _length: *mut u32,
+    _name: *mut u16,
+) -> i32 {
+    15700 // APPMODEL_ERROR_NO_PACKAGE
+}
+
+pub extern "win64" fn get_current_package_family_name(
+    _length: *mut u32,
+    _name: *mut u16,
+) -> i32 {
+    15700 // APPMODEL_ERROR_NO_PACKAGE
+}
+
+pub extern "win64" fn is_user_cet_available_in_environment(_env: u32) -> i32 {
+    0
+}
+
+pub unsafe extern "win64" fn app_policy_get_thread_initialization_type(
+    _token: usize,
+    policy: *mut u32,
+) -> i32 {
+    if !policy.is_null() {
+        unsafe { *policy = 0 };
+    }
+    0 // ERROR_SUCCESS
+}
+
+
+
 
 
 

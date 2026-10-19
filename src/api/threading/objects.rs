@@ -92,6 +92,16 @@ pub fn duplicate(handle: usize) -> Option<usize> {
     })
 }
 
+pub fn object_type(handle: usize) -> Option<&'static str> {
+    with(|table| {
+        let actual = resolve(handle);
+        match table.get(&actual)?.object {
+            Object::Semaphore { .. } => Some("Semaphore"),
+            Object::Mutex { .. } => Some("Mutant"),
+        }
+    })
+}
+
 pub fn close(handle: usize) -> bool {
     with(|table| {
         let mut aliases = ALIASES.lock().unwrap();

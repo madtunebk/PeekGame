@@ -11,7 +11,8 @@ pub fn run() -> Result<()> {
         return crate::relink::build(&options.exe, &options.output, options.strip);
     }
     if options.run {
-        return crate::loader::run(&options.exe, &options.args, &options.output);
+        let args = game_imports::game_args(&options.exe, &options.args);
+        return crate::loader::run(&options.exe, &args, &options.output);
     }
     let (modules, deps) = analysis::analyze(options.exe, options.dll_dirs)?;
     let json = report::json::render(&modules, &deps);

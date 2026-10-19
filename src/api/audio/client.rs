@@ -13,6 +13,9 @@ pub(super) struct State {
     pub effective_rate: u32,
     pub event: usize,
     pub written: u64,
+    pub traced_first_write: bool,
+    pub traced_non_silent: bool,
+    pub traced_one_second: bool,
 }
 pub(super) unsafe fn state<'a>(this: *mut Object) -> &'a Arc<Mutex<State>> {
     match unsafe { &(*this).kind } {
@@ -62,7 +65,10 @@ unsafe extern "win64" fn initialize(
         flags & 0x100000 != 0,
     ) {
         Ok(p) => p,
-        Err(_) => return INVALIDATED,
+        Err(_) => {
+            eprintln!("WASAPI: PulseAudio/PipeWire playback open failed ({} Hz, {} channels, format {}, {} frames)", f.rate, f.channels, f.pulse, frames);
+            return INVALIDATED;
+        }
     };
     eprintln!(
         "WASAPI: {} Hz, {} channels, {}-byte frames, {} frames via PulseAudio/PipeWire ({})",
@@ -177,7 +183,11 @@ unsafe extern "win64" fn start(this: *mut Object) -> H {
         return 0x88890014u32 as H;
     }
     if stream.cork(false).is_err() {
+        eprintln!("WASAPI: PulseAudio/PipeWire playback start failed");
         return INVALIDATED;
+    }
+    if std::env::var_os("PEEKGAME_TRACE_AUDIO").is_some() {
+        eprintln!("WASAPI: playback started ({})", stream.name);
     }
     s.started = true;
     if s.event != 0 {

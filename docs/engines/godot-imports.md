@@ -1,5 +1,32 @@
 # Godot import ledger
 
+## dinput8.dll startup crash (quirk: SuppressDinput8)
+
+- **Affected APIs:** `kernel32.dll!LoadLibraryW` / `GetModuleHandleW` for
+  `dinput8.dll`; the registered `dinput8.dll!DirectInput8Create` shell.
+- **Trigger:** Godot games (Gundam Survivors, and the Godot test template via
+  `tests/test_godot_input.py`) crashed at startup with an access violation
+  reading `0x504702dc` — `BUILTIN_HANDLES (0x50470000) + 0x2dc`. After
+  `LoadLibrary("dinput8.dll")`, Godot resolves the DLL's exports by reading its
+  **module image directly** (not through `GetProcAddress` — the dynamic-import
+  trace shows no `GetProcAddress` between the load and the fault). PeekGame's
+  builtin module handle is a bare token, not a mapped PE image, so the read
+  faults. Registering `DirectInput8Create` (commit `ded7ac2`) made the load
+  succeed where it had returned NULL, which is what regressed these games.
+- **Implementation:** `quirks::suppresses_builtin` hides `dinput8.dll` from
+  `LoadLibrary`/`GetModuleHandle` for Godot (detected by a sibling `<stem>.pck`,
+  plus an explicit `PROFILES` entry). The load then returns NULL again and Godot
+  falls back to its other input backends. `dinput8` stays available as a builtin
+  for engines that resolve it through `GetProcAddress` (e.g. UE5/Palworld). The
+  proper long-term fix is to back builtin module handles with a minimal mapped PE
+  image so module-image reads never fault; until then this is a per-game quirk.
+- **Scope:** input startup only. DirectInput device enumeration is still a stub
+  (`src/api/system/dinput8.rs`); reaching a menu does not establish gameplay
+  input, force feedback, or device hot-plug support.
+- **Verification:** `cargo test --offline quirks`; `tests/test_godot_input.py`
+  now launches past the crash (the remaining click-lag assertion is a separate,
+  pre-existing issue, identical with `PEEKGAME_NO_XI2=1`).
+
 ## Mouse motion queue latency
 
 - **Affected APIs:** `user32.dll!PeekMessageW` and `GetMessageW` consume

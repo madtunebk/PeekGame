@@ -36,17 +36,17 @@ const LOCK_COUNT: usize = 8;
 const RECURSION: usize = 12;
 const OWNER: usize = 16;
 const HOST: usize = 24;
-fn get(p: *mut c_void) -> &'static Critical {
-    let host = unsafe { p.cast::<u8>().add(HOST).cast::<*const Critical>().read() };
-    if host.is_null() {
-        unsafe { initialize_spin(p, 0); }
-        let host = unsafe { p.cast::<u8>().add(HOST).cast::<*const Critical>().read() };
-        if host.is_null() {
-            stop("critical section used before initialization or after deletion");
-        }
-        return unsafe { &*host };
+fn get(p: *mut c_void) -> Arc<Critical> {
+    if p.is_null() {
+        stop("null critical section");
     }
-    unsafe { &*host }
+    if let Some(value) = sections().lock().unwrap().get(&(p as usize)).cloned() {
+        return value;
+    }
+    if unsafe { initialize_spin(p, 0) } == 0 {
+        stop("critical section used before initialization or after deletion");
+    }
+    sections().lock().unwrap().get(&(p as usize)).cloned().unwrap()
 }
 /// Ownership fields programs read (OwningThread == GetCurrentThreadId() checks);
 /// updated only while holding the lock. LockCount: -1 free, -2 held (Vista encoding).
@@ -115,8 +115,9 @@ pub unsafe extern "win64" fn initialize_spin(p: *mut c_void, spin: u32) -> i32 {
 }
 pub extern "win64" fn enter(p: *mut c_void) {
     let value = get(p);
-    if unsafe { pthread_mutex_lock(value.0.get().cast()) } != 0 {
-        stop("EnterCriticalSection host lock failed");
+    let code = unsafe { pthread_mutex_lock(value.0.get().cast()) };
+    if code != 0 {
+        stop(&format!("EnterCriticalSection host lock failed: pthread error {code}, section {p:p}"));
     }
     mark(p, true);
 }
@@ -139,10 +140,14 @@ pub extern "win64" fn try_enter(p: *mut c_void) -> i32 {
     }
 }
 pub extern "win64" fn delete(p: *mut c_void) {
-    if sections().lock().unwrap().remove(&(p as usize)).is_none() {
-        stop("DeleteCriticalSection on uninitialized/deleted object");
+    if p.is_null() {
+        return;
     }
-    unsafe { p.cast::<u8>().add(HOST).cast::<usize>().write(0) };
+    // A caller can delete during shutdown after its storage has already been
+    // reclaimed. There is no host mutex left to destroy in that case.
+    if sections().lock().unwrap().remove(&(p as usize)).is_some() {
+        unsafe { p.cast::<u8>().add(HOST).cast::<usize>().write(0) };
+    }
 }
 pub unsafe extern "win64" fn set_spin_count(p: *mut c_void, spin: u32) -> u32 {
     if p.is_null() {

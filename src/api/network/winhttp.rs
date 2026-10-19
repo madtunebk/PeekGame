@@ -243,6 +243,9 @@ struct Notification {
     info: Vec<u8>,
     info_ptr: Option<usize>,
 }
+unsafe extern "C" {
+    fn gettid() -> i32;
+}
 fn deliver(mut n: Notification) {
     let callback: Callback = unsafe { std::mem::transmute::<usize, Callback>(n.callback) };
     let length = n.info.len() as u32;
@@ -253,7 +256,15 @@ fn deliver(mut n: Notification) {
     } else {
         n.info.as_mut_ptr()
     };
+    // Entry/exit frame the game's callback: an `enter` with no matching `exit` means
+    // the (single) callback worker thread is wedged inside the game's callback.
+    if trace() {
+        eprintln!("[http] callback enter status={:#x} handle={:#x} len={length} tid={}", n.status, n.handle, unsafe { gettid() });
+    }
     unsafe { callback(n.handle, n.context, n.status, info, length) };
+    if trace() {
+        eprintln!("[http] callback exit  status={:#x} handle={:#x} tid={}", n.status, n.handle, unsafe { gettid() });
+    }
 }
 /// Asynchronous notifications run in order on one Windows thread, never on the
 /// caller's thread and without the handle table locked.
@@ -569,9 +580,35 @@ struct FetchJob {
     total_length: u32,
     completion: u32,
 }
+/// Whether to fail every WinHTTP request with CANNOT_CONNECT, as if the machine had
+/// no network.
+///
+/// `PEEKGAME_HTTP_OFFLINE` set to anything but `0`/empty forces offline; `0` forces
+/// online; unset defers to the per-game [`Quirk::ForceHttpOffline`].
+fn http_offline() -> bool {
+    use crate::quirks::{active, Quirk};
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| match std::env::var("PEEKGAME_HTTP_OFFLINE") {
+        Ok(v) => !v.is_empty() && v != "0",
+        Err(_) => active(Quirk::ForceHttpOffline),
+    })
+}
+
+fn fetch(job: &FetchJob) -> Result<transport::Response, u32> {
+    if http_offline() {
+        if trace() {
+            eprintln!("[http] blocked/offline request: {} -> CANNOT_CONNECT", job.target);
+        }
+        return Err(ERROR_WINHTTP_CANNOT_CONNECT);
+    }
+    transport::fetch(
+        &job.host, job.port, &job.method, &job.path, job.secure,
+        job.connect_ms, job.total_ms, &job.headers, &job.body,
+    )
+}
 extern "win64" fn fetch_worker(context: usize) -> u32 {
     let job = unsafe { Box::from_raw(context as *mut FetchJob) };
-    match transport::fetch(&job.host, job.port, &job.method, &job.path, job.secure, job.connect_ms, job.total_ms, &job.headers, &job.body) {
+    match fetch(&job) {
         Ok(response) => {
             if trace() { eprintln!("[http] WinHttpSendRequest {}: HTTP {} ({} body bytes)", job.target, response.status, response.body.len()); trace_body(&job.target, &response.body); }
             let alive = with(|h| {
@@ -655,8 +692,7 @@ pub extern "win64" fn send_request(
         return 1;
     }
     if !asynchronous {
-        match transport::fetch(&job.host, job.port, &job.method, &job.path, job.secure,
-            job.connect_ms, job.total_ms, &job.headers, &job.body) {
+        match fetch(&job) {
             Ok(response) => {
                 if trace() { eprintln!("[http] WinHttpSendRequest {}: HTTP {} ({} body bytes)", job.target, response.status, response.body.len()); trace_body(&job.target, &response.body); }
                 with(|h| { if let Some(e) = h.get_mut(&handle) { e.response = Some(response); } });
@@ -708,8 +744,7 @@ pub extern "win64" fn receive_response(handle: usize, _reserved: usize) -> i32 {
             error::set(0);
             return 1;
         }
-        match transport::fetch(&job.host, job.port, &job.method, &job.path, job.secure,
-            job.connect_ms, job.total_ms, &job.headers, &job.body) {
+        match fetch(&job) {
             Ok(response) => {
                 if trace() { eprintln!("[http] WinHttpReceiveResponse {}: HTTP {} ({} body bytes)", job.target, response.status, response.body.len()); trace_body(&job.target, &response.body); }
                 with(|h| { if let Some(e) = h.get_mut(&handle) { e.response = Some(response); } });
@@ -812,6 +847,9 @@ pub unsafe extern "win64" fn query_data_available(handle: usize, available: usiz
     let remaining = with(|h| h.get(&handle).and_then(|e| e.response.as_ref()).map(|r| r.body.len() - r.cursor));
     let Some(remaining) = remaining else { return no_response(handle); };
     let asynchronous = with(|h| h.get(&handle).is_some_and(|e| e.asynchronous));
+    if trace() {
+        eprintln!("[http] WinHttpQueryDataAvailable handle={handle:#x} remaining={remaining} async={asynchronous} tid={}", unsafe { gettid() });
+    }
     if asynchronous {
         notify(handle, STATUS_DATA_AVAILABLE, (remaining.min(u32::MAX as usize) as u32).to_le_bytes().to_vec(), false);
     } else {
@@ -837,6 +875,9 @@ pub unsafe extern "win64" fn read_data(handle: usize, buffer: usize, length: u32
         Ok(result) => result,
         Err(code) => return fail(code, 0),
     };
+    if trace() {
+        eprintln!("[http] WinHttpReadData handle={handle:#x} requested={length} read={n} async={asynchronous} tid={}", unsafe { gettid() });
+    }
     if asynchronous {
         notify_read(handle, buffer, n);
     } else {

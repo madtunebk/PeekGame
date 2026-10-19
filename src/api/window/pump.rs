@@ -60,11 +60,18 @@ pub(super) fn pump() {
         return;
     }
     for event in c.events() {
+        // Raw motion is device-global (no window); route it to the focused game.
+        if let NativeEvent::RawMotion { dx, dy } = event {
+            input::raw_mouse_relative(dx, dy);
+            continue;
+        }
         let Some(hwnd) = state::by_native(event.window()) else {
             continue;
         };
         let now = time::milliseconds();
         match event {
+            // Handled before the window lookup above.
+            NativeEvent::RawMotion { .. } => {}
             NativeEvent::Xdnd {event,..} => super::ole_drop::enqueue(hwnd,event),
             NativeEvent::Configure {width,height,x,y,..}=>{
                 let (x,y)=if state::with_window(hwnd,|w|w.parent==0).unwrap_or(false){state::client_origin(hwnd).unwrap_or((x,y))}else{(x,y)};
@@ -236,7 +243,7 @@ pub(super) fn pump() {
                             _ => (6, 0x100, 0x200),
                         };
                         input::set_key(vk, down);
-                        input::raw_mouse(hwnd, if down { raw_down } else { raw_up }, 0, None);
+                        input::raw_mouse(hwnd, if down { raw_down } else { raw_up }, 0);
                         let keys = mouse_keys(state);
                         let (message, wparam) = match button {
                             1 => (0x201, keys),
@@ -287,7 +294,7 @@ pub(super) fn pump() {
                             -120
                         };
                         let horizontal = button >= 6;
-                        input::raw_mouse(hwnd, if horizontal { 0x800 } else { 0x400 }, delta, None);
+                        input::raw_mouse(hwnd, if horizontal { 0x800 } else { 0x400 }, delta);
                         post(
                             target,
                             Message {
@@ -320,7 +327,7 @@ pub(super) fn pump() {
                 y_root,
                 ..
             } => {
-                input::raw_mouse(hwnd, 0, 0, Some((x_root, y_root)));
+                input::raw_motion_core(hwnd, x_root, y_root);
                 let target = match input::capture() {
                     0 => hwnd,
                     c => c,

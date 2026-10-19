@@ -233,6 +233,57 @@ pub(crate) unsafe extern "win64" fn unregister_class_w(name: *const u16, instanc
     CLASSES.lock().unwrap().retain(|c| c.atom != class.atom);
     1
 }
+pub(crate) unsafe extern "win64" fn unregister_class_a(name: *const i8, instance: usize) -> i32 {
+    if (name as usize) <= 0xffff {
+        return unsafe { unregister_class_w(name.cast(), instance) };
+    }
+    let Ok(text) = (unsafe { strings::narrow(name) }) else {
+        error::set(87);
+        return 0;
+    };
+    let wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
+    unsafe { unregister_class_w(wide.as_ptr(), instance) }
+}
+pub(crate) unsafe extern "win64" fn get_class_info_a(
+    instance: usize,
+    name: *const i8,
+    out: *mut WindowClassPlain,
+) -> i32 {
+    if out.is_null() || name.is_null() {
+        error::set(87);
+        return 0;
+    }
+    let wide_name;
+    let name_w = if (name as usize) <= 0xffff {
+        name.cast()
+    } else {
+        let Ok(text) = (unsafe { strings::narrow(name) }) else {
+            error::set(87);
+            return 0;
+        };
+        wide_name = text.encode_utf16().chain(std::iter::once(0)).collect::<Vec<_>>();
+        wide_name.as_ptr()
+    };
+    let Ok(class) = (unsafe { find(name_w, instance) }) else {
+        error::set(1411);
+        return 0;
+    };
+    unsafe {
+        *out = WindowClassPlain {
+            style: class.style,
+            procedure: Some(class.procedure),
+            class_extra: 0,
+            window_extra: class.window_extra as i32,
+            instance: class.instance,
+            icon: 0,
+            cursor: class.cursor,
+            background: 0,
+            menu: std::ptr::null(),
+            name: name.cast(),
+        };
+    }
+    1
+}
 /// GetClassNameW: length copied, without the NUL.
 pub(crate) unsafe extern "win64" fn get_class_name_w(
     hwnd: usize,

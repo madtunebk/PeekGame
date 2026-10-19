@@ -213,3 +213,71 @@ pub unsafe extern "win64" fn crypt_unprotect_data(
     }
     1
 }
+
+// CryptInstallOIDFunctionAddress: a program registers OID handler functions at
+// runtime (Chromium/CEF does this during certificate setup). The entries are
+// recorded faithfully in a process-global table; PeekGame's own CRYPT32
+// encode/decode paths do not yet dispatch through installed handlers, so this is
+// an honest registration, not a claim that custom OID processing is active.
+struct InstalledOidFunctions {
+    encoding_type: u32,
+    func_name: String,
+    // Each entry's pszOID is kept as a raw value: per the CRYPT32 convention it
+    // may be a numeric OID id (high 16 bits zero), not a string pointer, so it is
+    // never dereferenced. The second value is the handler address.
+    entries: Vec<(usize, usize)>,
+}
+static OID_FUNCTIONS: std::sync::Mutex<Vec<InstalledOidFunctions>> =
+    std::sync::Mutex::new(Vec::new());
+
+#[repr(C)]
+struct CryptOidFuncEntry {
+    psz_oid: usize,
+    pv_func_addr: usize,
+}
+
+pub unsafe extern "win64" fn install_oid_function_address(
+    _h_module: usize,
+    encoding_type: u32,
+    psz_func_name: *const std::ffi::c_char,
+    c_func_entry: u32,
+    rg_func_entry: *const u8,
+    _flags: u32,
+) -> i32 {
+    if psz_func_name.is_null() || (c_func_entry != 0 && rg_func_entry.is_null()) {
+        error::set(87);
+        return 0;
+    }
+    // pszFuncName is a real ANSI string (e.g. "CryptDllEncodeObject"); guard the
+    // numeric-id form defensively so an odd caller cannot fault us.
+    let func_name = if (psz_func_name as usize) >> 16 == 0 {
+        format!("#{}", psz_func_name as usize)
+    } else {
+        unsafe { std::ffi::CStr::from_ptr(psz_func_name) }
+            .to_string_lossy()
+            .into_owned()
+    };
+    let table = rg_func_entry as *const CryptOidFuncEntry;
+    let entries = (0..c_func_entry as usize)
+        .map(|i| {
+            let e = unsafe { &*table.add(i) };
+            (e.psz_oid, e.pv_func_addr)
+        })
+        .collect();
+    let record = InstalledOidFunctions {
+        encoding_type,
+        func_name,
+        entries,
+    };
+    if std::env::var_os("PEEKGAME_TRACE_CRYPTO").is_some() {
+        eprintln!(
+            "[crypto] CryptInstallOIDFunctionAddress {} (encoding {:#x}) {} entr{}",
+            record.func_name,
+            record.encoding_type,
+            record.entries.len(),
+            if record.entries.len() == 1 { "y" } else { "ies" }
+        );
+    }
+    OID_FUNCTIONS.lock().unwrap().push(record);
+    1
+}

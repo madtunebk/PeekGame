@@ -42,6 +42,10 @@ pub(crate) struct Connection {
     delete: u64,
     root: u64,
     screen: c_int,
+    /// The XInput2 major opcode when the extension is present and raw motion is
+    /// selected on the root; GenericEvents carry it in their `extension` field.
+    /// None falls the raw-input path back to core-pointer deltas.
+    xi_opcode: Option<c_int>,
 }
 const EVENT_MASK: i64 = 1 /* KeyPress */
     | 2 /* KeyRelease */
@@ -78,17 +82,73 @@ impl Connection {
         }
         unsafe {
             let screen = ffi::XDefaultScreen(display);
+            let root = ffi::XRootWindow(display, screen);
             Ok(Self {
                 display,
                 protocols: ffi::XInternAtom(display, c"WM_PROTOCOLS".as_ptr(), 0),
                 delete: ffi::XInternAtom(display, c"WM_DELETE_WINDOW".as_ptr(), 0),
-                root: ffi::XRootWindow(display, screen),
+                root,
                 screen,
+                xi_opcode: Self::init_raw_motion(display, root),
             })
+        }
+    }
+    /// Opts the connection into XInput2 raw relative-motion events on the root,
+    /// returning the extension's opcode. These report device motion before the X
+    /// server's pointer acceleration and never stop at a screen edge, which is what
+    /// a game reads through WM_INPUT for camera look. None when XInput2 2.1
+    /// is unavailable, leaving the raw path on core-pointer deltas.
+    fn init_raw_motion(display: *mut types::Display, root: u64) -> Option<c_int> {
+        const XI_RAW_MOTION: usize = 17;
+        const XI_ALL_MASTER_DEVICES: c_int = 1;
+        // PEEKGAME_NO_XI2 forces the raw-input path back onto core-pointer deltas,
+        // to compare mouse feel or to work around a server that mishandles XInput2.
+        if std::env::var_os("PEEKGAME_NO_XI2").is_some() {
+            return None;
+        }
+        unsafe {
+            let (mut opcode, mut event, mut error) = (0, 0, 0);
+            if ffi::XQueryExtension(
+                display,
+                c"XInputExtension".as_ptr(),
+                &mut opcode,
+                &mut event,
+                &mut error,
+            ) == 0
+            {
+                return None;
+            }
+            // XI 2.0 can stop delivering raw motion during a core pointer grab,
+            // including the implicit grab while a mouse button is held. Camera
+            // look must keep working while aiming/firing: XI 2.1 delivers raw
+            // events regardless of grabs. Older servers use core deltas instead.
+            let (mut major, mut minor) = (2, 1);
+            if ffi::XIQueryVersion(display, &mut major, &mut minor) != 0
+                || (major, minor) < (2, 1)
+            {
+                return None;
+            }
+            // A mask covering XI_RawMotion (bit 17 -> 3 bytes); request it from all
+            // master devices so every physical mouse feeds the one raw stream.
+            let mut mask = [0u8; 4];
+            mask[XI_RAW_MOTION >> 3] |= 1 << (XI_RAW_MOTION & 7);
+            let mut em = types::IEventMask {
+                deviceid: XI_ALL_MASTER_DEVICES,
+                mask_len: mask.len() as c_int,
+                mask: mask.as_mut_ptr(),
+            };
+            ffi::XISelectEvents(display, root, &mut em, 1);
+            ffi::XFlush(display);
+            Some(opcode)
         }
     }
     fn atom(&self, name: &std::ffi::CStr) -> u64 {
         unsafe { ffi::XInternAtom(self.display, name.as_ptr(), 0) }
+    }
+    /// Whether unaccelerated XInput2 raw relative motion is available on this
+    /// connection (the raw-input camera-look path uses it in place of core deltas).
+    pub(crate) fn raw_motion_enabled(&self) -> bool {
+        self.xi_opcode.is_some()
     }
     /// An X font cursor (cursorfont.h shape).
     pub(crate) fn font_cursor(&self, shape: u32) -> Result<u64, u32> {
@@ -462,7 +522,9 @@ impl Connection {
             let ok = match window {
                 Some(w) => {
                     let mask = 4 | 8 | 0x40; // button press/release, motion
-                    ffi::XGrabPointer(self.display, w, 1, mask, 1, 1, w, 0, 0) == 0
+                    // owner_events=False prevents XI 2.1 raw motion arriving
+                    // twice, through both the grab and the root subscription.
+                    ffi::XGrabPointer(self.display, w, 0, mask, 1, 1, w, 0, 0) == 0
                 }
                 None => {
                     ffi::XUngrabPointer(self.display, 0);

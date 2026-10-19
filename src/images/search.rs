@@ -59,6 +59,9 @@ pub fn get_dll_directory() -> Option<String> {
 /// A Windows path as a host path: `\` becomes `/`; drive Z: is the host root and
 /// other drives do not exist.
 pub fn host_path(name: &str) -> Option<PathBuf> {
+    if let Ok(p) = crate::host::paths::host(name) {
+        return Some(p);
+    }
     let mut path = name.replace('\\', "/");
     if path.len() >= 2 && path.as_bytes()[1] == b':' {
         if !path[..1].eq_ignore_ascii_case("z") {
@@ -93,36 +96,45 @@ fn find_in(dir: &Path, file: &str) -> Option<PathBuf> {
     })
 }
 
-/// The replacement directory: PEEKGAME_WINDOWS_DLLS, else `windows-dlls` beside
+/// The replacement directories: PEEKGAME_WINDOWS_DLLS, else `windows-dlls` beside
 /// the PeekGame executable. Windows DLLs there take the place of PeekGame's own.
-fn replacement_dir() -> Option<PathBuf> {
-    static DIR: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
-    DIR.get_or_init(|| {
+fn replacement_dirs() -> &'static [PathBuf] {
+    static DIRS: std::sync::OnceLock<Vec<PathBuf>> = std::sync::OnceLock::new();
+    DIRS.get_or_init(|| {
+        let mut list = Vec::new();
         if let Some(d) = std::env::var_os("PEEKGAME_WINDOWS_DLLS") {
             let path = PathBuf::from(d);
             if path.is_dir() {
-                return Some(path);
+                list.push(path);
             }
         }
         if let Ok(exe) = std::env::current_exe() {
             if let Some(parent) = exe.parent() {
                 let candidate = parent.join("windows-dlls");
-                if candidate.is_dir() {
-                    return Some(candidate);
+                if candidate.is_dir() && !list.contains(&candidate) {
+                    list.push(candidate);
                 }
                 // When running target/release/peekgame or target/debug/peekgame
                 if let Some(root) = parent.parent().and_then(|p| p.parent()) {
                     let candidate = root.join("dist/windows-dlls");
-                    if candidate.is_dir() {
-                        return Some(candidate);
+                    if candidate.is_dir() && !list.contains(&candidate) {
+                        list.push(candidate);
+                    }
+                    let candidate = root.join("windows-dlls");
+                    if candidate.is_dir() && !list.contains(&candidate) {
+                        list.push(candidate);
                     }
                 }
             }
         }
-        // Compile-time source directory dist/windows-dlls
+        // Compile-time source directory dist/windows-dlls and windows-dlls
         let compile_dist = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/dist/windows-dlls"));
-        if compile_dist.is_dir() {
-            return Some(compile_dist);
+        if compile_dist.is_dir() && !list.contains(&compile_dist) {
+            list.push(compile_dist);
+        }
+        let compile_root = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/windows-dlls"));
+        if compile_root.is_dir() && !list.contains(&compile_root) {
+            list.push(compile_root);
         }
         // Common Steam compatibility tool install paths
         if let Ok(home) = std::env::var("HOME") {
@@ -133,18 +145,22 @@ fn replacement_dir() -> Option<PathBuf> {
                 ".local/share/Steam/compatibilitytools.d/peek_native/windows-dlls",
             ] {
                 let candidate = PathBuf::from(&home).join(sub);
-                if candidate.is_dir() {
-                    return Some(candidate);
+                if candidate.is_dir() && !list.contains(&candidate) {
+                    list.push(candidate);
                 }
             }
         }
-        None
+        list
     })
-    .clone()
 }
 pub fn replacement(name: &str) -> Option<PathBuf> {
     let file = normalize(name)?;
-    find_in(&replacement_dir()?, &file)
+    for dir in replacement_dirs() {
+        if let Some(found) = find_in(dir, &file) {
+            return Some(found);
+        }
+    }
+    None
 }
 pub fn find(name: &str, first_dir: Option<&Path>) -> Option<PathBuf> {
     if let Some(found) = replacement(name) {

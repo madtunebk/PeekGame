@@ -8,6 +8,7 @@ pub(crate) mod formats;
 pub(crate) mod modules;
 pub(crate) mod process;
 pub(crate) mod standard_handles;
+pub(crate) mod dinput8;
 
 pub(crate) mod console;
 pub(crate) mod cpu;

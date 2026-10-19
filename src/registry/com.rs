@@ -1,5 +1,5 @@
 use super::Export;
-use crate::api::com::{apartment, bstr, winrt};
+use crate::api::com::{apartment, bstr, mf, winrt};
 macro_rules! com {
     (@link $name:literal,$function:path $(,)?) => {
         link_symbol!("ole32.dll", $name, $function);
@@ -399,6 +399,7 @@ exports! {
     com!("CoTaskMemAlloc", apartment::allocate),
     com!("CoTaskMemRealloc", apartment::reallocate),
     com!("CoTaskMemFree", apartment::release),
+    export!("ole32.dll", "CoGetMalloc", "com", "implemented", "task allocator IMalloc for MEMCTX_TASK", apartment::get_malloc),
     com!("IIDFromString", apartment::iid_from_string),
     com!("CLSIDFromString", apartment::clsid_from_string),
     com!("StringFromIID", apartment::string_from_iid),
@@ -408,13 +409,14 @@ exports! {
     export!("mfplat.dll", "MFFrameRateToAverageTimePerFrame", "multimedia", "implemented", "100ns frame duration from rational rate", winrt::mf_frame_rate_to_avg_time),
     export!("mfplat.dll", "MFCreateAlignedMemoryBuffer", "multimedia", "partial", "E_NOTIMPL", winrt::mf_not_impl),
     export!("mfplat.dll", "MFCreateAsyncResult", "multimedia", "partial", "E_NOTIMPL", winrt::mf_not_impl),
-    export!("mfplat.dll", "MFCreateAttributes", "multimedia", "partial", "E_NOTIMPL", winrt::mf_not_impl),
+    export!("mfplat.dll", "MFCreateAttributes", "multimedia", "implemented", "Media Foundation attributes store", mf::mf_create_attributes),
     export!("mfplat.dll", "MFCreateDXGIDeviceManager", "multimedia", "partial", "E_NOTIMPL", winrt::mf_not_impl),
     export!("mfplat.dll", "MFCreateDXGISurfaceBuffer", "multimedia", "partial", "E_NOTIMPL", winrt::mf_not_impl),
     export!("mfplat.dll", "MFCreateEventQueue", "multimedia", "partial", "E_NOTIMPL", winrt::mf_not_impl),
     export!("mfplat.dll", "MFCreateMediaEvent", "multimedia", "partial", "E_NOTIMPL", winrt::mf_not_impl),
-    export!("mfplat.dll", "MFCreateMediaType", "multimedia", "partial", "E_NOTIMPL", winrt::mf_not_impl),
+    export!("mfplat.dll", "MFCreateMediaType", "multimedia", "implemented", "Media Foundation media type", mf::mf_create_media_type),
     export!("mfplat.dll", "MFCreateMemoryBuffer", "multimedia", "partial", "E_NOTIMPL", winrt::mf_not_impl),
+    export!("mfplat.dll", "MFCreateMFByteStreamOnStream", "multimedia", "implemented", "Byte stream on IStream", mf::mf_create_mf_bytestream_on_stream),
     export!("mfplat.dll", "MFCreatePresentationDescriptor", "multimedia", "partial", "E_NOTIMPL", winrt::mf_not_impl),
     export!("mfplat.dll", "MFCreateSample", "multimedia", "partial", "E_NOTIMPL", winrt::mf_not_impl),
     export!("mfplat.dll", "MFCreateStreamDescriptor", "multimedia", "partial", "E_NOTIMPL", winrt::mf_not_impl),
@@ -425,7 +427,9 @@ exports! {
     export!("mf.dll", "MFCreateDeviceSource", "multimedia", "partial", "E_NOTIMPL", winrt::mf_not_impl),
     export!("mf.dll", "MFEnumDeviceSources", "multimedia", "partial", "E_NOTIMPL", winrt::mf_not_impl),
     export!("mf.dll", "MFGetService", "multimedia", "partial", "E_NOTIMPL", winrt::mf_not_impl),
-    export!("mfreadwrite.dll", "MFCreateSourceReaderFromMediaSource", "multimedia", "partial", "E_NOTIMPL", winrt::mf_not_impl),
+    export!("mfreadwrite.dll", "MFCreateSourceReaderFromByteStream", "multimedia", "implemented", "Source reader on byte stream", mf::mf_create_source_reader_from_byte_stream),
+    export!("mfreadwrite.dll", "MFCreateSourceReaderFromMediaSource", "multimedia", "implemented", "Source reader on media source", mf::mf_create_source_reader_from_media_source),
+    export!("mfreadwrite.dll", "MFCreateSourceReaderFromURL", "multimedia", "implemented", "Source reader on URL", mf::mf_create_source_reader_from_url),
     export!("dxva2.dll", "DXVA2CreateDirect3DDeviceManager9", "multimedia", "partial", "E_NOTIMPL", winrt::mf_not_impl),
     export!("dxva2.dll", "DXVA2CreateVideoService", "multimedia", "partial", "E_NOTIMPL", winrt::mf_not_impl),
     export!("msmpeg2vdec.dll", "DllGetClassObject", "multimedia", "partial", "REGDB_E_CLASSNOTREG", winrt::mf_class_not_reg),

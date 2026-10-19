@@ -317,3 +317,165 @@ pub extern "win64" fn get_console_window() -> usize {
     0
 }
 
+static CONSOLE_TITLE: Mutex<Option<Vec<u16>>> = Mutex::new(None);
+
+fn has_console() -> bool {
+    (0..3).any(|fd| unsafe { isatty(fd) } != 0) || std::env::var_os("TERM").is_some()
+}
+
+fn current_title() -> Vec<u16> {
+    if let Some(ref t) = *CONSOLE_TITLE.lock().unwrap() {
+        return t.clone();
+    }
+    crate::images::exe()
+        .map(|m| {
+            let win_path = if m.path.to_string_lossy().starts_with("C:")
+                || m.path.to_string_lossy().starts_with(r"C:\")
+            {
+                m.path.to_string_lossy().into_owned()
+            } else {
+                crate::host::paths::windows(&m.path)
+            };
+            win_path.encode_utf16().collect()
+        })
+        .unwrap_or_else(|| "Console".encode_utf16().collect())
+}
+
+pub unsafe extern "win64" fn get_title_w(buffer: *mut u16, capacity: u32) -> u32 {
+    if buffer.is_null() || capacity == 0 {
+        error::set(87);
+        return 0;
+    }
+    if !has_console() {
+        error::set(6);
+        return 0;
+    }
+    let title = current_title();
+    let to_copy = (capacity as usize - 1).min(title.len());
+    if to_copy > 0 {
+        unsafe {
+            std::ptr::copy_nonoverlapping(title.as_ptr(), buffer, to_copy);
+        }
+    }
+    unsafe {
+        *buffer.add(to_copy) = 0;
+    }
+    to_copy as u32
+}
+
+pub unsafe extern "win64" fn get_title_a(buffer: *mut u8, capacity: u32) -> u32 {
+    if buffer.is_null() || capacity == 0 {
+        error::set(87);
+        return 0;
+    }
+    if !has_console() {
+        error::set(6);
+        return 0;
+    }
+    let title_w = current_title();
+    let title = String::from_utf16_lossy(&title_w);
+    let bytes = title.as_bytes();
+    let to_copy = (capacity as usize - 1).min(bytes.len());
+    if to_copy > 0 {
+        unsafe {
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), buffer, to_copy);
+        }
+    }
+    unsafe {
+        *buffer.add(to_copy) = 0;
+    }
+    to_copy as u32
+}
+
+pub unsafe extern "win64" fn set_title_w(title: *const u16) -> i32 {
+    if title.is_null() {
+        error::set(87);
+        return 0;
+    }
+    if !has_console() {
+        error::set(6);
+        return 0;
+    }
+    let mut len = 0;
+    while unsafe { *title.add(len) } != 0 {
+        len += 1;
+    }
+    let slice = unsafe { std::slice::from_raw_parts(title, len) };
+    *CONSOLE_TITLE.lock().unwrap() = Some(slice.to_vec());
+    1
+}
+
+pub unsafe extern "win64" fn set_title_a(title: *const u8) -> i32 {
+    if title.is_null() {
+        error::set(87);
+        return 0;
+    }
+    if !has_console() {
+        error::set(6);
+        return 0;
+    }
+    let c_str = unsafe { std::ffi::CStr::from_ptr(title as *const std::ffi::c_char) };
+    let s = c_str.to_string_lossy();
+    *CONSOLE_TITLE.lock().unwrap() = Some(s.encode_utf16().collect());
+    1
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_console_title_w_and_a() {
+        unsafe {
+            // Null buffer or 0 capacity should fail with ERROR_INVALID_PARAMETER (87)
+            assert_eq!(get_title_w(std::ptr::null_mut(), 100), 0);
+            assert_eq!(error::get_last_error(), 87);
+
+            let mut buf_w = [0u16; 64];
+            assert_eq!(get_title_w(buf_w.as_mut_ptr(), 0), 0);
+            assert_eq!(error::get_last_error(), 87);
+
+            // Null pointer to set_title should fail with ERROR_INVALID_PARAMETER (87)
+            assert_eq!(set_title_w(std::ptr::null()), 0);
+            assert_eq!(error::get_last_error(), 87);
+            assert_eq!(set_title_a(std::ptr::null()), 0);
+            assert_eq!(error::get_last_error(), 87);
+
+            // Set wide title
+            let new_title_w: Vec<u16> = "DOOM Eternal\0".encode_utf16().collect();
+            assert_eq!(set_title_w(new_title_w.as_ptr()), 1);
+
+            // Get wide title with full buffer
+            let len = get_title_w(buf_w.as_mut_ptr(), buf_w.len() as u32);
+            assert_eq!(len, 12);
+            assert_eq!(buf_w[12], 0);
+            assert_eq!(String::from_utf16_lossy(&buf_w[..12]), "DOOM Eternal");
+
+            // Get wide title with truncated capacity (capacity 5 -> 4 chars + null terminator)
+            let len_trunc = get_title_w(buf_w.as_mut_ptr(), 5);
+            assert_eq!(len_trunc, 4);
+            assert_eq!(buf_w[4], 0);
+            assert_eq!(String::from_utf16_lossy(&buf_w[..4]), "DOOM");
+
+            // Set ANSI title
+            let new_title_a = b"idTech Launcher\0";
+            assert_eq!(set_title_a(new_title_a.as_ptr()), 1);
+
+            // Get ANSI title
+            let mut buf_a = [0u8; 64];
+            let len_a = get_title_a(buf_a.as_mut_ptr(), buf_a.len() as u32);
+            assert_eq!(len_a, 15);
+            assert_eq!(buf_a[15], 0);
+            assert_eq!(&buf_a[..15], b"idTech Launcher");
+
+            // Truncated ANSI title (capacity 7 -> 6 chars + null terminator)
+            let len_a_trunc = get_title_a(buf_a.as_mut_ptr(), 7);
+            assert_eq!(len_a_trunc, 6);
+            assert_eq!(buf_a[6], 0);
+            assert_eq!(&buf_a[..6], b"idTech");
+        }
+    }
+}
+
+
+

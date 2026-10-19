@@ -81,6 +81,9 @@ fn ports() -> &'static Mutex<HashMap<usize, Arc<Port>>> {
 fn get(handle: usize) -> Option<Arc<Port>> {
     ports().lock().unwrap().get(&handle).cloned()
 }
+pub fn is_iocp(handle: usize) -> bool {
+    ports().lock().unwrap().contains_key(&handle)
+}
 fn insert(port: Arc<Port>) -> usize {
     let handle = NEXT.fetch_add(16, Ordering::Relaxed);
     ports().lock().unwrap().insert(handle, port);
@@ -106,6 +109,7 @@ pub fn close(handle: usize) -> bool {
     true
 }
 pub extern "win64" fn create(file: usize, existing: usize, key: usize, threads: u32) -> usize {
+    eprintln!("[iocp] create file={file:#x} existing={existing:#x} key={key:#x} threads={threads}");
     if file == usize::MAX && existing != 0 {
         error::set(87);
         return 0;
@@ -282,6 +286,7 @@ pub unsafe extern "win64" fn get_status_ex(
         *removed = 0;
     }
     let Some(port) = get(handle) else {
+        eprintln!("[iocp] get_status_ex failed: invalid handle {handle:#x}");
         error::set(6);
         return 0;
     };

@@ -13,5 +13,6 @@ pub(crate) mod shell;
 pub(crate) mod text;
 
 pub(crate) mod audio;
+pub(crate) mod concurrency;
 
 pub(crate) mod steam;

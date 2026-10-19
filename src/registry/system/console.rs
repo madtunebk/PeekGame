@@ -52,5 +52,9 @@ exports! {
     implemented!("SetConsoleTextAttribute", "system", "partial", "terminal ANSI foreground/background and intensity; COMMON_LVB flags unsupported", crate::api::system::console::text_attribute),
     implemented!("SetConsoleCtrlHandler", "system", "partial", "register or remove process console control handler", crate::api::system::console::set_ctrl_handler),
     implemented!("GetConsoleWindow", "system", "partial", "returns NULL window handle", console::get_console_window),
+    implemented!("GetConsoleTitleW", "system", "implemented", "retrieves console title as UTF-16", console::get_title_w),
+    implemented!("GetConsoleTitleA", "system", "implemented", "retrieves console title as ANSI", console::get_title_a),
+    implemented!("SetConsoleTitleW", "system", "implemented", "sets console title from UTF-16", console::set_title_w),
+    implemented!("SetConsoleTitleA", "system", "implemented", "sets console title from ANSI", console::set_title_a),
 }
 

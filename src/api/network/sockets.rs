@@ -39,6 +39,7 @@ unsafe extern "C" {
     fn ioctl(fd: i32, request: u64, ...) -> i32;
     fn poll(fds: *mut PollFd, count: u64, timeout: i32) -> i32;
     fn gethostname(name: *mut u8, length: usize) -> i32;
+    fn gettid() -> i32;
 }
 #[repr(C)]
 pub(crate) struct PollFd {
@@ -106,6 +107,42 @@ fn noting(f: impl FnOnce()) {
     f();
     set_errno(saved);
 }
+/// PEEKGAME_TRACE_SOCKETS: entry/exit of blocking socket calls, to pinpoint a hang
+/// that is waiting on the network. The last `enter` with no matching `exit` is the
+/// call the thread is blocked in; the socket handle, host fd and thread id identify
+/// it, and `exit` reports the byte count or the Winsock/errno result.
+fn tracing_sockets() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("PEEKGAME_TRACE_SOCKETS").is_some())
+}
+fn sock_enter(call: &str, s: usize) {
+    if tracing_sockets() {
+        eprintln!(
+            "SOCKET enter {call} sock={s:#x} fd={} tid={}",
+            fd(s),
+            unsafe { gettid() }
+        );
+    }
+}
+fn sock_exit(call: &str, s: usize, result: i32) -> i32 {
+    if tracing_sockets() {
+        if result < 0 {
+            eprintln!(
+                "SOCKET exit  {call} sock={s:#x} fd={} tid={} -> error {}",
+                fd(s),
+                unsafe { gettid() },
+                errno()
+            );
+        } else {
+            eprintln!(
+                "SOCKET exit  {call} sock={s:#x} fd={} tid={} -> {result}",
+                fd(s),
+                unsafe { gettid() }
+            );
+        }
+    }
+    result
+}
 
 pub extern "win64" fn create(family: i32, kind: i32, protocol: i32) -> usize {
     let s = unsafe { socket(family_to_host(family), kind | SOCK_CLOEXEC, protocol) };
@@ -155,15 +192,12 @@ pub unsafe extern "win64" fn connect_socket(s: usize, address: *const c_void, le
     let Some(a) = (unsafe { Address::from_windows(address, length) }) else {
         return -1;
     };
+    sock_enter("connect", s);
     let rc = unsafe { connect(fd(s), a.as_ptr(), a.length) };
     if rc == 0 || errno() == 115 {
         noting(|| events::note(fd(s), events::Note::Connect));
     }
-    if rc != 0 {
-        fail()
-    } else {
-        0
-    }
+    sock_exit("connect", s, if rc != 0 { fail() } else { 0 })
 }
 pub unsafe extern "win64" fn wsa_connect(
     s: usize,
@@ -242,6 +276,7 @@ pub unsafe extern "win64" fn send_data(
     length: i32,
     flags: i32,
 ) -> i32 {
+    sock_enter("send", s);
     let n = unsafe {
         send(
             fd(s),
@@ -250,7 +285,7 @@ pub unsafe extern "win64" fn send_data(
             message_flags(flags) | MSG_NOSIGNAL,
         )
     };
-    sent(s, n)
+    sock_exit("send", s, sent(s, n))
 }
 pub unsafe extern "win64" fn recv_data(
     s: usize,
@@ -258,13 +293,10 @@ pub unsafe extern "win64" fn recv_data(
     length: i32,
     flags: i32,
 ) -> i32 {
+    sock_enter("recv", s);
     let n = unsafe { recv(fd(s), buffer, length.max(0) as usize, message_flags(flags)) };
     noting(|| events::note(fd(s), events::Note::Receive));
-    if n < 0 {
-        fail()
-    } else {
-        n as i32
-    }
+    sock_exit("recv", s, if n < 0 { fail() } else { n as i32 })
 }
 pub unsafe extern "win64" fn send_to(
     s: usize,
@@ -285,6 +317,7 @@ pub unsafe extern "win64" fn send_to(
     let (to, to_length) = a
         .as_ref()
         .map_or((std::ptr::null(), 0), |a| (a.as_ptr(), a.length));
+    sock_enter("sendto", s);
     let n = unsafe {
         sendto(
             fd(s),
@@ -295,7 +328,7 @@ pub unsafe extern "win64" fn send_to(
             to_length,
         )
     };
-    sent(s, n)
+    sock_exit("sendto", s, sent(s, n))
 }
 pub unsafe extern "win64" fn recv_from(
     s: usize,
@@ -306,6 +339,7 @@ pub unsafe extern "win64" fn recv_from(
     from_length: *mut i32,
 ) -> i32 {
     let mut a = Address::empty();
+    sock_enter("recvfrom", s);
     let n = unsafe {
         recvfrom(
             fd(s),
@@ -318,12 +352,12 @@ pub unsafe extern "win64" fn recv_from(
     };
     noting(|| events::note(fd(s), events::Note::Receive));
     if n < 0 {
-        return fail();
+        return sock_exit("recvfrom", s, fail());
     }
     if !from.is_null() && !from_length.is_null() {
         unsafe { a.to_windows(from, from_length) };
     }
-    n as i32
+    sock_exit("recvfrom", s, n as i32)
 }
 pub extern "win64" fn shutdown_socket(s: usize, how: i32) -> i32 {
     if unsafe { shutdown(fd(s), how) } != 0 {
@@ -453,10 +487,11 @@ pub unsafe extern "win64" fn wsa_send(
     if !no_overlapped("WSASend", overlapped, routine) {
         return -1;
     }
+    sock_enter("WSASend", s);
     if overlapped != 0 {
-        return unsafe { overlapped::start_operation(fd(s), buffers.cast(), count, done, std::ptr::null_mut(), flags, overlapped::send(None), overlapped) };
+        return sock_exit("WSASend", s, unsafe { overlapped::start_operation(fd(s), buffers.cast(), count, done, std::ptr::null_mut(), flags, overlapped::send(None), overlapped) });
     }
-    unsafe { send_message(s, buffers, count, done, flags, None) }
+    sock_exit("WSASend", s, unsafe { send_message(s, buffers, count, done, flags, None) })
 }
 pub unsafe extern "win64" fn wsa_send_to(
     s: usize,
@@ -480,10 +515,11 @@ pub unsafe extern "win64" fn wsa_send_to(
             None => return -1,
         }
     };
+    sock_enter("WSASendTo", s);
     if overlapped != 0 {
-        return unsafe { overlapped::start_operation(fd(s), buffers.cast(), count, done, std::ptr::null_mut(), flags, overlapped::send(a), overlapped) };
+        return sock_exit("WSASendTo", s, unsafe { overlapped::start_operation(fd(s), buffers.cast(), count, done, std::ptr::null_mut(), flags, overlapped::send(a), overlapped) });
     }
-    unsafe { send_message(s, buffers, count, done, flags, a.as_ref()) }
+    sock_exit("WSASendTo", s, unsafe { send_message(s, buffers, count, done, flags, a.as_ref()) })
 }
 pub unsafe extern "win64" fn wsa_recv(
     s: usize,
@@ -497,10 +533,11 @@ pub unsafe extern "win64" fn wsa_recv(
     if !no_overlapped("WSARecv", overlapped, routine) {
         return -1;
     }
+    sock_enter("WSARecv", s);
     if overlapped != 0 {
-        return unsafe { overlapped::start_operation(fd(s), buffers.cast(), count, done, flags, 0, overlapped::receive(0, 0), overlapped) };
+        return sock_exit("WSARecv", s, unsafe { overlapped::start_operation(fd(s), buffers.cast(), count, done, flags, 0, overlapped::receive(0, 0), overlapped) });
     }
-    unsafe { receive_message(s, buffers, count, done, flags, None) }
+    sock_exit("WSARecv", s, unsafe { receive_message(s, buffers, count, done, flags, None) })
 }
 pub unsafe extern "win64" fn wsa_recv_from(
     s: usize,
@@ -516,11 +553,12 @@ pub unsafe extern "win64" fn wsa_recv_from(
     if !no_overlapped("WSARecvFrom", overlapped, routine) {
         return -1;
     }
+    sock_enter("WSARecvFrom", s);
     if overlapped != 0 {
-        return unsafe { overlapped::start_operation(fd(s), buffers.cast(), count, done, flags, 0, overlapped::receive(from as usize, from_length as usize), overlapped) };
+        return sock_exit("WSARecvFrom", s, unsafe { overlapped::start_operation(fd(s), buffers.cast(), count, done, flags, 0, overlapped::receive(from as usize, from_length as usize), overlapped) });
     }
     let mut a = Address::empty();
-    let rc = unsafe { receive_message(s, buffers, count, done, flags, Some(&mut a)) };
+    let rc = sock_exit("WSARecvFrom", s, unsafe { receive_message(s, buffers, count, done, flags, Some(&mut a)) });
     if rc == 0 && !from.is_null() && !from_length.is_null() {
         unsafe { a.to_windows(from, from_length) };
     }
@@ -961,7 +999,18 @@ pub unsafe extern "win64" fn select(
         let t = unsafe { *timeout };
         t[0].saturating_mul(1000).saturating_add(t[1] / 1000)
     };
-    if unsafe { poll(fds.as_mut_ptr(), fds.len() as u64, ms) } < 0 {
+    if tracing_sockets() {
+        eprintln!(
+            "SOCKET enter select nfds={} timeout_ms={ms} tid={}",
+            fds.len(),
+            unsafe { gettid() }
+        );
+    }
+    let rc = unsafe { poll(fds.as_mut_ptr(), fds.len() as u64, ms) };
+    if tracing_sockets() {
+        eprintln!("SOCKET exit  select tid={} -> {rc}", unsafe { gettid() });
+    }
+    if rc < 0 {
         return fail();
     }
     let mut ready = 0;

@@ -1,20 +1,20 @@
 //! SspiCli: the Schannel package ("Microsoft Unified Security Protocol Provider") for
-//! DTLS 1.0/1.2 over OpenSSL, as PlayFab Party uses it.
+//! TLS stream and DTLS 1.0/1.2 contexts over OpenSSL.
 //!
 //! - Credentials: SCHANNEL_CRED (version 4) with at most one certificate created by
 //!   CertCreateSelfSignCertificate (its private key is kept by CRYPT32 here), or
 //!   PSK-only (SCH_USE_PRESHAREDKEY_ONLY with SECBUFFER_PRESHARED_KEY[_IDENTITY]).
-//! - Contexts: InitializeSecurityContextW/AcceptSecurityContext with ISC/ASC_REQ_DATAGRAM.
-//!   Every output token is one UDP datagram; a flight that needs several datagrams
-//!   returns SEC_I_MESSAGE_FRAGMENT until the last one. A call without input while the
-//!   handshake waits retransmits the last flight (the caller owns the timing).
+//! - Contexts: TLS stream tokens use memory BIOs; DTLS uses ISC/ASC_REQ_DATAGRAM.
+//!   DTLS output tokens are UDP datagrams; multi-datagram flights return
+//!   SEC_I_MESSAGE_FRAGMENT until the last one. A call without input while the
+//!   handshake waits retransmits the last DTLS flight (the caller owns the timing).
 //!   Peer certificates are not validated here (Party validates them itself through
 //!   SECPKG_ATTR_REMOTE_CERT_CONTEXT, as with SCH_CRED_MANUAL_CRED_VALIDATION).
 //! - EncryptMessage/DecryptMessage: one DTLS record per call (header/data/trailer
 //!   buffers); DecryptMessage reports further records of the datagram as SECBUFFER_EXTRA.
 //! - QueryContextAttributesW: SECPKG_ATTR_STREAM_SIZES and SECPKG_ATTR_REMOTE_CERT_CONTEXT.
 //!
-//! Stream (TLS) contexts and other packages fail with SEC_E_UNSUPPORTED_FUNCTION.
+//! Other packages and ALPN/custom-crypto restrictions fail with SEC_E_UNSUPPORTED_FUNCTION.
 use crate::api::network::certificates;
 use std::{
     collections::{HashMap, HashSet, VecDeque},
@@ -30,6 +30,7 @@ type P = *mut c_void;
 #[link(name = "ssl")]
 unsafe extern "C" {
     fn DTLS_method() -> P;
+    fn TLS_method() -> P;
     fn SSL_CTX_new(method: P) -> P;
     fn SSL_CTX_free(ctx: P);
     fn SSL_CTX_ctrl(ctx: P, cmd: c_int, larg: c_long, parg: P) -> c_long;
@@ -41,6 +42,7 @@ unsafe extern "C" {
     fn SSL_new(ctx: P) -> P;
     fn SSL_free(ssl: P);
     fn SSL_set_bio(ssl: P, rbio: P, wbio: P);
+    fn SSL_set_options(ssl: P, options: u64) -> u64;
     fn SSL_set_connect_state(ssl: P);
     fn SSL_set_accept_state(ssl: P);
     fn SSL_do_handshake(ssl: P) -> c_int;
@@ -62,17 +64,23 @@ unsafe extern "C" {
         callback: Option<unsafe extern "C" fn(P, *const c_char, *mut u8, c_uint) -> c_uint>,
     );
     fn SSL_get_psk_identity(ssl: P) -> *const c_char;
+    fn SSL_get0_alpn_selected(ssl: P, data: *mut *const u8, len: *mut c_uint);
     fn DTLS_get_data_mtu(ssl: P) -> usize;
     fn DTLS_set_timer_cb(ssl: P, callback: Option<unsafe extern "C" fn(P, c_uint) -> c_uint>);
 }
 #[link(name = "crypto")]
 unsafe extern "C" {
     fn BIO_meth_new(kind: c_int, name: *const c_char) -> P;
+    fn BIO_s_mem() -> P;
     fn BIO_meth_set_write(method: P, f: unsafe extern "C" fn(P, *const c_char, c_int) -> c_int) -> c_int;
     fn BIO_meth_set_read(method: P, f: unsafe extern "C" fn(P, *mut c_char, c_int) -> c_int) -> c_int;
     fn BIO_meth_set_ctrl(method: P, f: unsafe extern "C" fn(P, c_int, c_long, P) -> c_long) -> c_int;
     fn BIO_meth_set_create(method: P, f: unsafe extern "C" fn(P) -> c_int) -> c_int;
     fn BIO_new(method: P) -> P;
+    fn BIO_free(bio: P) -> c_int;
+    fn BIO_write(bio: P, data: *const c_void, length: c_int) -> c_int;
+    fn BIO_read(bio: P, data: *mut c_void, length: c_int) -> c_int;
+    fn BIO_ctrl(bio: P, command: c_int, number: c_long, pointer: P) -> c_long;
     fn BIO_set_data(bio: P, data: P);
     fn BIO_get_data(bio: P) -> P;
     fn BIO_set_init(bio: P, init: c_int);
@@ -130,11 +138,28 @@ const SECPKG_CRED_OUTBOUND: u32 = 2;
 const REQ_ALLOCATE_MEMORY: u32 = 0x100;
 const REQ_DATAGRAM: u32 = 0x400;
 const SCH_USE_PRESHAREDKEY_ONLY: u32 = 0x0080_0000;
+const SCH_USE_STRONG_CRYPTO: u32 = 0x0040_0000;
+const TLS_PARAMS_OPTIONAL: u32 = 1;
 const SP_PROT_DTLS1_0: u32 = 0x0001_0000 | 0x0002_0000;
 const SP_PROT_DTLS1_2: u32 = 0x0004_0000 | 0x0008_0000;
+const SP_PROT_TLS1_0_CLIENT: u32 = 0x0000_0080;
+const SP_PROT_TLS1_1_CLIENT: u32 = 0x0000_0200;
+const SP_PROT_TLS1_2_CLIENT: u32 = 0x0000_0800;
+const SP_PROT_TLS1_3_CLIENT: u32 = 0x0000_2000;
+const SP_PROT_TLS_CLIENT: u32 = SP_PROT_TLS1_0_CLIENT | SP_PROT_TLS1_1_CLIENT | SP_PROT_TLS1_2_CLIENT | SP_PROT_TLS1_3_CLIENT;
 const SECPKG_ATTR_STREAM_SIZES: u32 = 4;
+const SECPKG_ATTR_APPLICATION_PROTOCOL: u32 = 0x23;
 const SECPKG_ATTR_REMOTE_CERT_CONTEXT: u32 = 0x53;
+const SECPKG_ATTR_CONNECTION_INFO: u32 = 0x5a;
 const PACKAGE: &str = "Microsoft Unified Security Protocol Provider";
+
+#[repr(C)]
+struct SecPkgContext_ApplicationProtocol {
+    proto_nego_status: u32,
+    proto_nego_ext: u32,
+    protocol_id_size: u8,
+    protocol_id: [u8; 255],
+}
 
 // ---- OpenSSL constants ------------------------------------------------------------
 const SSL_ERROR_WANT_READ: c_int = 2;
@@ -145,9 +170,17 @@ const SSL_CTRL_SET_MTU: c_int = 17;
 const DTLS_CTRL_SET_LINK_MTU: c_int = 120;
 const SSL_CTRL_SET_MIN_PROTO_VERSION: c_int = 123;
 const SSL_CTRL_SET_MAX_PROTO_VERSION: c_int = 124;
+const SSL_CTRL_SET_TLSEXT_HOSTNAME: c_int = 55;
+const TLSEXT_NAMETYPE_HOST_NAME: c_long = 0;
 const SSL_OP_NO_QUERY_MTU: c_long = 0x1000;
 const DTLS1_VERSION: c_long = 0xFEFF;
 const DTLS1_2_VERSION: c_long = 0xFEFD;
+const TLS1_VERSION: c_long = 0x0301;
+const TLS1_2_VERSION: c_long = 0x0303;
+const SSL_OP_NO_TLSV1: u64 = 0x0400_0000;
+const SSL_OP_NO_TLSV1_1: u64 = 0x1000_0000;
+const SSL_OP_NO_TLSV1_2: u64 = 0x0800_0000;
+const SSL_OP_NO_TLSV1_3: u64 = 0x2000_0000;
 const SSL_VERIFY_PEER: c_int = 1;
 const BIO_CTRL_FLUSH: c_int = 11;
 const BIO_CTRL_PENDING: c_int = 10;
@@ -225,8 +258,21 @@ fn bio_method() -> P {
 struct Credential {
     server: bool,
     protocols: u32,
+    stream: bool,
+    strong_crypto: bool,
     psk_only: bool,
     certificate: Option<(Vec<u8>, Vec<u8>)>, // certificate DER, private key DER
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct TlsParameters {
+    alpn_count: u32,
+    alpn_ids: *const c_void,
+    disabled_protocols: u32,
+    disabled_crypto_count: u32,
+    disabled_crypto: *const c_void,
+    flags: u32,
 }
 struct Context {
     /// Contexts keep their credential alive, as on Windows.
@@ -234,6 +280,10 @@ struct Context {
     ssl: P,
     ctx: P,
     datagrams: Box<Datagrams>,
+    stream: bool,
+    read_bio: P,
+    write_bio: P,
+    stream_pending_output: Vec<u8>,
     done: bool,
     psk: Option<(Vec<u8>, Vec<u8>)>, // identity, key
     peer_identity: Option<Vec<u8>>,
@@ -269,9 +319,11 @@ unsafe fn handle_id(handle: *const usize) -> Option<usize> {
     (upper == MAGIC).then_some(lower)
 }
 unsafe fn set_handle(handle: *mut usize, id: usize) {
-    unsafe {
-        *handle = id;
-        *handle.add(1) = MAGIC;
+    if !handle.is_null() {
+        unsafe {
+            *handle = id;
+            *handle.add(1) = MAGIC;
+        }
     }
 }
 unsafe fn set_expiry(expiry: *mut i64) {
@@ -309,6 +361,112 @@ fn bytes(buffer: &SecBuffer) -> Vec<u8> {
     }
 }
 
+#[allow(clippy::too_many_arguments)] // mirrors the Schannel InitializeSecurityContext surface
+unsafe fn stream_handshake_step(
+    context: &mut Context,
+    token_in: &[u8],
+    inputs: &mut [SecBuffer],
+    outputs: &mut [SecBuffer],
+    requirements: u32,
+    id: usize,
+    new_context: *mut usize,
+    attributes: *mut u32,
+    expiry: *mut i64,
+    server: bool,
+) -> i32 {
+    if context.stream_pending_output.is_empty() {
+        if !token_in.is_empty() {
+            let written = unsafe { BIO_write(context.read_bio, token_in.as_ptr().cast(), token_in.len().min(c_int::MAX as usize) as c_int) };
+            if written < 0 || written as usize != token_in.len() {
+                return SEC_E_INVALID_TOKEN;
+            }
+        }
+        if !context.done {
+            let result = unsafe { SSL_do_handshake(context.ssl) };
+            if result == 1 {
+                context.done = true;
+            } else {
+                let error = unsafe { SSL_get_error(context.ssl, result) };
+                if error != SSL_ERROR_WANT_READ && error != SSL_ERROR_WANT_WRITE {
+                    eprintln!("SspiCli: TLS handshake failed (OpenSSL error {error})");
+                    return SEC_E_ILLEGAL_MESSAGE;
+                }
+            }
+        }
+        let pending_in = unsafe { BIO_ctrl(context.read_bio, BIO_CTRL_PENDING, 0, ptr::null_mut()) }.max(0) as usize;
+        if pending_in > 0 {
+            let token_meta = inputs.iter().find(|b| kind(b) == SECBUFFER_TOKEN || kind(b) == SECBUFFER_DATA)
+                .map(|b| (b.data, b.size as usize));
+            if let Some(index) = inputs.iter().position(|b| kind(b) == SECBUFFER_EMPTY) {
+                let extra_buf = &mut inputs[index];
+                extra_buf.kind = SECBUFFER_EXTRA;
+                extra_buf.size = pending_in as u32;
+                if let Some((data, size)) = token_meta {
+                    if !data.is_null() && size >= pending_in {
+                        extra_buf.data = unsafe { data.add(size - pending_in) };
+                    }
+                }
+            }
+        }
+        let pending = unsafe { BIO_ctrl(context.write_bio, BIO_CTRL_PENDING, 0, ptr::null_mut()) }.max(0) as usize;
+        if pending != 0 {
+            context.stream_pending_output.resize(pending, 0);
+            let read = unsafe { BIO_read(context.write_bio, context.stream_pending_output.as_mut_ptr().cast(), pending.min(c_int::MAX as usize) as c_int) };
+            if read < 0 {
+                context.stream_pending_output.clear();
+                eprintln!("SspiCli: TLS output BIO reported {pending} pending bytes but BIO_read failed ({read})");
+                return SEC_E_INTERNAL_ERROR;
+            }
+            context.stream_pending_output.truncate(read as usize);
+        }
+    }
+    unsafe { set_handle(new_context, id) };
+    unsafe { set_expiry(expiry) };
+    if !attributes.is_null() {
+        unsafe { *attributes = requirements & (0x2 | 0x4 | 0x8 | 0x10 | 0x80 | REQ_ALLOCATE_MEMORY | 0x4000 | 0x8000 | 0x8_0000) };
+    }
+    let token = outputs.iter().position(|b| kind(b) == SECBUFFER_TOKEN)
+        .or_else(|| outputs.iter().position(|b| kind(b) == SECBUFFER_EMPTY))
+        .or_else(|| (!outputs.is_empty()).then_some(0));
+    for buffer in outputs.iter_mut() {
+        if matches!(kind(buffer), SECBUFFER_TOKEN | SECBUFFER_ALERT) {
+            buffer.size = 0;
+        }
+    }
+    if !context.stream_pending_output.is_empty() {
+        let Some(index) = token else {
+            eprintln!("SspiCli: TLS handshake produced {} output bytes but the caller supplied no output buffer ({} output buffers)", context.stream_pending_output.len(), outputs.len());
+            return SEC_E_INTERNAL_ERROR;
+        };
+        let len = context.stream_pending_output.len();
+        let buffer = &mut outputs[index];
+        buffer.kind = SECBUFFER_TOKEN;
+        if requirements & REQ_ALLOCATE_MEMORY != 0 {
+            let block = unsafe { malloc(len) }.cast::<u8>();
+            if block.is_null() {
+                return SEC_E_INSUFFICIENT_MEMORY;
+            }
+            unsafe { ptr::copy_nonoverlapping(context.stream_pending_output.as_ptr(), block, len) };
+            ALLOCATED.lock().unwrap().get_or_insert_with(HashSet::new).insert(block as usize);
+            buffer.data = block;
+            buffer.size = len as u32;
+        } else if buffer.data.is_null() || (buffer.size as usize) < len {
+            buffer.size = len as u32;
+            return SEC_E_BUFFER_TOO_SMALL;
+        } else {
+            unsafe { ptr::copy_nonoverlapping(context.stream_pending_output.as_ptr(), buffer.data, len) };
+            buffer.size = len as u32;
+        }
+        context.stream_pending_output.clear();
+    }
+    let status = if context.done { SEC_E_OK } else { SEC_I_CONTINUE_NEEDED };
+    if trace() {
+        let out = token.and_then(|i| outputs.get(i)).map_or(0, |b| b.size);
+        eprintln!("[sspi] {} TLS ctx={id:#x} in={} out={out} -> {status:#x}", if server { "AcceptSecurityContext" } else { "InitializeSecurityContext" }, token_in.len());
+    }
+    status
+}
+
 pub unsafe extern "win64" fn acquire_credentials_handle_w(
     _principal: *const u16,
     package: *const u16,
@@ -328,28 +486,68 @@ pub unsafe extern "win64" fn acquire_credentials_handle_w(
     if credential.is_null() || !matches!(usage, SECPKG_CRED_INBOUND | SECPKG_CRED_OUTBOUND) {
         return SEC_E_UNKNOWN_CREDENTIALS;
     }
-    // SCHANNEL_CRED (x64): dwVersion @0, cCreds @4, paCred @8, grbitEnabledProtocols @56, dwFlags @72.
-    let (count, certificates_list, protocols, flags) = if auth_data.is_null() {
-        (0, ptr::null::<usize>(), 0, 0)
+    // SCHANNEL_CRED v4 and SCH_CREDENTIALS v5 have different x64 layouts.
+    // SCH_CREDENTIALS v5: cCreds @8, paCred @16, dwFlags @52,
+    // cTlsParameters @56, pTlsParameters @64. It has no protocol bitmask;
+    // TLS_PARAMETERS expresses restrictions instead.
+    let (version, count, certificates_list, mut protocols, flags, tls_parameters, tls_parameters_ptr) = if auth_data.is_null() {
+        (0, 0, ptr::null::<usize>(), 0, 0, 0, ptr::null::<TlsParameters>())
     } else {
         unsafe {
             let version = *(auth_data as *const u32);
-            if version != 4 {
-                eprintln!("SspiCli: SCHANNEL_CRED version {version} is not supported");
-                return SEC_E_UNKNOWN_CREDENTIALS;
+            match version {
+                4 => (
+                    version,
+                    *(auth_data.add(4) as *const u32),
+                    *(auth_data.add(8) as *const *const usize),
+                    *(auth_data.add(56) as *const u32),
+                    *(auth_data.add(72) as *const u32),
+                    0,
+                    ptr::null(),
+                ),
+                5 => (
+                    version,
+                    *(auth_data.add(8) as *const u32),
+                    *(auth_data.add(16) as *const *const usize),
+                    0, // v5 has no grbitEnabledProtocols; use backend defaults.
+                    *(auth_data.add(52) as *const u32),
+                    *(auth_data.add(56) as *const u32),
+                    *(auth_data.add(64) as *const *const TlsParameters),
+                ),
+                _ => {
+                    eprintln!("SspiCli: Schannel credential version {version} is not supported");
+                    return SEC_E_UNKNOWN_CREDENTIALS;
+                }
             }
-            (
-                *(auth_data.add(4) as *const u32),
-                *(auth_data.add(8) as *const *const usize),
-                *(auth_data.add(56) as *const u32),
-                *(auth_data.add(72) as *const u32),
-            )
         }
     };
+    if tls_parameters != 0 {
+        if tls_parameters > 16 || tls_parameters_ptr.is_null() {
+            eprintln!("SspiCli: invalid SCH_CREDENTIALS TLS_PARAMETERS array count={tls_parameters}");
+            return SEC_E_UNKNOWN_CREDENTIALS;
+        }
+        for index in 0..tls_parameters as usize {
+            let parameter = unsafe { tls_parameters_ptr.add(index).read_unaligned() };
+            eprintln!(
+                "SspiCli: TLS_PARAMETERS[{index}] alpn_count={} disabled_protocols={:#x} disabled_crypto_count={} flags={:#x}",
+                parameter.alpn_count, parameter.disabled_protocols,
+                parameter.disabled_crypto_count, parameter.flags
+            );
+            let optional = parameter.flags & TLS_PARAMS_OPTIONAL != 0;
+            if !optional && (parameter.alpn_count != 0 || parameter.disabled_crypto_count != 0) {
+                eprintln!("SspiCli: non-optional ALPN/crypto TLS_PARAMETERS restrictions are not supported");
+                return SEC_E_UNSUPPORTED_FUNCTION;
+            }
+            protocols = !parameter.disabled_protocols & SP_PROT_TLS_CLIENT;
+        }
+    }
     let dtls = SP_PROT_DTLS1_0 | SP_PROT_DTLS1_2;
-    let protocols = if protocols == 0 { dtls } else { protocols };
-    if protocols & dtls == 0 {
-        eprintln!("SspiCli: only DTLS is supported (protocols {protocols:#x})");
+    if protocols == 0 {
+        protocols = if version == 5 { SP_PROT_TLS1_2_CLIENT } else { dtls };
+    }
+    let stream = protocols & SP_PROT_TLS_CLIENT != 0 && protocols & dtls == 0;
+    if protocols & dtls == 0 && protocols & SP_PROT_TLS_CLIENT == 0 {
+        eprintln!("SspiCli: no supported TLS/DTLS protocols enabled (protocols {protocols:#x})");
         return SEC_E_ALGORITHM_MISMATCH;
     }
     let certificate = if count == 0 {
@@ -379,7 +577,7 @@ pub unsafe extern "win64" fn acquire_credentials_handle_w(
         .lock()
         .unwrap()
         .get_or_insert_with(HashMap::new)
-        .insert(id, Arc::new(Credential { server, protocols: protocols & dtls, psk_only, certificate }));
+        .insert(id, Arc::new(Credential { server, protocols: if stream { protocols & SP_PROT_TLS_CLIENT } else { protocols & dtls }, stream, strong_crypto: flags & SCH_USE_STRONG_CRYPTO != 0, psk_only, certificate }));
     unsafe {
         set_handle(credential, id);
         set_expiry(expiry);
@@ -431,17 +629,32 @@ unsafe extern "C" fn psk_server(ssl: P, _identity: *const c_char, psk: *mut u8, 
 fn create_context(credential: Arc<Credential>, psk: Option<(Vec<u8>, Vec<u8>)>) -> Result<Context, i32> {
     unsafe {
         ERR_clear_error();
-        let ctx = SSL_CTX_new(DTLS_method());
+        let ctx = SSL_CTX_new(if credential.stream { TLS_method() } else { DTLS_method() });
         if ctx.is_null() {
             return Err(SEC_E_INSUFFICIENT_MEMORY);
         }
-        let min = if credential.protocols & SP_PROT_DTLS1_0 != 0 { DTLS1_VERSION } else { DTLS1_2_VERSION };
-        let max = if credential.protocols & SP_PROT_DTLS1_2 != 0 { DTLS1_2_VERSION } else { DTLS1_VERSION };
-        SSL_CTX_ctrl(ctx, SSL_CTRL_SET_MIN_PROTO_VERSION, min, ptr::null_mut());
-        SSL_CTX_ctrl(ctx, SSL_CTRL_SET_MAX_PROTO_VERSION, max, ptr::null_mut());
-        // Schannel accepts the DTLS 1.0 and SHA-1 combinations OpenSSL's default level refuses.
-        SSL_CTX_set_security_level(ctx, 0);
-        let ciphers = if credential.psk_only { c"PSK:!aNULL" } else { c"DEFAULT:!aNULL:@SECLEVEL=0" };
+        let mut disabled_options = 0u64;
+        if credential.stream {
+            let allowed = credential.protocols;
+            if allowed & SP_PROT_TLS1_0_CLIENT == 0 { disabled_options |= SSL_OP_NO_TLSV1; }
+            if allowed & SP_PROT_TLS1_1_CLIENT == 0 { disabled_options |= SSL_OP_NO_TLSV1_1; }
+            if allowed & SP_PROT_TLS1_2_CLIENT == 0 { disabled_options |= SSL_OP_NO_TLSV1_2; }
+            // TLS 1.3 has different record and cipher APIs; this backend currently stops at 1.2.
+            disabled_options |= SSL_OP_NO_TLSV1_3;
+            SSL_CTX_ctrl(ctx, SSL_CTRL_SET_MIN_PROTO_VERSION, TLS1_VERSION, ptr::null_mut());
+            SSL_CTX_ctrl(ctx, SSL_CTRL_SET_MAX_PROTO_VERSION, TLS1_2_VERSION, ptr::null_mut());
+        } else {
+            let min = if credential.protocols & SP_PROT_DTLS1_0 != 0 { DTLS1_VERSION } else { DTLS1_2_VERSION };
+            let max = if credential.protocols & SP_PROT_DTLS1_2 != 0 { DTLS1_2_VERSION } else { DTLS1_VERSION };
+            SSL_CTX_ctrl(ctx, SSL_CTRL_SET_MIN_PROTO_VERSION, min, ptr::null_mut());
+            SSL_CTX_ctrl(ctx, SSL_CTRL_SET_MAX_PROTO_VERSION, max, ptr::null_mut());
+        }
+        // Honour Schannel's strong-crypto request; DTLS retains compatibility level.
+        SSL_CTX_set_security_level(ctx, if credential.strong_crypto { 2 } else { 0 });
+        if credential.stream && credential.strong_crypto && credential.protocols & SP_PROT_TLS1_2_CLIENT != 0 {
+            SSL_CTX_ctrl(ctx, SSL_CTRL_SET_MIN_PROTO_VERSION, TLS1_2_VERSION, ptr::null_mut());
+        }
+        let ciphers = if credential.psk_only { c"PSK:!aNULL" } else if credential.strong_crypto { c"DEFAULT:!aNULL" } else { c"DEFAULT:!aNULL:@SECLEVEL=0" };
         SSL_CTX_set_cipher_list(ctx, ciphers.as_ptr());
         if let Some((der, key)) = &credential.certificate {
             let mut input = der.as_ptr();
@@ -468,11 +681,29 @@ fn create_context(credential: Arc<Credential>, psk: Option<(Vec<u8>, Vec<u8>)>) 
             return Err(SEC_E_INSUFFICIENT_MEMORY);
         }
         let mut datagrams = Box::new(Datagrams { mtu: 1200, ..Default::default() });
-        let bio = BIO_new(bio_method());
-        BIO_set_data(bio, (&mut *datagrams as *mut Datagrams).cast());
-        SSL_set_bio(ssl, bio, bio);
-        SSL_ctrl(ssl, SSL_CTRL_OPTIONS, SSL_OP_NO_QUERY_MTU, ptr::null_mut());
-        DTLS_set_timer_cb(ssl, Some(caller_driven_timer));
+        let (read_bio, write_bio) = if credential.stream {
+            let read = BIO_new(BIO_s_mem());
+            let write = BIO_new(BIO_s_mem());
+            if read.is_null() || write.is_null() {
+                if !read.is_null() { BIO_free(read); }
+                if !write.is_null() { BIO_free(write); }
+                SSL_free(ssl);
+                SSL_CTX_free(ctx);
+                return Err(SEC_E_INSUFFICIENT_MEMORY);
+            }
+            SSL_set_bio(ssl, read, write);
+            (read, write)
+        } else {
+            let bio = BIO_new(bio_method());
+            BIO_set_data(bio, (&mut *datagrams as *mut Datagrams).cast());
+            SSL_set_bio(ssl, bio, bio);
+            SSL_ctrl(ssl, SSL_CTRL_OPTIONS, SSL_OP_NO_QUERY_MTU as c_long, ptr::null_mut());
+            DTLS_set_timer_cb(ssl, Some(caller_driven_timer));
+            (ptr::null_mut(), ptr::null_mut())
+        };
+        if credential.stream {
+            SSL_set_options(ssl, disabled_options);
+        }
         if credential.server {
             SSL_set_accept_state(ssl);
             SSL_set_psk_server_callback(ssl, Some(psk_server));
@@ -480,7 +711,7 @@ fn create_context(credential: Arc<Credential>, psk: Option<(Vec<u8>, Vec<u8>)>) 
             SSL_set_connect_state(ssl);
             SSL_set_psk_client_callback(ssl, Some(psk_client));
         }
-        Ok(Context { _credential: credential, ssl, ctx, datagrams, done: false, psk, peer_identity: None, last_flight: Vec::new() })
+        Ok(Context { _credential: credential.clone(), ssl, ctx, datagrams, stream: credential.stream, read_bio, write_bio, stream_pending_output: Vec::new(), done: false, psk, peer_identity: None, last_flight: Vec::new() })
     }
 }
 /// Schannel leaves retransmission timing to its caller: a call without input while the
@@ -505,6 +736,7 @@ fn set_mtu(context: &mut Context, mtu: usize) {
 unsafe fn handshake(
     credential: *const usize,
     context_handle: *const usize,
+    target_name: Option<&str>,
     requirements: u32,
     input: *const u8,
     new_context: *mut usize,
@@ -513,13 +745,10 @@ unsafe fn handshake(
     expiry: *mut i64,
     server: bool,
 ) -> i32 {
-    if requirements & REQ_DATAGRAM == 0 {
-        eprintln!("SspiCli: Schannel stream (TLS) contexts are not supported");
-        return SEC_E_UNSUPPORTED_FUNCTION;
-    }
+    let stream = requirements & REQ_DATAGRAM == 0;
     let inputs = unsafe { buffers(input) };
     let outputs = unsafe { buffers(output) };
-    let token_in = inputs.iter().find(|b| kind(b) == SECBUFFER_TOKEN).map(bytes).unwrap_or_default();
+    let token_in = inputs.iter().find(|b| kind(b) == SECBUFFER_TOKEN || kind(b) == SECBUFFER_DATA).map(bytes).unwrap_or_default();
     let psk_key = inputs.iter().find(|b| kind(b) == SECBUFFER_PRESHARED_KEY).map(bytes);
     let psk_identity = inputs.iter().find(|b| kind(b) == SECBUFFER_PRESHARED_KEY_IDENTITY).map(bytes);
     let mtu = inputs.iter().find(|b| kind(b) == SECBUFFER_DTLS_MTU && b.size >= 2 && !b.data.is_null())
@@ -537,6 +766,10 @@ unsafe fn handshake(
             if cred.server != server {
                 return SEC_E_UNKNOWN_CREDENTIALS;
             }
+            if cred.stream != stream {
+                eprintln!("SspiCli: Schannel credential transport does not match the requested context transport");
+                return SEC_E_ALGORITHM_MISMATCH;
+            }
             // A pre-shared key counts when it has non-zero bytes (an all-zero placeholder
             // does not); clients also need the identity they send.
             let psk = match (psk_key, psk_identity) {
@@ -553,8 +786,27 @@ unsafe fn handshake(
                 Ok(c) => c,
                 Err(code) => return code,
             };
+            if context.stream && !server {
+                if let Some(target) = target_name {
+                    let host = target.split(':').next().unwrap_or(target).trim();
+                    if !host.is_empty() && host.parse::<std::net::IpAddr>().is_err() {
+                        if let Ok(c_host) = std::ffi::CString::new(host) {
+                            unsafe {
+                                SSL_ctrl(
+                                    context.ssl,
+                                    SSL_CTRL_SET_TLSEXT_HOSTNAME,
+                                    TLSEXT_NAMETYPE_HOST_NAME,
+                                    c_host.as_ptr() as *mut c_void,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
             let id = NEXT.fetch_add(16, Ordering::Relaxed);
-            set_mtu(&mut context, mtu.unwrap_or(1200));
+            if !context.stream {
+                set_mtu(&mut context, mtu.unwrap_or(1200));
+            }
             let shared = Arc::new(Mutex::new(context));
             CONTEXTS.lock().unwrap().get_or_insert_with(HashMap::new).insert(id, shared.clone());
             (id, shared)
@@ -562,15 +814,26 @@ unsafe fn handshake(
     };
     let (id, shared) = shared;
     let mut context = shared.lock().unwrap();
+    if context.stream != stream {
+        return SEC_E_ALGORITHM_MISMATCH;
+    }
     // The PSK callbacks find the context (fixed inside the Arc) through ex_data.
     unsafe { SSL_set_ex_data(context.ssl, ex_index(), (&*context as *const Context) as P) };
-    if let Some(mtu) = mtu {
-        set_mtu(&mut context, mtu);
+    if stream {
+        return unsafe { stream_handshake_step(&mut context, &token_in, inputs, outputs, requirements, id, new_context, attributes, expiry, server) };
     }
-    let token_out = outputs.iter().position(|b| kind(b) == SECBUFFER_TOKEN);
-    let alert_out = outputs.iter().position(|b| kind(b) == SECBUFFER_ALERT);
+    if !context.stream {
+      if let Some(mtu) = mtu {
+        set_mtu(&mut context, mtu);
+      }
+    }
+    let token_out = outputs.iter().position(|b| kind(b) == SECBUFFER_TOKEN)
+        .or_else(|| outputs.iter().position(|b| kind(b) == SECBUFFER_EMPTY))
+        .or_else(|| (!outputs.is_empty()).then_some(0));
+    let alert_out = outputs.iter().position(|b| kind(b) == SECBUFFER_ALERT)
+        .or_else(|| outputs.iter().position(|b| kind(b) == SECBUFFER_EMPTY));
     if let Some(index) = token_out {
-        if requirements & REQ_ALLOCATE_MEMORY == 0 && outputs[index].size != 0 {
+        if !context.stream && requirements & REQ_ALLOCATE_MEMORY == 0 && outputs[index].size != 0 {
             set_mtu(&mut context, (outputs[index].size as usize).min(mtu.unwrap_or(1200)));
         }
     }
@@ -631,6 +894,7 @@ unsafe fn handshake(
     }
     if let (Some(datagram), Some(index)) = (next, target) {
         let b = &mut outputs[index];
+        b.kind = if failed.is_some() { SECBUFFER_ALERT } else { SECBUFFER_TOKEN };
         if requirements & REQ_ALLOCATE_MEMORY != 0 {
             let block = unsafe { malloc(datagram.len()) }.cast::<u8>();
             if block.is_null() {
@@ -669,7 +933,7 @@ unsafe fn handshake(
 pub unsafe extern "win64" fn initialize_security_context_w(
     credential: *const usize,
     context: *const usize,
-    _target: *const u16,
+    target: *const u16,
     requirements: u32,
     _reserved1: u32,
     _representation: u32,
@@ -680,7 +944,8 @@ pub unsafe extern "win64" fn initialize_security_context_w(
     attributes: *mut u32,
     expiry: *mut i64,
 ) -> i32 {
-    unsafe { handshake(credential, context, requirements, input, new_context, output, attributes, expiry, false) }
+    let target_name = unsafe { crate::api::text::string(target) };
+    unsafe { handshake(credential, context, target_name.as_deref(), requirements, input, new_context, output, attributes, expiry, false) }
 }
 #[allow(clippy::too_many_arguments)]
 pub unsafe extern "win64" fn accept_security_context(
@@ -694,7 +959,7 @@ pub unsafe extern "win64" fn accept_security_context(
     attributes: *mut u32,
     expiry: *mut i64,
 ) -> i32 {
-    unsafe { handshake(credential, context, requirements, input, new_context, output, attributes, expiry, true) }
+    unsafe { handshake(credential, context, None, requirements, input, new_context, output, attributes, expiry, true) }
 }
 pub unsafe extern "win64" fn delete_security_context(context: *mut usize) -> i32 {
     let Some(id) = (unsafe { handle_id(context) }) else {
@@ -723,6 +988,9 @@ fn context(handle: *const usize) -> Option<Arc<Mutex<Context>>> {
 }
 /// (record header incl. explicit nonce/IV, worst-case trailer, block size, max message)
 fn sizes(context: &Context) -> Option<(usize, usize, usize, usize)> {
+    if context.stream {
+        return Some((5, 256, 1, 16 * 1024));
+    }
     if !context.done {
         return None;
     }
@@ -781,6 +1049,45 @@ pub unsafe extern "win64" fn query_context_attributes_w(handle: *const usize, at
             unsafe { *(out as *mut *const c_void) = certificate };
             SEC_E_OK
         }
+        SECPKG_ATTR_APPLICATION_PROTOCOL => {
+            let mut data: *const u8 = ptr::null();
+            let mut len: c_uint = 0;
+            unsafe { SSL_get0_alpn_selected(context.ssl, &mut data, &mut len) };
+            let mut proto = SecPkgContext_ApplicationProtocol {
+                proto_nego_status: 0,
+                proto_nego_ext: 0,
+                protocol_id_size: 0,
+                protocol_id: [0u8; 255],
+            };
+            if len > 0 && !data.is_null() {
+                let copy_len = (len as usize).min(255);
+                proto.proto_nego_status = 1; // SecApplicationProtocolNegotiationStatus_Success
+                proto.proto_nego_ext = 2;    // SecApplicationProtocolNegotiationExt_ALPN
+                proto.protocol_id_size = copy_len as u8;
+                unsafe { ptr::copy_nonoverlapping(data, proto.protocol_id.as_mut_ptr(), copy_len) };
+            }
+            unsafe { ptr::copy_nonoverlapping(&proto, out.cast::<SecPkgContext_ApplicationProtocol>(), 1) };
+            if trace() {
+                eprintln!(
+                    "[sspi] QueryContextAttributesW SECPKG_ATTR_APPLICATION_PROTOCOL -> status={} ext={} len={}",
+                    proto.proto_nego_status, proto.proto_nego_ext, proto.protocol_id_size
+                );
+            }
+            SEC_E_OK
+        }
+        SECPKG_ATTR_CONNECTION_INFO => {
+            let info = [
+                0x0000_0800u32, // SP_PROT_TLS1_2_CLIENT
+                0x6610u32,      // CALG_AES_256
+                256u32,
+                0x800eu32,      // CALG_SHA_256
+                256u32,
+                0xae06u32,      // CALG_ECDH
+                256u32,
+            ];
+            unsafe { ptr::copy_nonoverlapping(info.as_ptr(), out.cast::<u32>(), 7) };
+            SEC_E_OK
+        }
         _ => {
             eprintln!("SspiCli: QueryContextAttributesW attribute {attribute:#x} is not supported");
             SEC_E_UNSUPPORTED_FUNCTION
@@ -788,8 +1095,12 @@ pub unsafe extern "win64" fn query_context_attributes_w(handle: *const usize, at
     }
 }
 
-/// EncryptMessage: STREAM_HEADER + DATA + STREAM_TRAILER, one DTLS record. The DATA
-/// buffer is encrypted in place; header and trailer receive the rest of the record.
+pub unsafe extern "win64" fn query_context_attributes_a(handle: *const usize, attribute: u32, out: *mut u8) -> i32 {
+    unsafe { query_context_attributes_w(handle, attribute, out) }
+}
+
+/// EncryptMessage: STREAM_HEADER + DATA + STREAM_TRAILER. TLS uses memory BIOs;
+/// DTLS uses the datagram BIO and emits one record.
 pub unsafe extern "win64" fn encrypt_message(handle: *const usize, _qop: u32, message: *const u8, _sequence: u32) -> i32 {
     let Some(shared) = context(handle) else { return SEC_E_INVALID_HANDLE };
     let mut context = shared.lock().unwrap();
@@ -805,6 +1116,44 @@ pub unsafe extern "win64" fn encrypt_message(handle: *const usize, _qop: u32, me
     let plain = bytes(&list[d]);
     if plain.len() > max {
         return SEC_E_BUFFER_TOO_SMALL;
+    }
+    if context.stream {
+        if list[d].data.is_null() || plain.len() > c_int::MAX as usize {
+            return SEC_E_INVALID_TOKEN;
+        }
+        let n = unsafe { SSL_write(context.ssl, plain.as_ptr().cast(), plain.len() as c_int) };
+        if n < 0 || n as usize != plain.len() {
+            return SEC_E_INTERNAL_ERROR;
+        }
+        let pending = unsafe { BIO_ctrl(context.write_bio, BIO_CTRL_PENDING, 0, ptr::null_mut()) }.max(0) as usize;
+        if pending < 5 {
+            return SEC_E_INTERNAL_ERROR;
+        }
+        let mut record = vec![0u8; pending];
+        let read = unsafe { BIO_read(context.write_bio, record.as_mut_ptr().cast(), pending.min(c_int::MAX as usize) as c_int) };
+        if read < 5 {
+            return SEC_E_INTERNAL_ERROR;
+        }
+        record.truncate(read as usize);
+        let overhead = record.len().saturating_sub(5 + plain.len());
+        let trailer = overhead;
+        let body = record.len() - 5 - trailer;
+        if list[h].size < 5 || body != plain.len() || (list[t].size as usize) < trailer
+            || list[h].data.is_null() || list[t].data.is_null() && trailer != 0
+        {
+            return SEC_E_BUFFER_TOO_SMALL;
+        }
+        unsafe {
+            ptr::copy_nonoverlapping(record.as_ptr(), list[h].data, 5);
+            ptr::copy_nonoverlapping(record.as_ptr().add(5), list[d].data, body);
+            if trailer != 0 {
+                ptr::copy_nonoverlapping(record.as_ptr().add(5 + body), list[t].data, trailer);
+            }
+        }
+        list[h].size = 5;
+        list[d].size = body as u32;
+        list[t].size = trailer as u32;
+        return SEC_E_OK;
     }
     context.datagrams.outgoing.clear();
     let n = unsafe { SSL_write(context.ssl, plain.as_ptr().cast(), plain.len() as c_int) };
@@ -846,6 +1195,54 @@ pub unsafe extern "win64" fn decrypt_message(handle: *const usize, message: *con
     }
     let base = list[d].data;
     let total = list[d].size as usize;
+    if context.stream {
+        const TLS_HEADER: usize = 5;
+        if base.is_null() || total < TLS_HEADER {
+            return SEC_E_INCOMPLETE_MESSAGE;
+        }
+        let encrypted = unsafe { std::slice::from_raw_parts(base, total) };
+        let record_len = TLS_HEADER + u16::from_be_bytes([encrypted[3], encrypted[4]]) as usize;
+        if record_len > total {
+            return SEC_E_INCOMPLETE_MESSAGE;
+        }
+        if record_len > c_int::MAX as usize || unsafe { BIO_write(context.read_bio, base.cast(), record_len as c_int) } as usize != record_len {
+            return SEC_E_INTERNAL_ERROR;
+        }
+        let mut plain = vec![0u8; record_len];
+        let n = unsafe { SSL_read(context.ssl, plain.as_mut_ptr().cast(), plain.len() as c_int) };
+        if n <= 0 {
+            let error = unsafe { SSL_get_error(context.ssl, n) };
+            return if error == SSL_ERROR_ZERO_RETURN { SEC_I_CONTEXT_EXPIRED } else if error == SSL_ERROR_WANT_READ { SEC_E_INCOMPLETE_MESSAGE } else { SEC_E_MESSAGE_ALTERED };
+        }
+        let n = n as usize;
+        let trailer = record_len.saturating_sub(TLS_HEADER + n);
+        if TLS_HEADER + n > total {
+            return SEC_E_BUFFER_TOO_SMALL;
+        }
+        if !qop.is_null() {
+            unsafe { *qop = 0 };
+        }
+        unsafe { ptr::copy_nonoverlapping(plain.as_ptr(), base.add(TLS_HEADER), n) };
+        let set = |b: &mut SecBuffer, kind: u32, data: *mut u8, size: usize| {
+            b.kind = kind;
+            b.data = data;
+            b.size = size as u32;
+        };
+        let mut slots: Vec<usize> = (0..list.len()).collect();
+        slots.retain(|&i| i == d || kind(&list[i]) == SECBUFFER_EMPTY);
+        if slots.len() < 4 {
+            return SEC_E_INVALID_TOKEN;
+        }
+        set(&mut list[slots[0]], SECBUFFER_STREAM_HEADER, base, TLS_HEADER);
+        set(&mut list[slots[1]], SECBUFFER_DATA, unsafe { base.add(TLS_HEADER) }, n);
+        set(&mut list[slots[2]], SECBUFFER_STREAM_TRAILER, unsafe { base.add(TLS_HEADER + n) }, trailer);
+        if record_len < total {
+            set(&mut list[slots[3]], SECBUFFER_EXTRA, unsafe { base.add(record_len) }, total - record_len);
+        } else {
+            set(&mut list[slots[3]], SECBUFFER_EMPTY, ptr::null_mut(), 0);
+        }
+        return SEC_E_OK;
+    }
     if base.is_null() || total < DTLS_RECORD_HEADER {
         return SEC_E_INCOMPLETE_MESSAGE;
     }

@@ -2,8 +2,8 @@
 # Steam compatibility-tool entry point for the peek native PE loader.
 #   peek-launch <verb> <path/to/game.exe> [args...]
 # Supported verbs: run, waitforexitandrun. Every other verb is rejected with exit status 64.
-# Steam's environment and working directory are passed through, with one change:
-# Steam-runtime directories are removed from LD_LIBRARY_PATH (see below). Nothing is added.
+# Steam's environment and working directory are passed through. Steam-runtime
+# libraries and the 32-bit overlay are filtered for this 64-bit loader.
 #
 # Settings (environment, all optional):
 #   PEEK_BIN       loader binary (default: ../peek next to this tool's real directory)
@@ -97,8 +97,8 @@ fi
 
 # peek is a host binary linked against the system's libraries (libcurl, OpenSSL, ...).
 # Steam's LD_LIBRARY_PATH puts the Steam runtime's older copies first, e.g. a libcurl
-# without CURL_OPENSSL_4, and the loader then fails to start. Drop those entries; the
-# overlay in LD_PRELOAD and the rest of the environment are left as Steam set them.
+# without CURL_OPENSSL_4, and the loader then fails to start. Drop those entries;
+# the compatible 64-bit overlay and the rest of the environment are kept.
 if [ -n "${LD_LIBRARY_PATH:-}" ]; then
     kept=()
     IFS=: read -r -a entries <<< "$LD_LIBRARY_PATH"
@@ -113,14 +113,83 @@ if [ -n "${LD_LIBRARY_PATH:-}" ]; then
     printf 'LD_LIBRARY_PATH for the loader: %q\n' "$LD_LIBRARY_PATH"
 fi
 
+# Steam supplies both overlay architectures. The 32-bit .so cannot be loaded
+# into this x86-64 loader or its x86-64 children and only repeats ld.so errors.
+if [ -n "${LD_PRELOAD:-}" ]; then
+    kept_preloads=()
+    IFS=: read -r -a preload_entries <<< "$LD_PRELOAD"
+    for entry in "${preload_entries[@]}"; do
+        case "$entry" in
+            */ubuntu12_32/gameoverlayrenderer.so) ;;
+            "") ;;
+            *) kept_preloads+=("$entry") ;;
+        esac
+    done
+    LD_PRELOAD=$(IFS=:; echo "${kept_preloads[*]}")
+    export LD_PRELOAD
+    printf 'LD_PRELOAD for the loader: %q\n' "$LD_PRELOAD"
+fi
+
+# Detect SteamAppId if omitted from environment
+if [ -z "${SteamAppId:-}" ] && [ -n "${STEAM_COMPAT_APP_ID:-}" ] && [ "${STEAM_COMPAT_APP_ID:-}" != "0" ]; then
+    export SteamAppId="$STEAM_COMPAT_APP_ID"
+fi
+if [ -z "${SteamAppId:-}" ]; then
+    chk_dir=$(dirname "$exe")
+    while [ "$chk_dir" != "/" ] && [ "$chk_dir" != "." ]; do
+        if [ -f "$chk_dir/steam_appid.txt" ]; then
+            aid=$(tr -d ' \r\n' < "$chk_dir/steam_appid.txt")
+            [ -n "$aid" ] && export SteamAppId="$aid" && break
+        fi
+        chk_dir=$(dirname "$chk_dir")
+    done
+fi
+
+case "$(basename "$exe")" in
+    d3ddriverquery*.exe)
+        export DXVK_STATE_CACHE=0
+        ;;
+esac
+
 # DXVK writes its pipeline state cache to DXVK_STATE_CACHE_PATH, else to the current
-# directory. Steam usually sets it to the game's shadercache; when it does not, give
-# DXVK a persistent per-app directory so the cache survives and is reused across runs
-# instead of scattering a *.dxvk-cache beside the working directory.
+# directory. Steam usually sets it to the game's shadercache; when it does not, locate
+# the official shadercache or give DXVK a persistent per-app directory so the cache
+# survives and is reused across runs instead of scattering a *.dxvk-cache beside the game.
 if [ -z "${DXVK_STATE_CACHE_PATH:-}" ]; then
-    DXVK_STATE_CACHE_PATH=${XDG_CACHE_HOME:-$HOME/.cache}/peekgame/dxvk/${SteamAppId:-noappid}
+    if [ -n "${STEAM_COMPAT_SHADER_PATH:-}" ] && [ -d "$STEAM_COMPAT_SHADER_PATH" ]; then
+        DXVK_STATE_CACHE_PATH="$STEAM_COMPAT_SHADER_PATH/DXVK_state_cache"
+    elif [ -n "${SteamAppId:-}" ]; then
+        for sc_candidate in \
+            "${STEAM_COMPAT_CLIENT_INSTALL_PATH:-$HOME/.steam/debian-installation}/steamapps/shadercache/$SteamAppId" \
+            "$HOME/.steam/steam/steamapps/shadercache/$SteamAppId" \
+            "$HOME/.local/share/Steam/steamapps/shadercache/$SteamAppId"; do
+            if [ -d "$sc_candidate" ]; then
+                DXVK_STATE_CACHE_PATH="$sc_candidate/DXVK_state_cache"
+                break
+            fi
+        done
+    fi
+    if [ -z "${DXVK_STATE_CACHE_PATH:-}" ]; then
+        DXVK_STATE_CACHE_PATH="${XDG_DATA_HOME:-$HOME/.local/share}/peekgame/shadercache/${SteamAppId:-standalone}"
+    fi
     mkdir -p "$DXVK_STATE_CACHE_PATH" && export DXVK_STATE_CACHE_PATH \
         && printf 'DXVK_STATE_CACHE_PATH: %q\n' "$DXVK_STATE_CACHE_PATH"
+fi
+
+# If there is an existing .dxvk-cache (e.g. *-Shipping.dxvk-cache) but the current executable
+# name differs (e.g. Palworld.exe), link it so DXVK finds the state cache immediately.
+if [ -n "${DXVK_STATE_CACHE_PATH:-}" ] && [ -d "$DXVK_STATE_CACHE_PATH" ]; then
+    exe_base=$(basename "$exe" .exe)
+    target_cache="$DXVK_STATE_CACHE_PATH/$exe_base.dxvk-cache"
+    if [ ! -e "$target_cache" ]; then
+        for existing in "$DXVK_STATE_CACHE_PATH"/*.dxvk-cache; do
+            if [ -f "$existing" ] && [ "$(basename "$existing")" != "$exe_base.dxvk-cache" ]; then
+                ln -sf "$(basename "$existing")" "$target_cache" 2>/dev/null && \
+                    echo "peek-launch: linked state cache $exe_base.dxvk-cache -> $(basename "$existing")"
+                break
+            fi
+        done
+    fi
 fi
 
 cmd=("$PEEK_BIN" "$exe" --run "$@")

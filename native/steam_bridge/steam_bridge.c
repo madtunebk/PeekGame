@@ -134,6 +134,10 @@ static const CallbackLayout layouts[]={
     SAME(510,"LobbyMatchList_t",4),
     {512,"LobbyKicked_t",20,24,{{0,0,16},{16,16,1}}},
     {513,"LobbyCreated_t",12,16,{{0,0,4},{4,8,8}}},
+    SAME(1040011,"SteamInput_1040011_t",260),
+    SAME(1040015,"SteamInputDeviceConnected_t",20),
+    SAME(1040044,"SteamInputDeviceStatusChanged_t",784),
+    SAME(1270009,"SteamOverlayStateChanged_t",144),
 };
 static const CallbackLayout *find_layout(int id) {
     for(size_t i=0;i<sizeof layouts/sizeof *layouts;i++)if(layouts[i].id==id)return &layouts[i];
@@ -160,6 +164,9 @@ static bool WIN w_BGetCallback(int32_t pipe,WinCallbackMsg *out,int32_t *ignored
         LinCallbackMsg m;
         if(!lin.bget_callback(pipe,&m,ignored))return false;
         const CallbackLayout *l=find_layout(m.callback);
+        if(!l && m.callback>=100000) {
+            out->user=m.user;out->callback=m.callback;out->param=m.param;out->size=m.size;return true;
+        }
         if(!l || (l->lin_size>=0 && m.size!=l->lin_size)) {
             log_msg("dropping callback %d (%d bytes): %s",m.callback,m.size,l?"unexpected Linux size":"layout not bridged");
             lin.free_last_callback(pipe);continue;
@@ -225,7 +232,7 @@ static void WIN w_WriteMiniDump(uint32_t code,void *exception,uint32_t build) {
 /* ---- Interface wrappers ---- */
 /* One wrapper per (Linux object, version): the client may serve several versions from one object. */
 typedef enum {
-    CLIENT,CLIENT019,CLIENT017,CLIENT014,
+    CLIENT,CLIENT019,CLIENT018,CLIENT017,CLIENT014,
     USER,USER020,USER019,USER018,USER017,
     UTILS,UTILS009,UTILS008,UTILS007,
     FRIENDS,CONTROLLER,APPS,REMOTESTORAGE,USERSTATS,MATCHMAKING,
@@ -237,7 +244,7 @@ static Wrapper *wrappers;
 #define MAX_SLOTS 96
 static void *vtables[KINDS][MAX_SLOTS];
 static const char *const kind_names[KINDS]={
-    "ISteamClient020","ISteamClient019","ISteamClient017","ISteamClient014",
+    "ISteamClient020","ISteamClient019","ISteamClient018","ISteamClient017","ISteamClient014",
     "ISteamUser021","ISteamUser020","ISteamUser019","ISteamUser018","ISteamUser017",
     "ISteamUtils010","ISteamUtils009","ISteamUtils008","ISteamUtils007",
     "ISteamFriends017","ISteamController007","ISteamApps008","ISteamRemoteStorage014","ISteamUserStats011","ISteamMatchmaking009",
@@ -245,7 +252,7 @@ static const char *const kind_names[KINDS]={
     "ISteamNetworkingSockets012","ISteamNetworkingUtils004"
 };
 static const char *const versions[KINDS]={
-    "SteamClient020","SteamClient019","SteamClient017","SteamClient014",
+    "SteamClient020","SteamClient019","SteamClient018","SteamClient017","SteamClient014",
     "SteamUser021","SteamUser020","SteamUser019","SteamUser018","SteamUser017",
     "SteamUtils010","SteamUtils009","SteamUtils008","SteamUtils007",
     "SteamFriends017","SteamController007","STEAMAPPS_INTERFACE_VERSION008",
@@ -254,7 +261,7 @@ static const char *const versions[KINDS]={
     "SteamNetworkingSockets012","SteamNetworkingUtils004"
 };
 static const int slot_counts[KINDS]={
-    42,41,37,29,
+    42,41,40,37,29,
     32,31,29,25,24,
     39,34,28,26,
     80,34,35,55,43,38,
@@ -281,6 +288,15 @@ static const char *const method_names[KINDS][MAX_SLOTS]={
      "DEPRECATED_Remove_SteamAPI_CPostAPIResultInProcess","Set_SteamAPI_CCheckCallbackRegisteredInProcess",
      "GetISteamInventory","GetISteamVideo","GetISteamParentalSettings","GetISteamInput","GetISteamParties",
      "GetISteamRemotePlay"},
+    {"CreateSteamPipe","BReleaseSteamPipe","ConnectToGlobalUser","CreateLocalUser","ReleaseUser","GetISteamUser",
+     "GetISteamGameServer","SetLocalIPBinding","GetISteamFriends","GetISteamUtils","GetISteamMatchmaking",
+     "GetISteamMatchmakingServers","GetISteamGenericInterface","GetISteamUserStats","GetISteamGameServerStats",
+     "GetISteamApps","GetISteamNetworking","GetISteamRemoteStorage","GetISteamScreenshots","GetISteamGameSearch",
+     "RunFrame","GetIPCCallCount","SetWarningMessageHook","BShutdownIfAllPipesClosed","GetISteamHTTP",
+     "DEPRECATED_GetISteamUnifiedMessages","GetISteamController","GetISteamUGC","GetISteamAppList","GetISteamMusic",
+     "GetISteamMusicRemote","GetISteamHTMLSurface","DEPRECATED_Set_SteamAPI_CPostAPIResultInProcess",
+     "DEPRECATED_Remove_SteamAPI_CPostAPIResultInProcess","Set_SteamAPI_CCheckCallbackRegisteredInProcess",
+     "GetISteamInventory","GetISteamVideo","GetISteamParentalSettings","GetISteamInput","GetISteamParties"},
     {"CreateSteamPipe","BReleaseSteamPipe","ConnectToGlobalUser","CreateLocalUser","ReleaseUser","GetISteamUser",
      "GetISteamGameServer","SetLocalIPBinding","GetISteamFriends","GetISteamUtils","GetISteamMatchmaking",
      "GetISteamMatchmakingServers","GetISteamGenericInterface","GetISteamUserStats","GetISteamGameServerStats",
@@ -396,6 +412,14 @@ static const char *const method_names[KINDS][MAX_SLOTS]={
      "SetLobbyMemberLimit","GetLobbyMemberLimit","SetLobbyType","SetLobbyJoinable",
       "GetLobbyOwner","SetLobbyOwner","SetLinkedLobby"},
     [APPTICKET]={"GetAppOwnershipTicketData"},
+    [NETWORKING]={
+        "SendP2PPacket","IsP2PPacketAvailable","ReadP2PPacket","AcceptP2PSessionWithUser",
+        "CloseP2PSessionWithUser","CloseP2PChannelWithUser","GetP2PSessionState","AllowP2PPacketRelay",
+        "CreateListenSocket","CreateP2PConnectionSocket","CreateConnectionSocket","DestroySocket",
+        "DestroyListenSocket","SendDataOnSocket","IsDataAvailableOnSocket","RetrieveDataFromSocket",
+        "IsDataAvailable","RetrieveData","GetSocketInfo","GetListenSocketInfo",
+        "GetSocketConnectionType","GetMaxPacketSize"
+    },
     [NETWORKING_SOCKETS]={[22]="InitAuthentication",[23]="GetAuthenticationStatus"},
     [NETWORKING_UTILS]={[13]="SetDebugOutputFunction"},
 };
@@ -406,7 +430,7 @@ static void unbridged(Kind kind,int slot) {
     if(!name) {
         if(kind==USER020 || kind==USER019 || kind==USER018 || kind==USER017) name=method_names[USER][slot];
         else if(kind==UTILS009 || kind==UTILS008 || kind==UTILS007) name=method_names[UTILS][slot];
-        else if(kind==CLIENT019 || kind==CLIENT017 || kind==CLIENT014) name=method_names[CLIENT][slot];
+        else if(kind==CLIENT019 || kind==CLIENT018 || kind==CLIENT017 || kind==CLIENT014) name=method_names[CLIENT][slot];
     }
     fprintf(stderr,"STOP: steam_bridge: %s::%s (slot %d) not bridged\n",kind_names[kind],name?name:"unknown",slot);
     abort();
@@ -421,7 +445,7 @@ static void unbridged(Kind kind,int slot) {
     X(k,73) X(k,74) X(k,75) X(k,76) X(k,77) X(k,78) X(k,79) X(k,80) X(k,81) X(k,82) X(k,83) X(k,84) X(k,85) \
     X(k,86) X(k,87) X(k,88) X(k,89) X(k,90) X(k,91) X(k,92) X(k,93) X(k,94) X(k,95)
 #define SLOTS(X,k) SLOTS0_47(X,k) SLOTS48_95(X,k)
-SLOTS(TRAP,CLIENT) SLOTS(TRAP,CLIENT019) SLOTS(TRAP,CLIENT017) SLOTS(TRAP,CLIENT014) \
+SLOTS(TRAP,CLIENT) SLOTS(TRAP,CLIENT019) SLOTS(TRAP,CLIENT018) SLOTS(TRAP,CLIENT017) SLOTS(TRAP,CLIENT014) \
 SLOTS(TRAP,USER) SLOTS(TRAP,USER020) SLOTS(TRAP,USER019) SLOTS(TRAP,USER018) SLOTS(TRAP,USER017) \
 SLOTS(TRAP,UTILS) SLOTS(TRAP,UTILS009) SLOTS(TRAP,UTILS008) SLOTS(TRAP,UTILS007) \
 SLOTS(TRAP,FRIENDS) SLOTS(TRAP,CONTROLLER) SLOTS(TRAP,APPS) SLOTS(TRAP,REMOTESTORAGE) SLOTS(TRAP,USERSTATS) SLOTS(TRAP,MATCHMAKING) SLOTS(TRAP,APPTICKET) SLOTS(TRAP,NETWORKING) SLOTS(TRAP,MATCHMAKING_SERVERS) SLOTS(TRAP,NETWORKING_SOCKETS) SLOTS(TRAP,NETWORKING_UTILS)
@@ -429,6 +453,7 @@ SLOTS(TRAP,FRIENDS) SLOTS(TRAP,CONTROLLER) SLOTS(TRAP,APPS) SLOTS(TRAP,REMOTESTO
 static void *const traps[KINDS][MAX_SLOTS]={
     [CLIENT]={SLOTS(TRAP_ADDRESS,CLIENT)},
     [CLIENT019]={SLOTS(TRAP_ADDRESS,CLIENT019)},
+    [CLIENT018]={SLOTS(TRAP_ADDRESS,CLIENT018)},
     [CLIENT017]={SLOTS(TRAP_ADDRESS,CLIENT017)},
     [CLIENT014]={SLOTS(TRAP_ADDRESS,CLIENT014)},
     [USER]={SLOTS(TRAP_ADDRESS,USER)},
@@ -468,6 +493,9 @@ static int bridged_kind(const char *version) {
     for(int k=0;k<KINDS;k++)if(!strcmp(version,versions[k]))return k;
     if(!strncmp(version,"STEAMREMOTESTORAGE_INTERFACE_VERSION",36)) return REMOTESTORAGE;
     if(!strncmp(version,"STEAMUSERSTATS_INTERFACE_VERSION",32)) return USERSTATS;
+    if(!strncmp(version,"SteamInput",10) || !strncmp(version,"STEAMINPUT_INTERFACE_VERSION",28)) return CONTROLLER;
+    if(!strncmp(version,"SteamController",15)) return CONTROLLER;
+    if(!strncmp(version,"SteamNetworking",15)) return NETWORKING;
     return -1;
 }
 
@@ -479,7 +507,7 @@ static int bridged_kind(const char *version) {
  * and it has no slots for 020's 38-41. SteamClient014 is 017's first 29 slots (020 slots 0-18, 20-29).
  * Thunks for methods a version lacks are never installed in its vtable. */
 static int client_slot(void *self,int slot020) {
-    if(((Wrapper *)self)->kind==CLIENT || ((Wrapper *)self)->kind==CLIENT019)return slot020;
+    if(((Wrapper *)self)->kind==CLIENT || ((Wrapper *)self)->kind==CLIENT019 || ((Wrapper *)self)->kind==CLIENT018)return slot020;
     if(slot020<19)return slot020;
     if(slot020==19 || slot020>37 || (((Wrapper *)self)->kind==CLIENT014 && slot020>29))abort();
     return slot020-1;
@@ -529,6 +557,16 @@ static void *WIN client_GetISteamController(void *self,int32_t user,int32_t pipe
     int kind=bridged_kind(version);
     if(kind!=CONTROLLER) {log_msg("GetISteamController(%s): version not bridged",version?version:"NULL");return NULL;}
     return wrap(CM(self,26,void *(*)(void *,int32_t,int32_t,const char *))(L(self),user,pipe,version),(Kind)kind);
+}
+static void *WIN client_GetISteamInput(void *self,int32_t user,int32_t pipe,const char *version) {
+    int kind=bridged_kind(version);
+    if(kind!=CONTROLLER) {log_msg("GetISteamInput(%s): version not bridged",version?version:"NULL");return NULL;}
+    return wrap(CM(self,38,void *(*)(void *,int32_t,int32_t,const char *))(L(self),user,pipe,version),(Kind)kind);
+}
+static void *WIN client_GetISteamNetworking(void *self,int32_t user,int32_t pipe,const char *version) {
+    int kind=bridged_kind(version);
+    if(kind!=NETWORKING) {log_msg("GetISteamNetworking(%s): version not bridged",version?version:"NULL");return NULL;}
+    return wrap(CM(self,16,void *(*)(void *,int32_t,int32_t,const char *))(L(self),user,pipe,version),(Kind)kind);
 }
 static void *WIN client_GetISteamUtils(void *self,int32_t pipe,const char *version) {
     int kind=bridged_kind(version);
@@ -581,12 +619,13 @@ static uint32_t WIN client_GetIPCCallCount(void *self) {return CM(self,21,uint32
 
 /* Linux calls these hooks with SysV; they forward to the Windows function with ms_abi. */
 typedef void (WIN *WinWarningHook)(int,const char *);
-static WinWarningHook client_hooks[4],utils_hook;
+static WinWarningHook client_hooks[5],utils_hook;
 static void lin_client_hook(int severity,const char *text) {client_hooks[CLIENT](severity,text);}
 static void lin_client019_hook(int severity,const char *text) {client_hooks[CLIENT019](severity,text);}
+static void lin_client018_hook(int severity,const char *text) {client_hooks[CLIENT018](severity,text);}
 static void lin_client017_hook(int severity,const char *text) {client_hooks[CLIENT017](severity,text);}
 static void lin_client014_hook(int severity,const char *text) {client_hooks[CLIENT014](severity,text);}
-static void (*const lin_client_hooks[4])(int,const char *)={lin_client_hook,lin_client019_hook,lin_client017_hook,lin_client014_hook};
+static void (*const lin_client_hooks[5])(int,const char *)={lin_client_hook,lin_client019_hook,lin_client018_hook,lin_client017_hook,lin_client014_hook};
 static void lin_utils_hook(int severity,const char *text) {utils_hook(severity,text);}
 static void WIN client_SetWarningMessageHook(void *self,WinWarningHook hook) {
     Kind kind=((Wrapper *)self)->kind;client_hooks[kind]=hook;
@@ -597,6 +636,7 @@ typedef uint32_t (WIN *WinCheckCallback)(int);
 static WinCheckCallback check_callbacks[KINDS]; /* SteamClient014 has no such slot */
 static uint32_t lin_check_callback(int callback) {return check_callbacks[CLIENT](callback);}
 static uint32_t lin_check_callback019(int callback) {return check_callbacks[CLIENT019](callback);}
+static uint32_t lin_check_callback018(int callback) {return check_callbacks[CLIENT018](callback);}
 static uint32_t lin_check_callback017(int callback) {return check_callbacks[CLIENT017](callback);}
 static void WIN client_SetCheckCallbackRegistered(void *self,WinCheckCallback function) {
     Kind kind=((Wrapper *)self)->kind;check_callbacks[kind]=function;
@@ -604,6 +644,7 @@ static void WIN client_SetCheckCallbackRegistered(void *self,WinCheckCallback fu
     if(function) {
         if(kind==CLIENT)cb=(void *)lin_check_callback;
         else if(kind==CLIENT019)cb=(void *)lin_check_callback019;
+        else if(kind==CLIENT018)cb=(void *)lin_check_callback018;
         else cb=(void *)lin_check_callback017;
     }
     CM(self,34,void(*)(void *,uint32_t(*)(int)))(L(self),cb);
@@ -1241,6 +1282,74 @@ static void WIN networking_utils_SetDebugOutputFunction(void *self,int level,Win
     if(trace_enabled())log_msg("trace ISteamNetworkingUtils004::SetDebugOutputFunction(level=%d, enabled=%d)",level,hook!=NULL);
 }
 
+/* ISteamNetworking006 */
+static bool WIN net_SendP2PPacket(void *self,uint64_t remote,const void *data,uint32_t size,int type,int channel) {
+    return M(self,0,bool(*)(void *,uint64_t,const void *,uint32_t,int,int))(L(self),remote,data,size,type,channel);
+}
+static bool WIN net_IsP2PPacketAvailable(void *self,uint32_t *size,int channel) {
+    return M(self,1,bool(*)(void *,uint32_t *,int))(L(self),size,channel);
+}
+static bool WIN net_ReadP2PPacket(void *self,void *dest,uint32_t max_size,uint32_t *msg_size,uint64_t *remote,int channel) {
+    return M(self,2,bool(*)(void *,void *,uint32_t,uint32_t *,uint64_t *,int))(L(self),dest,max_size,msg_size,remote,channel);
+}
+static bool WIN net_AcceptP2PSessionWithUser(void *self,uint64_t remote) {
+    return M(self,3,bool(*)(void *,uint64_t))(L(self),remote);
+}
+static bool WIN net_CloseP2PSessionWithUser(void *self,uint64_t remote) {
+    return M(self,4,bool(*)(void *,uint64_t))(L(self),remote);
+}
+static bool WIN net_CloseP2PChannelWithUser(void *self,uint64_t remote,int channel) {
+    return M(self,5,bool(*)(void *,uint64_t,int))(L(self),remote,channel);
+}
+static bool WIN net_GetP2PSessionState(void *self,uint64_t remote,void *state) {
+    return M(self,6,bool(*)(void *,uint64_t,void *))(L(self),remote,state);
+}
+static bool WIN net_AllowP2PPacketRelay(void *self,bool allow) {
+    return M(self,7,bool(*)(void *,bool))(L(self),allow);
+}
+static uint32_t WIN net_CreateListenSocket(void *self,int port,void *ip,uint16_t nport,bool relay) {
+    return M(self,8,uint32_t(*)(void *,int,void *,uint16_t,bool))(L(self),port,ip,nport,relay);
+}
+static uint32_t WIN net_CreateP2PConnectionSocket(void *self,uint64_t target,int port,int timeout,bool relay) {
+    return M(self,9,uint32_t(*)(void *,uint64_t,int,int,bool))(L(self),target,port,timeout,relay);
+}
+static uint32_t WIN net_CreateConnectionSocket(void *self,void *ip,uint16_t port,int timeout) {
+    return M(self,10,uint32_t(*)(void *,void *,uint16_t,int))(L(self),ip,port,timeout);
+}
+static bool WIN net_DestroySocket(void *self,uint32_t socket,bool notify) {
+    return M(self,11,bool(*)(void *,uint32_t,bool))(L(self),socket,notify);
+}
+static bool WIN net_DestroyListenSocket(void *self,uint32_t socket,bool notify) {
+    return M(self,12,bool(*)(void *,uint32_t,bool))(L(self),socket,notify);
+}
+static bool WIN net_SendDataOnSocket(void *self,uint32_t socket,void *data,uint32_t size,bool reliable) {
+    return M(self,13,bool(*)(void *,uint32_t,void *,uint32_t,bool))(L(self),socket,data,size,reliable);
+}
+static bool WIN net_IsDataAvailableOnSocket(void *self,uint32_t socket,uint32_t *size) {
+    return M(self,14,bool(*)(void *,uint32_t,uint32_t *))(L(self),socket,size);
+}
+static bool WIN net_RetrieveDataFromSocket(void *self,uint32_t socket,void *dest,uint32_t max_size,uint32_t *msg_size) {
+    return M(self,15,bool(*)(void *,uint32_t,void *,uint32_t,uint32_t *))(L(self),socket,dest,max_size,msg_size);
+}
+static bool WIN net_IsDataAvailable(void *self,uint32_t listen_socket,uint32_t *size,uint32_t *socket) {
+    return M(self,16,bool(*)(void *,uint32_t,uint32_t *,uint32_t *))(L(self),listen_socket,size,socket);
+}
+static bool WIN net_RetrieveData(void *self,uint32_t listen_socket,void *dest,uint32_t max_size,uint32_t *msg_size,uint32_t *socket) {
+    return M(self,17,bool(*)(void *,uint32_t,void *,uint32_t,uint32_t *,uint32_t *))(L(self),listen_socket,dest,max_size,msg_size,socket);
+}
+static bool WIN net_GetSocketInfo(void *self,uint32_t socket,uint64_t *remote,int *status,void *ip,uint16_t *port) {
+    return M(self,18,bool(*)(void *,uint32_t,uint64_t *,int *,void *,uint16_t *))(L(self),socket,remote,status,ip,port);
+}
+static bool WIN net_GetListenSocketInfo(void *self,uint32_t listen_socket,void *ip,uint16_t *port) {
+    return M(self,19,bool(*)(void *,uint32_t,void *,uint16_t *))(L(self),listen_socket,ip,port);
+}
+static int WIN net_GetSocketConnectionType(void *self,uint32_t socket) {
+    return M(self,20,int(*)(void *,uint32_t))(L(self),socket);
+}
+static int WIN net_GetMaxPacketSize(void *self,uint32_t socket) {
+    return M(self,21,int(*)(void *,uint32_t))(L(self),socket);
+}
+
 /* ISteamAppTicket001 */
 static uint32_t WIN appticket_GetAppOwnershipTicketData(void *self,uint32_t app_id,void *buffer,uint32_t size,uint32_t *piTicketLength,uint32_t *piAppId,uint32_t *piSteamId,uint32_t *piSignature) {
     if(trace_enabled())log_msg("trace ISteamAppTicket::GetAppOwnershipTicketData(app=%u, size=%u)",app_id,size);
@@ -1252,18 +1361,31 @@ static uint32_t WIN appticket_GetAppOwnershipTicketData(void *self,uint32_t app_
 
 static void init_vtables(void) {
     for(int k=0;k<KINDS;k++)for(int s=0;s<MAX_SLOTS;s++)vtables[k][s]=traps[k][s];
-    void **c=vtables[CLIENT],**u=vtables[USER],**t=vtables[UTILS],**f=vtables[FRIENDS],**ct=vtables[CONTROLLER],**ap=vtables[APPS],**mm=vtables[MATCHMAKING],**at=vtables[APPTICKET],**sockets=vtables[NETWORKING_SOCKETS],**net_utils=vtables[NETWORKING_UTILS];
+    void **c=vtables[CLIENT],**u=vtables[USER],**t=vtables[UTILS],**f=vtables[FRIENDS],**ct=vtables[CONTROLLER],**ap=vtables[APPS],**mm=vtables[MATCHMAKING],**at=vtables[APPTICKET],**sockets=vtables[NETWORKING_SOCKETS],**net_utils=vtables[NETWORKING_UTILS],**net=vtables[NETWORKING];
     at[0]=(void *)appticket_GetAppOwnershipTicketData;
     sockets[22]=(void *)sockets_InitAuthentication;
     sockets[23]=(void *)sockets_GetAuthenticationStatus;
     net_utils[13]=(void *)networking_utils_SetDebugOutputFunction;
+    net[0]=(void *)net_SendP2PPacket;net[1]=(void *)net_IsP2PPacketAvailable;
+    net[2]=(void *)net_ReadP2PPacket;net[3]=(void *)net_AcceptP2PSessionWithUser;
+    net[4]=(void *)net_CloseP2PSessionWithUser;net[5]=(void *)net_CloseP2PChannelWithUser;
+    net[6]=(void *)net_GetP2PSessionState;net[7]=(void *)net_AllowP2PPacketRelay;
+    net[8]=(void *)net_CreateListenSocket;net[9]=(void *)net_CreateP2PConnectionSocket;
+    net[10]=(void *)net_CreateConnectionSocket;net[11]=(void *)net_DestroySocket;
+    net[12]=(void *)net_DestroyListenSocket;net[13]=(void *)net_SendDataOnSocket;
+    net[14]=(void *)net_IsDataAvailableOnSocket;net[15]=(void *)net_RetrieveDataFromSocket;
+    net[16]=(void *)net_IsDataAvailable;net[17]=(void *)net_RetrieveData;
+    net[18]=(void *)net_GetSocketInfo;net[19]=(void *)net_GetListenSocketInfo;
+    net[20]=(void *)net_GetSocketConnectionType;net[21]=(void *)net_GetMaxPacketSize;
     c[0]=(void *)client_CreateSteamPipe;c[1]=(void *)client_BReleaseSteamPipe;c[2]=(void *)client_ConnectToGlobalUser;
     c[3]=(void *)client_CreateLocalUser;c[4]=(void *)client_ReleaseUser;c[5]=(void *)client_GetISteamUser;
     c[7]=(void *)client_SetLocalIPBinding;c[8]=(void *)client_GetISteamFriends;c[9]=(void *)client_GetISteamUtils;
     c[10]=(void *)client_GetISteamMatchmaking;
     c[12]=(void *)client_GetISteamGenericInterface;c[15]=(void *)client_GetISteamApps;c[26]=(void *)client_GetISteamController;
     c[13]=(void *)client_GetISteamUserStats;c[17]=(void *)client_GetISteamRemoteStorage;
-    static const int getters[]={6,11,14,16,18,19,24,25,27,28,29,30,31,35,36,37,38,39,40};
+    c[16]=(void *)client_GetISteamNetworking;
+    c[38]=(void *)client_GetISteamInput;
+    static const int getters[]={6,11,14,18,19,24,25,27,28,29,30,31,35,36,37,39,40};
     for(size_t i=0;i<sizeof getters/sizeof *getters;i++)c[getters[i]]=(void *)client_unbridged_getter;
     c[20]=(void *)client_RunFrame;c[21]=(void *)client_GetIPCCallCount;c[22]=(void *)client_SetWarningMessageHook;
     c[23]=(void *)client_BShutdownIfAllPipesClosed;c[34]=(void *)client_SetCheckCallbackRegistered;
@@ -1290,6 +1412,11 @@ static void init_vtables(void) {
         c19[s]=c[s]==traps[CLIENT][s]?traps[CLIENT019][s]:c[s];
     }
     c19[7]=(void *)client017_SetLocalIPBinding;
+    void **c18=vtables[CLIENT018];
+    for(int s=0;s<slot_counts[CLIENT018];s++) {
+        c18[s]=c[s]==traps[CLIENT][s]?traps[CLIENT018][s]:c[s];
+    }
+    c18[7]=(void *)client017_SetLocalIPBinding;
     void **c17=vtables[CLIENT017];
     for(int s=0;s<slot_counts[CLIENT017];s++) {
         int slot020=s<19?s:s+1;

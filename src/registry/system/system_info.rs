@@ -128,6 +128,22 @@ exports! {
         crate::api::system::nt_info::query_system_information
     ),
     export!(
+        "ntdll.dll",
+        "NtQueryObject",
+        "system",
+        "partial",
+        "basic, name, and type object information queries",
+        crate::api::system::nt_info::query_object
+    ),
+    export!(
+        "ntdll.dll",
+        "ZwQueryObject",
+        "system",
+        "partial",
+        "basic, name, and type object information queries",
+        crate::api::system::nt_info::query_object
+    ),
+    export!(
         "psapi.dll",
         "EnumProcessModules",
         "system",
@@ -166,6 +182,14 @@ exports! {
         "implemented",
         "current process",
         psapi::module_base_name_w
+    ),
+    export!(
+        "psapi.dll",
+        "GetModuleBaseNameA",
+        "system",
+        "implemented",
+        "current process",
+        psapi::module_base_name_a
     ),
     export!(
         "psapi.dll",
@@ -231,6 +255,34 @@ exports! {
         "implemented",
         "threads of this process",
         toolhelp::thread32_next
+    ),
+    implemented!(
+        "Module32First",
+        "system",
+        "implemented",
+        "snapshot modules",
+        toolhelp::module32_first
+    ),
+    implemented!(
+        "Module32Next",
+        "system",
+        "implemented",
+        "snapshot modules",
+        toolhelp::module32_next
+    ),
+    implemented!(
+        "Module32FirstW",
+        "system",
+        "implemented",
+        "snapshot modules",
+        toolhelp::module32_first_w
+    ),
+    implemented!(
+        "Module32NextW",
+        "system",
+        "implemented",
+        "snapshot modules",
+        toolhelp::module32_next_w
     ),
     implemented!(
         "SetErrorMode",
@@ -408,6 +460,20 @@ exports! {
         info::windows_directory_a
     ),
     implemented!(
+        "GetSystemWindowsDirectoryW",
+        "filesystem",
+        "partial",
+        "conventional path; matches GetWindowsDirectoryW",
+        info::windows_directory_w
+    ),
+    implemented!(
+        "GetSystemWindowsDirectoryA",
+        "filesystem",
+        "partial",
+        "conventional path; matches GetWindowsDirectoryA",
+        info::windows_directory_a
+    ),
+    implemented!(
         "GetCurrentDirectoryA",
         "filesystem",
         "implemented",
@@ -490,6 +556,34 @@ exports! {
         "implemented",
         "sched_getcpu in group 0",
         info::current_processor_number_ex
+    ),
+    implemented!(
+        "GetActiveProcessorCount",
+        "system",
+        "implemented",
+        "active processors in group or all groups",
+        info::get_active_processor_count
+    ),
+    implemented!(
+        "GetActiveProcessorGroupCount",
+        "system",
+        "implemented",
+        "single processor group",
+        info::get_active_processor_group_count
+    ),
+    implemented!(
+        "GetMaximumProcessorCount",
+        "system",
+        "implemented",
+        "maximum processors in group",
+        info::get_maximum_processor_count
+    ),
+    implemented!(
+        "GetMaximumProcessorGroupCount",
+        "system",
+        "implemented",
+        "single processor group",
+        info::get_maximum_processor_group_count
     ),
     implemented!(
         "QueryThreadCycleTime",

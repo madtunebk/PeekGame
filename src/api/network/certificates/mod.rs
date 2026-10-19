@@ -260,6 +260,18 @@ pub extern "win64" fn close(store: usize, flags: u32) -> i32 {
     }
     1
 }
+pub extern "win64" fn control_store(
+    store: usize,
+    _flags: u32,
+    _ctrl_type: u32,
+    _ctrl_para: *const std::ffi::c_void,
+) -> i32 {
+    let r = registry().lock().unwrap();
+    if !r.stores.contains_key(&store) {
+        return fail(6, 0);
+    }
+    1
+}
 pub unsafe extern "win64" fn create_context(
     encoding: u32,
     data: *const u8,

@@ -52,6 +52,12 @@ pub(crate) enum NativeEvent {
         x_root: i32,
         y_root: i32,
     },
+    /// XInput2 raw relative motion: device deltas before pointer acceleration,
+    /// not tied to a window. Routed to the focused game for WM_INPUT camera look.
+    RawMotion {
+        dx: f64,
+        dy: f64,
+    },
     Crossing {
         window: u64,
         entered: bool,
@@ -81,6 +87,8 @@ impl NativeEvent {
             | NativeEvent::Focus { window, .. }
             | NativeEvent::Expose { window }
             | NativeEvent::Map { window, .. } => window,
+            // Raw motion is device-global; the pump routes it to the focused window.
+            NativeEvent::RawMotion { .. } => 0,
         }
     }
 }
@@ -210,6 +218,12 @@ impl Connection {
                             },
                         });
                     }
+                    35 => {
+                        // GenericEvent: an extension (XInput2) event behind a cookie.
+                        if let Some(motion) = self.raw_motion(&mut event) {
+                            result.push(motion);
+                        }
+                    }
                     12 => result.push(NativeEvent::Expose {
                         window: event.any.window,
                     }),
@@ -226,6 +240,51 @@ impl Connection {
             }
         }
         result
+    }
+    /// Decodes a GenericEvent cookie into raw relative motion, when it is an
+    /// XInput2 XI_RawMotion from a device we selected. The unaccelerated device
+    /// deltas live in `raw_values`, one per set valuator bit (0 is X, 1 is Y).
+    unsafe fn raw_motion(&self, event: &mut types::Event) -> Option<NativeEvent> {
+        const XI_RAW_MOTION: i32 = 17;
+        let opcode = self.xi_opcode?;
+        let cookie = std::ptr::from_mut(event).cast::<types::GenericEventCookie>();
+        unsafe {
+            if (*cookie).extension != opcode || (*cookie).evtype != XI_RAW_MOTION {
+                return None;
+            }
+            if ffi::XGetEventData(self.display, cookie) == 0 {
+                return None;
+            }
+            let raw = (*cookie).data.cast::<types::IRawEvent>();
+            let mask_len = raw
+                .as_ref()
+                .map_or(0, |r| r.valuators.mask_len.max(0) as usize);
+            let result = if raw.is_null()
+                || mask_len == 0
+                || (*raw).valuators.mask.is_null()
+                || (*raw).raw_values.is_null()
+            {
+                None
+            } else {
+                let mask = std::slice::from_raw_parts((*raw).valuators.mask, mask_len);
+                let mut values = (*raw).raw_values;
+                let (mut dx, mut dy) = (0.0, 0.0);
+                for i in 0..mask_len * 8 {
+                    if mask[i >> 3] & (1 << (i & 7)) != 0 {
+                        let v = *values;
+                        values = values.add(1);
+                        match i {
+                            0 => dx = v,
+                            1 => dy = v,
+                            _ => {}
+                        }
+                    }
+                }
+                (dx != 0.0 || dy != 0.0).then_some(NativeEvent::RawMotion { dx, dy })
+            };
+            ffi::XFreeEventData(self.display, cookie);
+            result
+        }
     }
     unsafe fn key(&self, e: &mut types::Key, down: bool, repeat: bool) -> NativeEvent {
         let base = unsafe { ffi::XLookupKeysym(e, 0) };

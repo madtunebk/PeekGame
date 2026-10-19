@@ -23,7 +23,7 @@ fn named(name: &str) -> Option<(Handle, Option<std::sync::Arc<images::Module>>)>
     if crate::api::steam::recognizes(name) && crate::api::steam::loaded() {
         return Some((crate::api::steam::base_address(), None));
     }
-    if registry::provides(name) {
+    if images::builtin(name) && !crate::quirks::suppresses_builtin(name) {
         return Some((builtin_handle(name), None));
     }
     images::by_name(name).map(|m| (m.base, Some(m)))

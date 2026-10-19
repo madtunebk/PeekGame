@@ -88,7 +88,7 @@ struct AfdAssociation {
 }
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
-static NEXT_HANDLE: AtomicUsize = AtomicUsize::new(0x7100_0000);
+static NEXT_HANDLE: AtomicUsize = AtomicUsize::new(0x7200_0000);
 static AFD_HANDLES: OnceLock<Mutex<HashSet<usize>>> = OnceLock::new();
 static ASSOCIATIONS: OnceLock<Mutex<HashMap<usize, AfdAssociation>>> = OnceLock::new();
 static REQUESTS: OnceLock<Mutex<Vec<AfdRequest>>> = OnceLock::new();

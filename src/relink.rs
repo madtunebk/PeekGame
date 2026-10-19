@@ -16,6 +16,7 @@ const HOST_LIBS: &[&str] = &[
     "-licuuc",
     "-licudata",
     "-lX11",
+    "-lXi",
     "-lGL",
     "-lfontconfig",
     "-lpng16",

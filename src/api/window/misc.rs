@@ -363,6 +363,9 @@ pub(crate) extern "win64" fn send_dlg_item_message_w(
 }
 
 // ---- IME (imm32): no input method; composition is empty -----------------------------------
+pub(crate) extern "win64" fn imm_get_default_ime_wnd(_hwnd: usize) -> usize {
+    0
+}
 pub(crate) extern "win64" fn imm_get_context(hwnd: usize) -> usize {
     if state::exists(hwnd) {
         0x0009_0000 | (hwnd & 0xffff)
@@ -442,6 +445,23 @@ pub(crate) extern "win64" fn imm_set_candidate_window(_context: usize, _form: us
 }
 pub(crate) extern "win64" fn imm_set_composition_window(_context: usize, _form: usize) -> i32 {
     1
+}
+pub(crate) unsafe extern "win64" fn imm_get_candidate_list_count_w(
+    _context: usize,
+    list_count: *mut u32,
+) -> u32 {
+    if !list_count.is_null() {
+        unsafe { *list_count = 0 };
+    }
+    0
+}
+pub(crate) extern "win64" fn imm_get_candidate_list_w(
+    _context: usize,
+    _index: u32,
+    _cand_list: *mut u8,
+    _buf_len: u32,
+) -> u32 {
+    0
 }
 pub(crate) extern "win64" fn imm_create_context() -> usize {
     static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
@@ -850,6 +870,27 @@ pub(crate) extern "win64" fn draw_icon_ex(
 }
 pub(crate) extern "win64" fn get_class_long_ptr_w(_hwnd: usize, _index: i32) -> usize {
     0
+}
+pub(crate) extern "win64" fn set_class_long_ptr_w(_hwnd: usize, _index: i32, _new_long: usize) -> usize {
+    0
+}
+pub(crate) extern "win64" fn is_window_unicode(_hwnd: usize) -> i32 {
+    1
+}
+pub(crate) unsafe extern "win64" fn get_icon_info(_hicon: usize, icon_info: *mut u8) -> i32 {
+    if !icon_info.is_null() {
+        unsafe { std::ptr::write_bytes(icon_info, 0, 32) };
+    }
+    1
+}
+pub(crate) extern "win64" fn create_caret(_hwnd: usize, _hbm: usize, _w: i32, _h: i32) -> i32 {
+    1
+}
+pub(crate) extern "win64" fn destroy_caret() -> i32 {
+    1
+}
+pub(crate) extern "win64" fn set_caret_pos(_x: i32, _y: i32) -> i32 {
+    1
 }
 pub(crate) extern "win64" fn fill_rect(_dc: usize, _rect: usize, _brush: usize) -> i32 {
     1
@@ -1272,3 +1313,134 @@ pub unsafe extern "win64" fn init_common_controls_ex(
 
 pub extern "win64" fn init_common_controls() {}
 
+pub unsafe extern "win64" fn char_upper_w(lpsz: *mut u16) -> *mut u16 {
+    if (lpsz as usize) <= 0xffff {
+        let ch = lpsz as usize as u32;
+        if let Some(c) = char::from_u32(ch) {
+            let upper = c.to_uppercase().next().unwrap_or(c);
+            return (upper as u32 as usize) as *mut u16;
+        }
+        return lpsz;
+    }
+    if lpsz.is_null() {
+        return lpsz;
+    }
+    unsafe {
+        let mut p = lpsz;
+        while *p != 0 {
+            if let Some(c) = char::from_u32(*p as u32) {
+                let upper = c.to_uppercase().next().unwrap_or(c);
+                *p = upper as u16;
+            }
+            p = p.add(1);
+        }
+    }
+    lpsz
+}
+
+pub unsafe extern "win64" fn char_upper_a(lpsz: *mut u8) -> *mut u8 {
+    if (lpsz as usize) <= 0xffff {
+        let b = lpsz as usize as u8;
+        return (b.to_ascii_uppercase() as usize) as *mut u8;
+    }
+    if lpsz.is_null() {
+        return lpsz;
+    }
+    unsafe {
+        let mut p = lpsz;
+        while *p != 0 {
+            *p = (*p).to_ascii_uppercase();
+            p = p.add(1);
+        }
+    }
+    lpsz
+}
+
+pub unsafe extern "win64" fn char_lower_w(lpsz: *mut u16) -> *mut u16 {
+    if (lpsz as usize) <= 0xffff {
+        let ch = lpsz as usize as u32;
+        if let Some(c) = char::from_u32(ch) {
+            let lower = c.to_lowercase().next().unwrap_or(c);
+            return (lower as u32 as usize) as *mut u16;
+        }
+        return lpsz;
+    }
+    if lpsz.is_null() {
+        return lpsz;
+    }
+    unsafe {
+        let mut p = lpsz;
+        while *p != 0 {
+            if let Some(c) = char::from_u32(*p as u32) {
+                let lower = c.to_lowercase().next().unwrap_or(c);
+                *p = lower as u16;
+            }
+            p = p.add(1);
+        }
+    }
+    lpsz
+}
+
+pub unsafe extern "win64" fn char_lower_a(lpsz: *mut u8) -> *mut u8 {
+    if (lpsz as usize) <= 0xffff {
+        let b = lpsz as usize as u8;
+        return (b.to_ascii_lowercase() as usize) as *mut u8;
+    }
+    if lpsz.is_null() {
+        return lpsz;
+    }
+    unsafe {
+        let mut p = lpsz;
+        while *p != 0 {
+            *p = (*p).to_ascii_lowercase();
+            p = p.add(1);
+        }
+    }
+    lpsz
+}
+
+pub extern "win64" fn set_window_subclass(
+    _hwnd: usize,
+    _subclass_proc: usize,
+    _id: usize,
+    _ref_data: usize,
+) -> i32 {
+    1
+}
+
+pub extern "win64" fn remove_window_subclass(
+    _hwnd: usize,
+    _subclass_proc: usize,
+    _id: usize,
+) -> i32 {
+    1
+}
+
+pub unsafe extern "win64" fn def_subclass_proc(
+    hwnd: usize,
+    msg: u32,
+    wparam: usize,
+    lparam: isize,
+) -> isize {
+    super::windows::def_window_proc_w(hwnd, msg, wparam, lparam)
+}
+
+pub unsafe extern "win64" fn task_dialog_indirect(
+    _config: *const std::ffi::c_void,
+    button: *mut i32,
+    _radio_button: *mut i32,
+    _verification_flag_checked: *mut i32,
+) -> i32 {
+    if !button.is_null() {
+        unsafe { *button = 1 }; // IDOK
+    }
+    0 // S_OK
+}
+
+pub extern "win64" fn register_user_api_hook(_a: usize, _b: usize) -> i32 {
+    1
+}
+
+pub extern "win64" fn unregister_user_api_hook() -> i32 {
+    1
+}

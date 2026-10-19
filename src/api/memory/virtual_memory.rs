@@ -340,6 +340,69 @@ pub unsafe extern "win64" fn read_process_memory(
     }
     1
 }
+
+pub unsafe extern "win64" fn write_process_memory(
+    process: usize,
+    base: *mut c_void,
+    buffer: *const c_void,
+    size: usize,
+    bytes_written: *mut usize,
+) -> i32 {
+    if process != !0 && process != 1 && process != std::process::id() as usize {
+        error::set(6);
+        return 0;
+    }
+    if size == 0 {
+        if !bytes_written.is_null() {
+            unsafe { *bytes_written = 0 };
+        }
+        return 1;
+    }
+    if base.is_null() || buffer.is_null() {
+        error::set(87);
+        return 0;
+    }
+    if region(base as usize).is_none() {
+        error::set(998);
+        return 0;
+    }
+    unsafe {
+        std::ptr::copy_nonoverlapping(buffer as *const u8, base as *mut u8, size);
+        if !bytes_written.is_null() {
+            *bytes_written = size;
+        }
+    }
+    1
+}
+
+pub unsafe extern "win64" fn alloc_ex(
+    process: usize,
+    address: usize,
+    n: usize,
+    kind: u32,
+    protection: u32,
+) -> usize {
+    if process != !0 && process != 1 && process != std::process::id() as usize {
+        error::set(6);
+        return 0;
+    }
+    alloc(address, n, kind, protection)
+}
+
+pub unsafe extern "win64" fn protect_ex(
+    process: usize,
+    address: usize,
+    n: usize,
+    protection: u32,
+    old: *mut u32,
+) -> i32 {
+    if process != !0 && process != 1 && process != std::process::id() as usize {
+        error::set(6);
+        return 0;
+    }
+    unsafe { protect(address, n, protection, old) }
+}
+
 pub unsafe extern "win64" fn protect(
     address: usize,
     n: usize,
@@ -378,6 +441,45 @@ pub extern "win64" fn is_bad_read_ptr(ptr: usize, size: usize) -> i32 {
     }
     0
 }
+
+pub extern "win64" fn is_bad_string_ptr_w(ptr: usize, max: usize) -> i32 {
+    if max == 0 {
+        return 0;
+    }
+    if ptr == 0 {
+        return 1;
+    }
+    0
+}
+
+pub extern "win64" fn is_bad_string_ptr_a(ptr: usize, max: usize) -> i32 {
+    if max == 0 {
+        return 0;
+    }
+    if ptr == 0 {
+        return 1;
+    }
+    0
+}
+
+pub extern "win64" fn is_bad_write_ptr(ptr: usize, size: usize) -> i32 {
+    if size == 0 {
+        return 0;
+    }
+    if ptr == 0 || ptr.checked_add(size).is_none() {
+        return 1;
+    }
+    0
+}
+
+pub extern "win64" fn is_bad_code_ptr(ptr: usize) -> i32 {
+    if ptr == 0 {
+        1
+    } else {
+        0
+    }
+}
+
 
 pub extern "win64" fn large_page_minimum() -> usize {
     2 * 1024 * 1024

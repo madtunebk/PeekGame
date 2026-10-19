@@ -1,5 +1,59 @@
 # id Tech 7 import ledger
 
+## DOOM speech-profile lookup
+
+PeekGame appends `+net_enableTextToSpeech 0` when launching
+`DOOMEternalx64vk.exe`, unless the caller already supplied that cvar. The game
+binary contains `net_enableTextToSpeech` and its own
+`EnumerateChatSpeechProfiles: net_enableTextToSpeech == false` early-exit message.
+This targets the PlayFab Party text-to-speech profile lookup while leaving
+PlayFab login, WinHTTP, and other online features enabled. The launch-time
+change is in `quirks::game_args`; it does not replace `PartyWin.dll` or report
+fake success for an asynchronous Party operation. A live game run still needs
+to confirm that this build accepts the launch cvar and that the Settings hang
+does not also require the separate WinHTTP body-delivery fix below.
+
+## Campaign Settings hang — PlayFab half-online (opt-in offline mode)
+
+- **Affected APIs:** `WINHTTP.dll` async `WinHttpSendRequest`/`WinHttpReceiveResponse`/
+  `WinHttpQueryDataAvailable`/`WinHttpReadData` and their status callbacks;
+  `src/api/network/winhttp.rs`.
+- **Symptom:** in campaign (single-player, offline) mode, opening the pause-menu
+  **Settings** (or any online-service view) leaves a modal **"NOTICE / Loading…"** up
+  forever — even Escape will not dismiss it. The game's own log shows
+  `Warehouse: Don't know how to handle item of class '' that came from service` and
+  `idHUD_Reticle::SetActiveReticle: no SWF name found for reticle style unknown`.
+- **Cause:** PeekGame's WinHTTP (host libcurl) is good enough that DOOM **logs into
+  PlayFab successfully**, so the game enters *online* mode and the Settings/Warehouse
+  UI issues `POST …playfabapi.com/Client/GetUserInventory` and
+  `/Group/ListMembershipOpportunities`. These return **HTTP 200** (traced with
+  `PEEKGAME_TRACE_HTTP`), the game reads the response **headers**, and then wedges —
+  the response **body is never delivered back into its async read callbacks**, so the
+  Warehouse builds an empty/`''`-class inventory and the loadout/reticle never
+  resolve. The game retries ~10 s apart, then gives up with the modal still shown. On
+  a genuinely offline machine PlayFab login fails and none of this happens.
+  (Root async-delivery bug not yet fixed; suspected single-thread callback
+  serialization in `winhttp.rs` — all async callbacks run on one worker thread.)
+- **Implementation (workaround):** `PEEKGAME_HTTP_OFFLINE=1` makes
+  `winhttp::http_offline()` fail every request with `ERROR_WINHTTP_CANNOT_CONNECT`, so
+  DOOM remains offline and avoids initializing the PlayFab Party speech-profile
+  request. The per-game `Quirk::ForceHttpOffline` exists but is currently not enabled
+  for DOOM; without the environment variable, it runs online. `PEEKGAME_HTTP_OFFLINE=0`
+  explicitly forces online mode.
+- **Scope:** campaign/offline menus. The switch disables WinHTTP online features,
+  including PlayFab login and Battlemode services, for that run. It does not start
+  a text-to-speech daemon; `RefreshChatSpeechProfiles` belongs to the game's
+  PlayFab Party path, not its Electron launcher.
+- **Verification:** `cargo test --offline quirks` and
+  `python3 tests/test_winhttp_offline.py` pass. The user's online run logged
+  `Logged in to PlayFab user` followed by `RefreshChatSpeechProfiles: request timed
+  out` and Warehouse warnings. With `PEEKGAME_TRACE_HTTP=1`, offline mode should show
+  `blocked/offline request: … -> CANNOT_CONNECT` in place of successful PlayFab
+  requests. The game menu still needs a user run with the switch. Diagnostics include
+  `PEEKGAME_TRACE_SOCKETS`, and
+  WinHTTP callback `enter`/`exit` + `WinHttpQueryDataAvailable`/`ReadData` tracing
+  under `PEEKGAME_TRACE_HTTP`.
+
 ## Baseline
 
 - **Game:** DOOM Eternal 1.0.2 (id Tech 7.1.1, build `20260811-165453-brown-sapphire`),
@@ -458,3 +512,26 @@
 - **Fix:** `Window::map_guard` (`src/api/window/state.rs`) is set when a top-level window is first mapped and holds the program's size. A later SetWindowPos updates it. Within 2 s, the first window-manager configure with a different size is answered once by requesting the program's size again (`src/api/window/pump.rs`) instead of being reported as WM_SIZE. On Windows the program's size stands.
 - **Also:** the window trace now covers style changes, AdjustWindowRectEx, Get/SetWindowPlacement, client-size changes, WM_NORMAL_HINTS and XMapWindow. A temporary opt-in focus hack (`PEEKGAME_TINY_WINDOW_720P`) was removed.
 - **Verification:** user run on GNOME/X11: the window keeps the configured size (1920x1080) and the config is no longer overwritten. This can't be reproduced in the Xvfb tests (no window manager).
+
+## idTechLauncher Electron GPU startup and CoGetMalloc (2026-10-19)
+
+- With the launcher run through PeekGame, Chromium's GPU child failed with
+  `error_code=49`, meaning `SBOX_ERROR_CANNOT_CREATE_RESTRICTED_TOKEN` in
+  [Chromium's sandbox result codes](https://chromium.googlesource.com/chromium/src.git/+/refs/heads/master/sandbox/win/src/sandbox_types.h).
+  PeekGame's Windows token support is partial; no GPU child was spawned.
+- A private-Xvfb probe with Electron's `--no-sandbox` switch launched both GPU
+  and network utility children, so that switch bypasses this specific blocker.
+  The launcher then reached `ole32.dll!CoGetMalloc`, which was missing, and a
+  separate child breakpoint. The switch remains a user choice, not an automatic
+  quirk.
+- Added `CoGetMalloc(MEMCTX_TASK)` and its `IMalloc` interface over the existing
+  `CoTaskMemAlloc`/`CoTaskMemFree` allocator. Unsupported contexts fail with
+  `E_INVALIDARG`; `QueryInterface` supports `IUnknown` and `IMalloc`.
+  `GetSize` returns the host allocation size and `DidAlloc` reports unknown.
+  The [OLE allocator contract](https://learn.microsoft.com/en-us/windows/win32/com/the-ole-memory-allocator)
+  establishes that the interface and task-memory helpers share an allocator.
+- Verification: `cargo test --offline task_allocator_uses_cotask_memory_and_com_identity`.
+  Rebuilt and staged in `dist/`. A second private-display probe with
+  `--no-sandbox` passed `CoGetMalloc` and launched GPU and network children, then
+  stopped on a GPU-child breakpoint. `--disable-direct-composition` removed the
+  `dcomp.dll` load error, but child breakpoints remain. No UI success established.

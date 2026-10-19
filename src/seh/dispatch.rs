@@ -180,25 +180,25 @@ unsafe extern "C" {
 // One per running dispatch or unwind on this thread: where it started.
 thread_local! {static STARTS: Cell<Vec<usize>> = const { Cell::new(Vec::new()) };}
 fn push_start(context: *const Context) {
-    STARTS.with(|s| {
+    let _ = STARTS.try_with(|s| {
         let mut v = s.take();
         v.push(context as usize);
         s.set(v);
     });
 }
 fn pop_start() {
-    STARTS.with(|s| {
+    let _ = STARTS.try_with(|s| {
         let mut v = s.take();
         v.pop();
         s.set(v);
     });
 }
 fn starts() -> Vec<usize> {
-    STARTS.with(|s| {
+    STARTS.try_with(|s| {
         let v = s.take();
         s.set(v.clone());
         v
-    })
+    }).unwrap_or_default()
 }
 /// StackBase (gs:0x8) or StackLimit (gs:0x10) from the TEB; 0 without one.
 fn teb_field(offset: usize) -> u64 {
@@ -338,12 +338,22 @@ fn dispatch(record: &mut ExceptionRecord, context: &mut Context) -> ! {
         record.count,
         &record.information[..record.count.min(4) as usize]
     );
-    if record.code == 0xe000_0008 {
-        for i in 0..32 {
-            let val = unsafe { (context.rsp as *const u64).add(i).read_unaligned() } as usize;
-            let desc = describe(val);
-            if desc.contains('+') {
-                eprintln!("  oom_stack[{i}] = {val:#x} ({desc})");
+    if record.code == 0xc0000005 {
+        let mut frames = [0usize; 20];
+        let count = super::backtrace::capture_context(context, &mut frames);
+        for (index, address) in frames[..count].iter().copied().enumerate() {
+            eprintln!("  exception_frame[{index}] = {address:#x} ({})", describe(address));
+        }
+    }
+    if record.code == 0x8000_0003 {
+        eprintln!("int3 at rip={:#x} rsp={:#x} rdi={:#x} rsi={:#x} rbx={:#x}", context.rip, context.rsp, context.rdi, context.rsi, context.rbx);
+        let ptr = unsafe { ((context.rsp + 0x60) as *const usize).read_unaligned() };
+        let len = unsafe { ((context.rsp + 0x68) as *const usize).read_unaligned() };
+        eprintln!("delay load module ptr={ptr:#x} len={len}");
+        if ptr > 0x10000 && len > 0 && len < 256 {
+            let bytes = unsafe { std::slice::from_raw_parts(ptr as *const u8, len) };
+            if let Ok(s) = std::str::from_utf8(bytes) {
+                eprintln!(">>> DELAY LOAD FAILED FOR MODULE: \"{s}\" <<<");
             }
         }
     }
@@ -534,7 +544,7 @@ fn unwind(
     current.rax = value;
     current.rip = target_ip;
     // The dispatches whose frames are being abandoned end here.
-    STARTS.with(|s| {
+    let _ = STARTS.try_with(|s| {
         let mut v = s.take();
         v.retain(|&c| unsafe { (*(c as *const Context)).rsp } > current.rsp);
         s.set(v);

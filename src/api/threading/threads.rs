@@ -239,6 +239,9 @@ pub unsafe extern "win64" fn duplicate(
 pub fn close(handle: usize) -> bool {
     threads().lock().unwrap().remove(&handle).is_some()
 }
+pub fn is_thread(handle: usize) -> bool {
+    threads().lock().unwrap().contains_key(&handle)
+}
 pub fn wait(handle: usize, milliseconds: u32) -> Option<u32> {
     let thread = threads().lock().unwrap().get(&handle).cloned()?;
     let mut exit = thread.exit.lock().unwrap();

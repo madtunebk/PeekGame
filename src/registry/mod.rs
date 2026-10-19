@@ -53,6 +53,20 @@ macro_rules! export {
         }
     };
 }
+/// Registry-only export for decorated MSVC names containing ELF symbol-version syntax.
+macro_rules! export_registry_only {
+    (@link $($args:tt)*) => {};
+    ($dll:literal,$name:literal,$category:literal,$status:literal,$scope:literal,$function:path $(,)?) => {
+        Export {
+            dll: $dll,
+            name: $name,
+            category: $category,
+            status: $status,
+            scope: $scope,
+            address: Some(|| $function as *const std::ffi::c_void),
+        }
+    };
+}
 /// A data export: the import slot receives the address of `$variable`. Its link
 /// symbol is the variable's own `export_name`, since a jump cannot stand in for data.
 macro_rules! data {
@@ -99,6 +113,7 @@ macro_rules! window {
     };
 }
 mod com;
+mod concrt;
 mod crt;
 mod vcruntime;
 mod filesystem;
@@ -114,6 +129,7 @@ mod window;
 pub fn entries() -> impl Iterator<Item = &'static Export> {
     system::entries()
         .chain(com::EXPORTS.iter())
+        .chain(concrt::EXPORTS.iter())
         .chain(filesystem::EXPORTS.iter())
         .chain(shell::EXPORTS.iter())
         .chain(crt::EXPORTS.iter())
@@ -176,6 +192,11 @@ fn canonical(dll: &str) -> String {
     }
     if lower.starts_with("api-ms-win-devices-config-") {
         return "cfgmgr32".into();
+    }
+    if lower.starts_with("api-ms-win-power-base-")
+        || lower.starts_with("api-ms-win-power-setting-")
+    {
+        return "powrprof".into();
     }
     if lower.starts_with("api-ms-win-") || lower.starts_with("ext-ms-win-") {
         return "kernel32".into();

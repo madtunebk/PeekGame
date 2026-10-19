@@ -447,3 +447,29 @@ pub extern "win64" fn pt_in_region(handle: usize, x: i32, y: i32) -> i32 {
         0
     }
 }
+
+pub extern "win64" fn bit_blt(
+    _hdc_dest: usize,
+    _x_dest: i32,
+    _y_dest: i32,
+    _w: i32,
+    _h: i32,
+    _hdc_src: usize,
+    _x_src: i32,
+    _y_src: i32,
+    _rop: u32,
+) -> i32 {
+    1
+}
+
+pub unsafe extern "win64" fn get_bitmap_bits(
+    _hbm: usize,
+    cb_buffer: i32,
+    lp_bits: *mut u8,
+) -> i32 {
+    if !lp_bits.is_null() && cb_buffer > 0 {
+        unsafe { std::ptr::write_bytes(lp_bits, 0, cb_buffer as usize) };
+    }
+    cb_buffer
+}
+

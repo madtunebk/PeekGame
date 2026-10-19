@@ -560,4 +560,8 @@ exports! {
         "same as DecodePointer",
         pointers::decode
     ),
+    export!("advapi32.dll", "MapGenericMask", "security", "implemented", "maps generic access rights", security::map_generic_mask),
+    export!("advapi32.dll", "AccessCheck", "security", "partial", "grants desired access", security::access_check),
+    export!("advapi32.dll", "AddMandatoryAce", "security", "partial", "returns TRUE", security::add_mandatory_ace),
+    export!("advapi32.dll", "AddConditionalAce", "security", "partial", "returns TRUE", security::add_conditional_ace),
 }

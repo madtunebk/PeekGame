@@ -1,4 +1,4 @@
-use std::{cell::RefCell, ffi::c_void};
+use std::{cell::RefCell, ffi::c_void, sync::{atomic::{AtomicU32, Ordering}, OnceLock}};
 thread_local! {static OLE:std::cell::Cell<u32>=const{std::cell::Cell::new(0)};}
 pub(crate) fn ole_initialized() -> bool {
     OLE.with(|n| n.get() != 0)
@@ -86,6 +86,140 @@ pub unsafe extern "win64" fn reallocate(p: *mut c_void, size: usize) -> *mut c_v
 pub unsafe extern "win64" fn release(p: *mut c_void) {
     unsafe {
         free(p);
+    }
+}
+
+// The process-wide OLE task allocator shares storage with CoTaskMemAlloc/Free.
+// IMalloc is a COM interface, so the game may use it before CoInitializeEx.
+#[repr(C)]
+struct TaskAllocator {
+    vtable: *const usize,
+    refs: AtomicU32,
+}
+unsafe impl Sync for TaskAllocator {}
+unsafe impl Send for TaskAllocator {}
+
+unsafe extern "win64" fn malloc_query_interface(
+    this: *mut TaskAllocator,
+    iid: *const u8,
+    out: *mut *mut c_void,
+) -> i32 {
+    if out.is_null() {
+        return 0x80004003u32 as i32; // E_POINTER
+    }
+    unsafe { *out = std::ptr::null_mut() };
+    if iid.is_null() {
+        return 0x80004003u32 as i32;
+    }
+    let requested = unsafe { std::slice::from_raw_parts(iid, 16) };
+    const IUNKNOWN: [u8; 16] = [0, 0, 0, 0, 0, 0, 0, 0, 0xc0, 0, 0, 0, 0, 0, 0, 0x46];
+    const IMALLOC: [u8; 16] = [2, 0, 0, 0, 0, 0, 0, 0, 0xc0, 0, 0, 0, 0, 0, 0, 0x46];
+    if requested != IUNKNOWN && requested != IMALLOC {
+        return 0x80004002u32 as i32; // E_NOINTERFACE
+    }
+    unsafe { *out = this.cast() };
+    unsafe { malloc_add_ref(this) };
+    0
+}
+
+unsafe extern "win64" fn malloc_add_ref(this: *mut TaskAllocator) -> u32 {
+    unsafe { (*this).refs.fetch_add(1, Ordering::Relaxed) + 1 }
+}
+
+unsafe extern "win64" fn malloc_release(this: *mut TaskAllocator) -> u32 {
+    let refs = unsafe { &(*this).refs };
+    let mut current = refs.load(Ordering::Relaxed);
+    loop {
+        if current <= 1 { return 1; } // process-owned singleton
+        match refs.compare_exchange_weak(current, current - 1, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => return current - 1,
+            Err(actual) => current = actual,
+        }
+    }
+}
+
+unsafe extern "win64" fn malloc_alloc(_this: *mut TaskAllocator, size: usize) -> *mut c_void {
+    allocate(size)
+}
+unsafe extern "win64" fn malloc_realloc(_this: *mut TaskAllocator, p: *mut c_void, size: usize) -> *mut c_void {
+    unsafe { reallocate(p, size) }
+}
+unsafe extern "win64" fn malloc_free(_this: *mut TaskAllocator, p: *mut c_void) {
+    unsafe { release(p) }
+}
+unsafe extern "C" { fn malloc_usable_size(p: *mut c_void) -> usize; }
+unsafe extern "win64" fn malloc_get_size(_this: *mut TaskAllocator, p: *mut c_void) -> usize {
+    if p.is_null() { usize::MAX } else { unsafe { malloc_usable_size(p) } }
+}
+unsafe extern "win64" fn malloc_did_alloc(_this: *mut TaskAllocator, _p: *mut c_void) -> i32 {
+    -1 // cannot determine ownership; Windows permits this answer
+}
+unsafe extern "win64" fn malloc_heap_minimize(_this: *mut TaskAllocator) {}
+
+fn task_allocator() -> &'static TaskAllocator {
+    static VTABLE: OnceLock<[usize; 9]> = OnceLock::new();
+    static OBJECT: OnceLock<TaskAllocator> = OnceLock::new();
+    let vtable = VTABLE.get_or_init(|| [
+        malloc_query_interface as *const () as usize,
+        malloc_add_ref as *const () as usize,
+        malloc_release as *const () as usize,
+        malloc_alloc as *const () as usize,
+        malloc_realloc as *const () as usize,
+        malloc_free as *const () as usize,
+        malloc_get_size as *const () as usize,
+        malloc_did_alloc as *const () as usize,
+        malloc_heap_minimize as *const () as usize,
+    ]);
+    OBJECT.get_or_init(|| TaskAllocator { vtable: vtable.as_ptr(), refs: AtomicU32::new(1) })
+}
+
+pub unsafe extern "win64" fn get_malloc(context: u32, out: *mut *mut c_void) -> i32 {
+    if out.is_null() { return 0x80004003u32 as i32; }
+    unsafe { *out = std::ptr::null_mut() };
+    if context != 1 { return 0x80070057u32 as i32; } // MEMCTX_TASK
+    let object = task_allocator() as *const TaskAllocator as *mut TaskAllocator;
+    unsafe { malloc_add_ref(object) };
+    unsafe { *out = object.cast() };
+    0
+}
+
+#[cfg(test)]
+mod malloc_tests {
+    use super::*;
+
+    #[test]
+    fn task_allocator_uses_cotask_memory_and_com_identity() {
+        unsafe {
+            let mut object = std::ptr::null_mut();
+            assert_eq!(get_malloc(1, &mut object), 0);
+            assert!(!object.is_null());
+            let vtable = *(object as *mut *const usize);
+            let query: unsafe extern "win64" fn(*mut c_void, *const u8, *mut *mut c_void) -> i32 =
+                std::mem::transmute(*vtable);
+            let alloc: unsafe extern "win64" fn(*mut c_void, usize) -> *mut c_void =
+                std::mem::transmute(*vtable.add(3));
+            let free: unsafe extern "win64" fn(*mut c_void, *mut c_void) =
+                std::mem::transmute(*vtable.add(5));
+            let get_size: unsafe extern "win64" fn(*mut c_void, *mut c_void) -> usize =
+                std::mem::transmute(*vtable.add(6));
+            let release_ref: unsafe extern "win64" fn(*mut c_void) -> u32 =
+                std::mem::transmute(*vtable.add(2));
+            let iid = [2, 0, 0, 0, 0, 0, 0, 0, 0xc0, 0, 0, 0, 0, 0, 0, 0x46];
+            let mut queried = std::ptr::null_mut();
+            assert_eq!(query(object, iid.as_ptr(), &mut queried), 0);
+            assert_eq!(queried, object);
+            let p = alloc(object, 48);
+            assert!(!p.is_null());
+            assert!(get_size(object, p) >= 48);
+            free(object, p);
+            let p = allocate(16);
+            assert!(!p.is_null());
+            free(object, p);
+            release_ref(queried);
+            release_ref(object);
+            assert_eq!(get_malloc(0, &mut object), 0x80070057u32 as i32);
+            assert!(object.is_null());
+        }
     }
 }
 

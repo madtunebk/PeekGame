@@ -6,7 +6,7 @@ import subprocess
 root=Path(__file__).resolve().parents[1]
 subprocess.run(["cc","-std=c11","-O2","-Wall","-Wextra","-Werror",
     str(root/"tests/window_abi.c"),str(root/"tests/window_events.c"),str(root/"tests/window_input.c"),
-    "-lX11","-ldl","-o",str(root/"target/window_abi")],check=True)
+    "-lX11","-lXtst","-ldl","-o",str(root/"target/window_abi")],check=True)
 command=[str(root/"target/window_abi"),str(root/"target/release/libgame_imports.so")]
 subprocess.run(command+["no-display"],env={**os.environ,"DISPLAY":":65534"},check=True,timeout=10)
 read,write=os.pipe()

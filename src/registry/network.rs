@@ -3,23 +3,25 @@ use super::*;
 use crate::api::network::{self, events, resolve, sockets, sspi, winhttp};
 use crate::api::threading::events as win_events;
 exports! {
-    export!("sspicli.dll", "AcquireCredentialsHandleW", "network", "partial", "Schannel (Unified provider) DTLS 1.0/1.2 over OpenSSL: SCHANNEL_CRED v4 with a CertCreateSelfSignCertificate certificate, or PSK-only", network::schannel::acquire_credentials_handle_w),
+    export!("sspicli.dll", "AcquireCredentialsHandleW", "network", "partial", "Schannel (Unified provider) TLS stream 1.0-1.2 and DTLS 1.0/1.2 over OpenSSL; SCHANNEL_CRED v4 and SCH_CREDENTIALS v5", network::schannel::acquire_credentials_handle_w),
     export!("sspicli.dll", "FreeCredentialsHandle", "network", "implemented", "Schannel credential handles", network::schannel::free_credentials_handle),
-    export!("sspicli.dll", "InitializeSecurityContextW", "network", "partial", "DTLS client (ISC_REQ_DATAGRAM): one datagram per token, SEC_I_MESSAGE_FRAGMENT for multi-datagram flights, PSK buffers; peer validated by the caller; stream TLS unsupported", network::schannel::initialize_security_context_w),
-    export!("sspicli.dll", "AcceptSecurityContext", "network", "partial", "DTLS server (ASC_REQ_DATAGRAM), client certificate requested; PSK with a supplied key; stream TLS unsupported", network::schannel::accept_security_context),
+    export!("sspicli.dll", "InitializeSecurityContextW", "network", "partial", "TLS stream tokens and DTLS client (ISC_REQ_DATAGRAM): DTLS flights can span datagrams; peer validated by caller", network::schannel::initialize_security_context_w),
+    export!("sspicli.dll", "AcceptSecurityContext", "network", "partial", "TLS stream and DTLS server contexts; peer validated by caller", network::schannel::accept_security_context),
     export!("sspicli.dll", "DeleteSecurityContext", "network", "implemented", "Schannel context handles", network::schannel::delete_security_context),
-    export!("sspicli.dll", "QueryContextAttributesW", "network", "partial", "SECPKG_ATTR_STREAM_SIZES and SECPKG_ATTR_REMOTE_CERT_CONTEXT", network::schannel::query_context_attributes_w),
+    export!("sspicli.dll", "QueryContextAttributesW", "network", "partial", "SECPKG_ATTR_STREAM_SIZES, SECPKG_ATTR_REMOTE_CERT_CONTEXT, SECPKG_ATTR_APPLICATION_PROTOCOL, SECPKG_ATTR_CONNECTION_INFO", network::schannel::query_context_attributes_w),
+    export!("sspicli.dll", "QueryContextAttributesA", "network", "partial", "QueryContextAttributesA alias", network::schannel::query_context_attributes_a),
     export!("sspicli.dll", "EncryptMessage", "network", "partial", "one DTLS record into STREAM_HEADER/DATA/STREAM_TRAILER", network::schannel::encrypt_message),
     export!("sspicli.dll", "DecryptMessage", "network", "partial", "first DTLS record of a datagram in place; further records as SECBUFFER_EXTRA", network::schannel::decrypt_message),
     export!("sspicli.dll", "FreeContextBuffer", "network", "implemented", "buffers allocated for ISC/ASC_REQ_ALLOCATE_MEMORY", network::schannel::free_context_buffer),
     export!("crypt32.dll", "CryptBinaryToStringA", "network", "partial", "Base64 and PEM certificate headers, CRLF/NOCR/NOCRLF, character-count buffers", network::crypt_strings::binary_to_string_a),
     export!("crypt32.dll", "CryptBinaryToStringW", "network", "partial", "UTF-16 Base64/PEM certificate output with character-count buffers", network::crypt_strings::binary_to_string_w),
     export!("crypt32.dll", "CryptProtectData", "network", "partial", "DPAPI data protection", network::crypt_strings::crypt_protect_data),
+    export!("crypt32.dll", "CryptInstallOIDFunctionAddress", "network", "partial", "records OID handler entries; PeekGame crypto paths do not yet dispatch to them", network::crypt_strings::install_oid_function_address),
     export!("crypt32.dll", "CryptUnprotectData", "network", "partial", "DPAPI data unprotection", network::crypt_strings::crypt_unprotect_data),
 
     export!("crypt32.dll", "CertGetCertificateContextProperty", "network", "partial", "real SHA1/MD5/SHA256 certificate hashes; unattached extended properties: CRYPT_E_NOT_FOUND", network::certificates::properties::get),
 
-    export!("crypt32.dll", "CertGetCertificateChain", "network", "partial", "OpenSSL verification against host trust, no online revocation", network::certificates::chain::get),
+    export!("crypt32.dll", "CertGetCertificateChain", "network", "partial", "OpenSSL verification against host trust, no online revocation; OS-current or SHA2-only strong-sign policy honored as auth level 2, weak-permitting/flagged strong-sign and issuance/freshness params ERROR_NOT_SUPPORTED", network::certificates::chain::get),
     export!("crypt32.dll", "CertFreeCertificateChain", "network", "partial", "owned Windows chain contexts", network::certificates::chain::free),
     export!("crypt32.dll", "CertDuplicateCertificateChain", "network", "partial", "reference-counted chain contexts", network::certificates::chain::duplicate),
     export!("crypt32.dll", "CertVerifyCertificateChainPolicy", "network", "partial", "BASE/SSL: trust, signatures, expiry, EKU and DNS/IP names", network::certificates::chain::policy),
@@ -30,6 +32,7 @@ exports! {
     export!("crypt32.dll", "CertDuplicateCertificateContext", "network", "partial", "reference-counted contexts", network::certificates::duplicate),
     export!("crypt32.dll", "CertFreeCertificateContext", "network", "partial", "releases a context reference", network::certificates::free),
     export!("crypt32.dll", "CertCloseStore", "network", "partial", "normal/check close; external contexts survive", network::certificates::close),
+    export!("crypt32.dll", "CertControlStore", "network", "partial", "synchronize or notify store of changes", network::certificates::control_store),
     export!("crypt32.dll", "CryptEncodeObjectEx", "network", "partial", "X509_NAME (CERT_NAME_INFO) to DER; caller buffer or LocalAlloc; other structures ERROR_NOT_SUPPORTED", network::certificates::encode_object_ex),
     export!("crypt32.dll", "CertCreateSelfSignCertificate", "network", "partial", "new RSA-2048 key via OpenSSL, caller subject name, sha1/sha256/384/512RSA, optional SYSTEMTIME validity; caller keys, flags and extensions ERROR_NOT_SUPPORTED", network::certificates::create_self_sign),
     export!("crypt32.dll", "CertAddStoreToCollection", "network", "partial", "collection stores present siblings in insertion order; priority ignored", network::certificates::add_store_to_collection),
@@ -146,39 +149,39 @@ exports! {
         "AcquireCredentialsHandleW",
         "network",
         "partial",
-        "no security packages: SEC_E_UNSUPPORTED_FUNCTION",
-        sspi::unsupported
+        "Schannel TLS stream and DTLS credentials (SCHANNEL_CRED v4 and SCH_CREDENTIALS v5)",
+        crate::api::network::schannel::acquire_credentials_handle_w
     ),
     export!(
         "secur32.dll",
         "AcquireCredentialsHandleA",
         "network",
         "partial",
-        "no security packages: SEC_E_UNSUPPORTED_FUNCTION",
-        sspi::unsupported
+        "Schannel TLS stream and DTLS credentials (SCHANNEL_CRED v4 and SCH_CREDENTIALS v5)",
+        sspi::acquire_credentials_handle_a
     ),
     export!(
         "secur32.dll",
         "InitializeSecurityContextW",
         "network",
         "partial",
-        "no security packages: SEC_E_UNSUPPORTED_FUNCTION",
-        sspi::unsupported
+        "Schannel TLS stream and DTLS client contexts",
+        crate::api::network::schannel::initialize_security_context_w
     ),
     export!(
         "secur32.dll",
         "InitializeSecurityContextA",
         "network",
         "partial",
-        "no security packages: SEC_E_UNSUPPORTED_FUNCTION",
-        sspi::unsupported
+        "Schannel TLS stream and DTLS client contexts",
+        sspi::initialize_security_context_a
     ),
     export!(
         "secur32.dll",
         "QuerySecurityPackageInfoW",
         "network",
         "partial",
-        "no security packages: SEC_E_UNSUPPORTED_FUNCTION",
+        "not implemented",
         sspi::unsupported
     ),
     export!(
@@ -186,7 +189,7 @@ exports! {
         "QuerySecurityPackageInfoA",
         "network",
         "partial",
-        "no security packages: SEC_E_UNSUPPORTED_FUNCTION",
+        "not implemented",
         sspi::unsupported
     ),
     export!(
@@ -194,48 +197,56 @@ exports! {
         "FreeCredentialsHandle",
         "network",
         "partial",
-        "no security packages: SEC_E_UNSUPPORTED_FUNCTION",
-        sspi::unsupported
+        "Schannel credential handles",
+        crate::api::network::schannel::free_credentials_handle
     ),
     export!(
         "secur32.dll",
         "DeleteSecurityContext",
         "network",
         "partial",
-        "no security packages: SEC_E_UNSUPPORTED_FUNCTION",
-        sspi::unsupported
+        "Schannel context handles",
+        crate::api::network::schannel::delete_security_context
     ),
     export!(
         "secur32.dll",
         "FreeContextBuffer",
         "network",
         "partial",
-        "no security packages: SEC_E_UNSUPPORTED_FUNCTION",
-        sspi::unsupported
+        "Schannel context buffers",
+        crate::api::network::schannel::free_context_buffer
     ),
     export!(
         "secur32.dll",
         "QueryContextAttributesW",
         "network",
         "partial",
-        "no security packages: SEC_E_UNSUPPORTED_FUNCTION",
-        sspi::unsupported
+        "Schannel supported context attributes",
+        crate::api::network::schannel::query_context_attributes_w
+    ),
+    export!(
+        "secur32.dll",
+        "QueryContextAttributesA",
+        "network",
+        "partial",
+        "Schannel supported context attributes",
+        crate::api::network::schannel::query_context_attributes_a
     ),
     export!(
         "secur32.dll",
         "EncryptMessage",
         "network",
         "partial",
-        "no security packages: SEC_E_UNSUPPORTED_FUNCTION",
-        sspi::unsupported
+        "Schannel DTLS records",
+        crate::api::network::schannel::encrypt_message
     ),
     export!(
         "secur32.dll",
         "DecryptMessage",
         "network",
         "partial",
-        "no security packages: SEC_E_UNSUPPORTED_FUNCTION",
-        sspi::unsupported
+        "Schannel DTLS records",
+        crate::api::network::schannel::decrypt_message
     ),
     export!(
         "secur32.dll",
@@ -789,16 +800,24 @@ exports! {
         "GetAdaptersInfo",
         "network",
         "partial",
-        "single Ethernet IP_ADAPTER_INFO with host MAC address",
-        network::get_adapters_info
+        "host IPv4 adapters with real addresses, interface indices and MAC addresses",
+        network::adapters::get_adapters_info
     ),
     export!(
         "iphlpapi.dll",
         "GetBestInterface",
         "network",
         "partial",
-        "returns adapter index 1 matching GetAdaptersInfo",
-        network::get_best_interface
+        "route-selected host interface index",
+        network::adapters::get_best_interface
+    ),
+    export!(
+        "iphlpapi.dll",
+        "GetBestRoute2",
+        "network",
+        "partial",
+        "best route and source address for destination",
+        network::adapters::get_best_route2
     ),
     export!(
         "iphlpapi.dll",

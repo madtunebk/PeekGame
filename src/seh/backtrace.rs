@@ -112,3 +112,20 @@ unsafe extern "win64" fn walk(
     }
     captured
 }
+
+/// Unwind a saved exception context rather than the current diagnostic thread.
+pub(crate) fn capture_context(context: &Context, frames: &mut [usize]) -> usize {
+    if frames.is_empty() {
+        return 0;
+    }
+    let mut saved = *context;
+    unsafe {
+        walk(
+            &mut saved,
+            0,
+            frames.len().min(u32::MAX as usize) as u32,
+            frames.as_mut_ptr(),
+            std::ptr::null_mut(),
+        ) as usize
+    }
+}

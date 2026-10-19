@@ -115,10 +115,13 @@ pub extern "win64" fn exit(code: i32) -> ! {
     let rsp_val: usize;
     unsafe { std::arch::asm!("mov {}, rsp", out(reg) rsp_val); }
     let ptr = rsp_val as *const usize;
-    for i in 0..32 {
+    for i in 0..64 {
         let val = unsafe { ptr.add(i).read() };
         if let Some(m) = crate::images::try_by_address(val) {
-            eprintln!("  exit_stack[{i}] = {val:#x} ({}+{:#x})", m.name, val - m.base);        }
+            eprintln!("  exit_stack[{i}] = {val:#x} ({}+{:#x})", m.name, val - m.base);
+        } else if (0x140000000..0x150000000).contains(&val) {
+            eprintln!("  exit_stack[{i}] = {val:#x} (re3.exe+{:#x})", val - 0x140000000);
+        }
     }
     cexit();
     std::process::exit(code & 255)

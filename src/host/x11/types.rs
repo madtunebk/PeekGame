@@ -1,4 +1,4 @@
-use std::ffi::{c_char, c_int, c_long, c_ulong};
+use std::ffi::{c_char, c_int, c_long, c_uint, c_ulong};
 pub type Display = std::ffi::c_void;
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -138,6 +138,57 @@ pub struct Selection {
     pub target: c_ulong,
     pub property: c_ulong,
     pub time: c_ulong,
+}
+
+/// XGenericEventCookie: the envelope for an extension (XInput2) event. After
+/// XNextEvent reports kind 35 (GenericEvent), `data` is filled by XGetEventData.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct GenericEventCookie {
+    pub kind: c_int,
+    pub serial: c_ulong,
+    pub send_event: c_int,
+    pub display: *mut Display,
+    pub extension: c_int,
+    pub evtype: c_int,
+    pub cookie: c_uint,
+    pub data: *mut std::ffi::c_void,
+}
+/// XIEventMask: the per-device set of XI2 event types to receive.
+#[repr(C)]
+pub struct IEventMask {
+    pub deviceid: c_int,
+    pub mask_len: c_int,
+    pub mask: *mut u8,
+}
+/// XIValuatorState: the set of valuators that changed and their cooked values.
+/// Its pointer members give it 8-byte alignment, which lands it at offset 64 in
+/// XIRawEvent (4 bytes of padding after `detail`) — a nested struct reproduces
+/// that padding, where a flattened one would not.
+#[repr(C)]
+pub struct IValuatorState {
+    pub mask_len: c_int,
+    pub mask: *const u8,
+    pub values: *const f64,
+}
+/// The leading fields of XIRawEvent (XInput2.h). We read only the relative
+/// valuators, so the trailing fields past `raw_values` are left off.
+#[repr(C)]
+pub struct IRawEvent {
+    pub kind: c_int,
+    pub serial: c_ulong,
+    pub send_event: c_int,
+    pub display: *mut Display,
+    pub extension: c_int,
+    pub evtype: c_int,
+    pub time: c_ulong,
+    pub deviceid: c_int,
+    pub sourceid: c_int,
+    pub detail: c_int,
+    pub valuators: IValuatorState,
+    /// Device values before the pointer-acceleration transform (what a game's
+    /// raw-input camera look wants). Indexed in step with the set mask bits.
+    pub raw_values: *const f64,
 }
 
 /// Native XWindowAttributes (LP64 Xlib layout).

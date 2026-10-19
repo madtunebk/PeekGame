@@ -15,7 +15,7 @@ unsafe extern "C" {
     fn geteuid() -> u32;
 }
 static TOKENS: Mutex<Option<HashSet<usize>>> = Mutex::new(None);
-static NEXT: AtomicUsize = AtomicUsize::new(0x6900_0000);
+static NEXT: AtomicUsize = AtomicUsize::new(0x6300_0000);
 
 pub fn close(handle: usize) -> bool {
     TOKENS
@@ -24,7 +24,7 @@ pub fn close(handle: usize) -> bool {
         .as_mut()
         .is_some_and(|t| t.remove(&handle))
 }
-fn is_token(handle: usize) -> bool {
+pub fn is_token(handle: usize) -> bool {
     TOKENS
         .lock()
         .unwrap()
@@ -48,6 +48,7 @@ pub unsafe extern "win64" fn open_process_token(
         .get_or_insert_with(HashSet::new)
         .insert(handle);
     unsafe { *out = handle };
+    eprintln!("[security] open_process_token -> handle={handle:#x}");
     1
 }
 /// Threads never impersonate here: ERROR_NO_TOKEN.
@@ -78,6 +79,7 @@ pub unsafe extern "win64" fn token_information(
         error::set(998);
         return 0;
     }
+    eprintln!("[security] GetTokenInformation token={token:#x} class={class} size={size}");
     let root = unsafe { geteuid() } == 0;
     let write_sid_s_1_5_32_544 = |dst: *mut u8| unsafe {
         dst.write_bytes(0, 16);
@@ -192,9 +194,31 @@ pub unsafe extern "win64" fn token_information(
             }
             1
         }
+        // TokenLogonSid: TOKEN_GROUPS with 1 SID S-1-5-5-0-0x3e7
+        28 => {
+            unsafe { *needed = 44 };
+            if out.is_null() || size < 44 {
+                error::set(122);
+                return 0;
+            }
+            unsafe {
+                out.write_bytes(0, 44);
+                (out as *mut u32).write_unaligned(1);
+                let sid = out.add(24);
+                (out.add(8) as *mut usize).write_unaligned(sid as usize);
+                (out.add(16) as *mut u32).write_unaligned(0xc0000007);
+                *sid = 1;
+                *sid.add(1) = 3;
+                *sid.add(7) = 5;
+                (sid.add(8) as *mut u32).write_unaligned(5);
+                (sid.add(12) as *mut u32).write_unaligned(0);
+                (sid.add(16) as *mut u32).write_unaligned(0x3e7);
+            }
+            1
+        }
         _ => {
             eprintln!("GetTokenInformation(class {class}) is not supported");
-            error::set(50);
+            error::set(1168);
             0
         }
     }
@@ -942,6 +966,7 @@ pub unsafe extern "win64" fn set_entries_in_acl_w(
         return ERROR_INVALID_PARAMETER;
     }
     unsafe { new_acl.write(std::ptr::null_mut()) };
+    eprintln!("[security] SetEntriesInAclW count={count} old_acl={old_acl:?}");
 
     // The current GetSecurityInfo implementation supplies an empty DACL.
     // Merging populated ACLs needs ACE replacement and ordering semantics.
@@ -969,19 +994,17 @@ pub unsafe extern "win64" fn set_entries_in_acl_w(
             eprintln!("SetEntriesInAclW: unsupported trustee or inheritance");
             return ERROR_NOT_SUPPORTED;
         }
-        if !matches!(entry.mode, 1..=3) {
+        if !matches!(entry.mode, 1..=4) {
             eprintln!("SetEntriesInAclW: unsupported access mode {}", entry.mode);
-            return ERROR_NOT_SUPPORTED;
-        }
-        if entry.mode == 2 && count != 1 {
-            eprintln!("SetEntriesInAclW: SET_ACCESS with multiple entries is not supported");
             return ERROR_NOT_SUPPORTED;
         }
         let sid = entry.trustee.name.cast::<u8>();
         if unsafe { is_valid_sid(sid) } == 0 {
             return ERROR_INVALID_PARAMETER;
         }
-        acl_size += 8 + unsafe { get_length_sid(sid) } as usize;
+        if entry.mode != 4 {
+            acl_size += 8 + unsafe { get_length_sid(sid) } as usize;
+        }
     }
     if acl_size > u16::MAX as usize {
         return ERROR_INVALID_PARAMETER;
@@ -994,13 +1017,16 @@ pub unsafe extern "win64" fn set_entries_in_acl_w(
         *acl = 2; // ACL_REVISION
         *acl.add(1) = 0;
         (acl.add(2) as *mut u16).write_unaligned(acl_size as u16);
-        (acl.add(4) as *mut u16).write_unaligned(count as u16);
         (acl.add(6) as *mut u16).write_unaligned(0);
         let mut offset = 8usize;
+        let mut emitted_aces = 0u16;
         // Deny entries precede allow entries in a Windows DACL.
         for denied in [true, false] {
             for index in 0..count as usize {
                 let entry = &*entries.add(index);
+                if entry.mode == 4 {
+                    continue;
+                }
                 if (entry.mode == 3) != denied {
                     continue;
                 }
@@ -1013,8 +1039,10 @@ pub unsafe extern "win64" fn set_entries_in_acl_w(
                 (ace.add(4) as *mut u32).write_unaligned(entry.permissions);
                 std::ptr::copy_nonoverlapping(sid, ace.add(8), sid_len);
                 offset += 8 + sid_len;
+                emitted_aces += 1;
             }
         }
+        (acl.add(4) as *mut u16).write_unaligned(emitted_aces);
         new_acl.write(acl);
     }
     0 // ERROR_SUCCESS
@@ -1255,36 +1283,43 @@ pub unsafe extern "win64" fn duplicate_token(
 }
 
 pub unsafe extern "win64" fn duplicate_token_ex(
-    _existing: usize,
-    _access: u32,
+    existing: usize,
+    access: u32,
     _attributes: *const u8,
-    _impersonation_level: u32,
-    _token_type: u32,
+    impersonation_level: u32,
+    token_type: u32,
     out: *mut usize,
 ) -> i32 {
-    unsafe { open_process_token(usize::MAX, 0, out) }
+    let res = unsafe { open_process_token(usize::MAX, access, out) };
+    let handle = unsafe { out.as_ref().copied().unwrap_or(0) };
+    eprintln!("[security] duplicate_token_ex existing={existing:#x} type={token_type} imp={impersonation_level} -> handle={handle:#x}");
+    res
 }
 
 pub unsafe extern "win64" fn create_restricted_token(
-    _existing: usize,
-    _flags: u32,
-    _disable_sid_count: u32,
+    existing: usize,
+    flags: u32,
+    disable_sid_count: u32,
     _sids_to_disable: *const u8,
-    _delete_privilege_count: u32,
+    delete_privilege_count: u32,
     _privileges_to_delete: *const u8,
-    _restricted_sid_count: u32,
+    restricted_sid_count: u32,
     _sids_to_restrict: *const u8,
     out: *mut usize,
 ) -> i32 {
-    unsafe { open_process_token(usize::MAX, 0, out) }
+    let res = unsafe { open_process_token(usize::MAX, 0, out) };
+    let handle = unsafe { out.as_ref().copied().unwrap_or(0) };
+    eprintln!("[security] create_restricted_token existing={existing:#x} flags={flags:#x} disable_sids={disable_sid_count} del_priv={delete_privilege_count} restr_sids={restricted_sid_count} -> handle={handle:#x}");
+    res
 }
 
 pub unsafe extern "win64" fn set_token_information(
-    _token: usize,
-    _class: u32,
+    token: usize,
+    class: u32,
     _info: *const u8,
-    _length: u32,
+    length: u32,
 ) -> i32 {
+    eprintln!("[security] set_token_information token={token:#x} class={class} length={length}");
     1
 }
 
@@ -1387,4 +1422,87 @@ pub unsafe extern "win64" fn convert_string_sd_to_sd_w(
     unsafe { get_security_info(0, 0, 0, &mut owner, &mut group, &mut dacl, &mut sacl, sd) };
     1
 }
+
+#[repr(C)]
+pub struct GenericMapping {
+    pub generic_read: u32,
+    pub generic_write: u32,
+    pub generic_execute: u32,
+    pub generic_all: u32,
+}
+
+pub unsafe extern "win64" fn map_generic_mask(
+    access_mask: *mut u32,
+    generic_mapping: *const GenericMapping,
+) {
+    if access_mask.is_null() || generic_mapping.is_null() {
+        return;
+    }
+    unsafe {
+        let mut mask = *access_mask;
+        let mapping = &*generic_mapping;
+        if mask & 0x8000_0000 != 0 {
+            mask &= !0x8000_0000;
+            mask |= mapping.generic_read;
+        }
+        if mask & 0x4000_0000 != 0 {
+            mask &= !0x4000_0000;
+            mask |= mapping.generic_write;
+        }
+        if mask & 0x2000_0000 != 0 {
+            mask &= !0x2000_0000;
+            mask |= mapping.generic_execute;
+        }
+        if mask & 0x1000_0000 != 0 {
+            mask &= !0x1000_0000;
+            mask |= mapping.generic_all;
+        }
+        *access_mask = mask;
+    }
+}
+
+pub unsafe extern "win64" fn access_check(
+    _sd: *const u8,
+    _token: usize,
+    desired_access: u32,
+    _mapping: *const GenericMapping,
+    _privileges: *mut std::ffi::c_void,
+    _priv_len: *mut u32,
+    granted_access: *mut u32,
+    access_status: *mut i32,
+) -> i32 {
+    unsafe {
+        if !granted_access.is_null() {
+            *granted_access = desired_access;
+        }
+        if !access_status.is_null() {
+            *access_status = 1;
+        }
+    }
+    1
+}
+
+pub unsafe extern "win64" fn add_mandatory_ace(
+    _acl: *mut u8,
+    _revision: u32,
+    _flags: u32,
+    _policy: u32,
+    _sid: *const u8,
+) -> i32 {
+    1
+}
+
+pub unsafe extern "win64" fn add_conditional_ace(
+    _acl: *mut u8,
+    _revision: u32,
+    _flags: u32,
+    _ace_type: u8,
+    _access_mask: u32,
+    _sid: *const u8,
+    _condition: *const u8,
+    _cond_len: u32,
+) -> i32 {
+    1
+}
+
 

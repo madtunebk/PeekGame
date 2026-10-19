@@ -1,16 +1,115 @@
-//! secur32.dll: the SSPI dispatch table without security packages (peek's
-//! secur32.inc). InitSecurityInterfaceW/A return the table (libcurl loads it at
-//! startup); every package function fails with SEC_E_UNSUPPORTED_FUNCTION, so
-//! Schannel TLS and Negotiate/NTLM logins fail when used, as on a system without
-//! those packages.
-use std::sync::{atomic::AtomicBool, OnceLock};
+//! secur32.dll's SSPI dispatch table. InitSecurityInterfaceW/A return the table;
+//! Schannel A calls share the implemented DTLS path, while unsupported packages
+//! and TLS stream contexts return their SSPI error status.
+use std::{ffi::{c_char, CStr, c_void}, sync::{atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering}, OnceLock}};
 const SEC_E_UNSUPPORTED_FUNCTION: i32 = 0x8009_0302u32 as i32;
 pub extern "win64" fn unsupported() -> i32 {
     static WARNED: AtomicBool = AtomicBool::new(false);
-    if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
-        eprintln!("secur32: no security packages (Schannel/NTLM/Kerberos); SSPI calls fail with SEC_E_UNSUPPORTED_FUNCTION");
+    if !WARNED.swap(true, Ordering::Relaxed) {
+        eprintln!("secur32: direct SSPI export called; package operation returns SEC_E_UNSUPPORTED_FUNCTION");
     }
     SEC_E_UNSUPPORTED_FUNCTION
+}
+extern "win64" fn unsupported_slot<const SLOT: u32>() -> i32 {
+    static SEEN: AtomicU32 = AtomicU32::new(0);
+    let mask = 1u32 << SLOT;
+    if SEEN.fetch_or(mask, Ordering::Relaxed) & mask == 0 {
+        eprintln!("secur32: SSPI dispatch slot {SLOT} called; returns SEC_E_UNSUPPORTED_FUNCTION");
+    }
+    SEC_E_UNSUPPORTED_FUNCTION
+}
+macro_rules! dispatch_slots {
+    ($($slot:literal),+ $(,)?) => {
+        [$(unsupported_slot::<$slot> as *const () as usize),+]
+    };
+}
+pub unsafe extern "win64" fn acquire_credentials_handle_a(
+    principal: *const c_char,
+    package: *const c_char,
+    usage: u32,
+    logon_id: *const c_void,
+    auth_data: *const c_void,
+    get_key: usize,
+    get_key_argument: usize,
+    credential: *mut usize,
+    expiry: *mut i64,
+) -> i32 {
+    static CALLS: AtomicUsize = AtomicUsize::new(0);
+    let package_name = if package.is_null() {
+        String::new()
+    } else {
+        unsafe { CStr::from_ptr(package) }.to_string_lossy().into_owned()
+    };
+    if !package_name.eq_ignore_ascii_case("Microsoft Unified Security Protocol Provider")
+        && !package_name.eq_ignore_ascii_case("Schannel")
+    {
+        if CALLS.fetch_add(1, Ordering::Relaxed) < 8 {
+            eprintln!("secur32: AcquireCredentialsHandleA package={package_name:?} usage={usage:#x}; Schannel is the only supported package");
+        }
+        return 0x8009_0305u32 as i32; // SEC_E_SECPKG_NOT_FOUND
+    }
+    let (version, protocols, flags, tls_parameters) = if auth_data.is_null() {
+        (0, 0, 0, 0)
+    } else {
+        let data = auth_data.cast::<u8>();
+        unsafe {
+            let version = data.cast::<u32>().read_unaligned();
+            match version {
+                4 => (version, data.add(56).cast::<u32>().read_unaligned(), data.add(72).cast::<u32>().read_unaligned(), 0),
+                5 => (version, 0, data.add(52).cast::<u32>().read_unaligned(), data.add(56).cast::<u32>().read_unaligned()),
+                _ => (version, 0, 0, 0),
+            }
+        }
+    };
+    if CALLS.fetch_add(1, Ordering::Relaxed) < 8 {
+        eprintln!("secur32: AcquireCredentialsHandleA package={package_name:?} usage={usage:#x} schannel_cred_version={version} protocols={protocols:#x} flags={flags:#x} tls_parameters={tls_parameters}");
+    }
+    let wide_package: Vec<u16> = package_name.encode_utf16().chain(std::iter::once(0)).collect();
+    unsafe {
+        crate::api::network::schannel::acquire_credentials_handle_w(
+            principal.cast(),
+            wide_package.as_ptr(),
+            usage,
+            logon_id,
+            auth_data.cast(),
+            get_key,
+            get_key_argument,
+            credential,
+            expiry,
+        )
+    }
+}
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "win64" fn initialize_security_context_a(
+    credential: *const usize,
+    context: *const usize,
+    target: *const c_char,
+    requirements: u32,
+    reserved1: u32,
+    representation: u32,
+    input: *const u8,
+    reserved2: u32,
+    new_context: *mut usize,
+    output: *const u8,
+    attributes: *mut u32,
+    expiry: *mut i64,
+) -> i32 {
+    let wide_target: Option<Vec<u16>> = if target.is_null() {
+        None
+    } else {
+        unsafe { CStr::from_ptr(target) }.to_str().ok().map(|s| s.encode_utf16().chain(std::iter::once(0)).collect())
+    };
+    let target_ptr = wide_target.as_ref().map_or(std::ptr::null(), |v| v.as_ptr());
+    let status = unsafe {
+        crate::api::network::schannel::initialize_security_context_w(
+            credential, context, target_ptr, requirements, reserved1,
+            representation, input, reserved2, new_context, output, attributes, expiry,
+        )
+    };
+    if std::env::var_os("PEEKGAME_TRACE_SSPI").is_some() {
+        eprintln!("secur32: InitializeSecurityContextA requirements={requirements:#x} representation={representation} -> {status:#x}");
+    }
+    status
 }
 /// SecurityFunctionTable: dwVersion, then 32 pointer slots (the version 4 layout);
 /// the reserved slots stay NULL as on Windows.
@@ -24,8 +123,20 @@ unsafe impl Sync for Shared {}
 pub extern "win64" fn init_security_interface() -> *const Table {
     static TABLE: OnceLock<Shared> = OnceLock::new();
     let table = TABLE.get_or_init(|| {
-        let mut functions = [unsupported as *const () as usize; 32];
-        for reserved in [4, 17, 18, 21] {
+        let mut functions = dispatch_slots![
+            0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+            16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
+        ];
+        functions[2] = acquire_credentials_handle_a as *const () as usize;
+        functions[3] = crate::api::network::schannel::free_credentials_handle as *const () as usize;
+        functions[5] = initialize_security_context_a as *const () as usize;
+        functions[6] = crate::api::network::schannel::accept_security_context as *const () as usize;
+        functions[8] = crate::api::network::schannel::delete_security_context as *const () as usize;
+        functions[10] = crate::api::network::schannel::query_context_attributes_w as *const () as usize;
+        functions[15] = crate::api::network::schannel::free_context_buffer as *const () as usize;
+        functions[24] = crate::api::network::schannel::encrypt_message as *const () as usize;
+        functions[25] = crate::api::network::schannel::decrypt_message as *const () as usize;
+        for reserved in [4, 17, 18, 22] {
             functions[reserved] = 0;
         }
         Shared(Table {
@@ -36,7 +147,6 @@ pub extern "win64" fn init_security_interface() -> *const Table {
     &table.0
 }
 
-use std::ffi::c_void;
 unsafe extern "C" {
     fn malloc(size: usize) -> *mut c_void;
     fn free(ptr: *mut c_void);

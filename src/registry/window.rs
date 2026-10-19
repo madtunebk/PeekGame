@@ -27,6 +27,10 @@ exports! {
     window!("wvsprintfA", "formats string with va_list into buffer", misc::wvsprintf_a),
     export!("comctl32.dll", "InitCommonControlsEx", "window", "implemented", "registers common control classes", misc::init_common_controls_ex),
     export!("comctl32.dll", "InitCommonControls", "window", "implemented", "registers common control classes", misc::init_common_controls),
+    export!("comctl32.dll", "SetWindowSubclass", "window", "partial", "window subclassing", misc::set_window_subclass),
+    export!("comctl32.dll", "RemoveWindowSubclass", "window", "partial", "window subclassing", misc::remove_window_subclass),
+    export!("comctl32.dll", "DefSubclassProc", "window", "partial", "calls DefWindowProcW", misc::def_subclass_proc),
+    export!("comctl32.dll", "TaskDialogIndirect", "window", "partial", "returns S_OK", misc::task_dialog_indirect),
 
     export!("xinput1_3.dll", "XInputGetState", "input", "partial", "every slot ERROR_DEVICE_NOT_CONNECTED (no controller backend)", crate::api::window::input::xinput::get_state),
     export!("xinput1_3.dll", "XInputSetState", "input", "partial", "every slot ERROR_DEVICE_NOT_CONNECTED (no controller backend)", crate::api::window::input::xinput::set_state),
@@ -80,6 +84,8 @@ exports! {
     export!("gdi32.dll", "GetRgnBox", "graphics/gdi", "partial", "rectangle bounds and region complexity", crate::api::window::regions::bounds),
     export!("gdi32.dll", "PtInRegion", "graphics/gdi", "partial", "test point in region", crate::api::window::regions::pt_in_region),
     export!("gdi32.dll", "DeleteObject", "graphics/gdi", "partial", "deletes owned rectangular regions and brushes; other GDI object types unavailable", crate::api::window::regions::delete),
+    export!("gdi32.dll", "BitBlt", "graphics/gdi", "partial", "accepted", crate::api::window::regions::bit_blt),
+    export!("gdi32.dll", "GetBitmapBits", "graphics/gdi", "partial", "returns buffer", crate::api::window::regions::get_bitmap_bits),
     export!("user32.dll", "SetWindowRgn", "window", "partial", "rectangular full-window regions; shaped windows unsupported; transfers region ownership", crate::api::window::regions::set_window),
 
     export!("user32.dll", "LogicalToPhysicalPointForPerMonitorDPI", "window", "partial", "identity for current physical-pixel 96-DPI windows; validates HWND and POINT", misc::per_monitor_point),
@@ -261,6 +267,8 @@ exports! {
         "complete",
         classes::unregister_class_w
     ),
+    window!("UnregisterClassA", "ANSI class name", classes::unregister_class_a),
+    window!("GetClassInfoA", "registered class fields", classes::get_class_info_a),
     window!(
         "GetClassNameW",
         "complete",
@@ -285,6 +293,11 @@ exports! {
         "CloseWindow",
         "minimizes (iconifies) the window, as on Windows",
         windows::close_window
+    ),
+    window!(
+        "OpenIcon",
+        "restores the minimized window",
+        windows::open_icon
     ),
     window!(
         "ShowWindow",
@@ -1408,6 +1421,14 @@ exports! {
     ),
     export!(
         "imm32.dll",
+        "ImmGetDefaultIMEWnd",
+        "window",
+        "partial",
+        "no input method window; returns NULL",
+        misc::imm_get_default_ime_wnd
+    ),
+    export!(
+        "imm32.dll",
         "ImmGetContext",
         "window",
         "partial",
@@ -1632,6 +1653,13 @@ exports! {
     window!("DrawIconEx", "no-op", misc::draw_icon_ex),
     window!("GetClassLongPtrW", "returns 0", misc::get_class_long_ptr_w),
     window!("GetClassLongW", "returns 0", misc::get_class_long_ptr_w),
+    window!("SetClassLongPtrW", "returns 0", misc::set_class_long_ptr_w),
+    window!("SetClassLongW", "returns 0", misc::set_class_long_ptr_w),
+    window!("IsWindowUnicode", "returns 1", misc::is_window_unicode),
+    window!("GetIconInfo", "returns dummy icon info", misc::get_icon_info),
+    window!("CreateCaret", "returns 1", misc::create_caret),
+    window!("DestroyCaret", "returns 1", misc::destroy_caret),
+    window!("SetCaretPos", "returns 1", misc::set_caret_pos),
     window!("FillRect", "no-op", misc::fill_rect),
     window!("SetLayeredWindowAttributes", "accepted", misc::set_layered_window_attributes),
     window!("RegisterHotKey", "accepted", misc::register_hot_key),
@@ -1645,7 +1673,15 @@ exports! {
     window!("TrackPopupMenu", "returns 0", misc::track_popup_menu),
     window!("DeleteMenu", "accepted", misc::delete_menu),
     export!("imm32.dll", "ImmGetDescriptionW", "window", "partial", "returns 0", misc::imm_get_description_w),
+    export!("imm32.dll", "ImmGetCandidateListCountW", "window", "partial", "returns 0", misc::imm_get_candidate_list_count_w),
+    export!("imm32.dll", "ImmGetCandidateListW", "window", "partial", "returns 0", misc::imm_get_candidate_list_w),
     export!("dwmapi.dll", "DwmGetCompositionTimingInfo", "window", "partial", "60 Hz timing info", misc::dwm_get_composition_timing_info),
     export!("uxtheme.dll", "SetWindowTheme", "window", "partial", "returns S_OK", misc::set_window_theme),
+    window!("CharUpperW", "converts string/char to uppercase", misc::char_upper_w),
+    window!("CharUpperA", "converts string/char to uppercase", misc::char_upper_a),
+    window!("CharLowerW", "converts string/char to lowercase", misc::char_lower_w),
+    window!("CharLowerA", "converts string/char to lowercase", misc::char_lower_a),
+    window!("RegisterUserApiHook", "stub hook registration", misc::register_user_api_hook),
+    window!("UnregisterUserApiHook", "stub hook registration", misc::unregister_user_api_hook),
 }
 

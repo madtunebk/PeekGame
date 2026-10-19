@@ -273,6 +273,9 @@ exports! {
     crt!("perror", "ported CRT implementation; Windows x64 ABI", crate::api::crt::streams::perror),
     crt!("freopen_s", "ported CRT implementation; Windows x64 ABI", crate::api::crt::streams::freopen_s),
     crt!("_chsize", "ported CRT implementation; Windows x64 ABI", crate::api::crt::streams::chsize),
+    crt!("_chsize_s", "64-bit file truncation with errno result", crate::api::crt::streams::chsize_s),
+    crt!("_mbscmp", "C locale multibyte byte comparison", crate::api::crt::strings::mbscmp),
+    crt!("_XcptFilter", "unhandled exception continues SEH dispatch", crate::api::crt::cxx_support::seh_filter_dll),
     crt!("_fstat", "ported CRT implementation; Windows x64 ABI", crate::api::crt::streams::fstat),
     crt!("vfprintf", "ported CRT implementation; Windows x64 ABI", crate::api::crt::format::vfprintf),
     crt!("fprintf", "ported CRT implementation; Windows x64 ABI", crate::api::crt::format::fprintf),
@@ -1046,6 +1049,7 @@ exports! {
     crt!("_wassert", "wide assertion stub", ucrt::wassert),
     crt!("raise", "signal raise stub", ucrt::raise),
     crt!("div", "integer division and remainder", ucrt::div),
+    crt!("ldiv", "Windows 32-bit long division and remainder", ucrt::ldiv),
     crt!("_putenv", "environment stub", ucrt::putenv),
     crt!("_wgetenv", "wide environment lookup", ucrt::wgetenv),
     crt!("wcstombs_s", "wide to UTF-8 string conversion", ucrt::wcstombs_s),
@@ -1091,5 +1095,6 @@ exports! {
     crt!("wcsrchr", "wide reverse character search", crate::api::crt::strings::wcsrchr),
     crt!("wcsstr", "wide substring search", crate::api::crt::strings::wcsstr),
     crt!("_wcsupr", "wide uppercase in-place", crate::api::crt::strings::wcsupr),
+    crt!("_wcslwr", "wide lowercase in-place", crate::api::crt::strings::wcslwr),
 }
 

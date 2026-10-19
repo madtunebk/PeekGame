@@ -350,6 +350,42 @@ pub unsafe extern "win64" fn query_volume_information_file(
     }
     let (status, written) = if super::files::get(handle).is_none() {
         (STATUS_INVALID_HANDLE, 0)
+    } else if class == 1 {
+        // FileFsVolumeInformation
+        if length < 18 {
+            (STATUS_INFO_LENGTH_MISMATCH, 0)
+        } else {
+            let label = "WINDOWS\0".encode_utf16().collect::<Vec<_>>();
+            let label_bytes = (label.len() - 1) * 2;
+            let mut info = vec![0u8; 18 + label_bytes];
+            info[0..8].copy_from_slice(&132_000_000_000_000_000u64.to_le_bytes());
+            info[8..12].copy_from_slice(&0x1234_5678u32.to_le_bytes());
+            info[12..16].copy_from_slice(&(label_bytes as u32).to_le_bytes());
+            info[16] = 1;
+            let copy_bytes = (length as usize - 18).min(label_bytes);
+            if copy_bytes > 0 {
+                let src_bytes: &[u8] = unsafe {
+                    std::slice::from_raw_parts(label.as_ptr() as *const u8, copy_bytes)
+                };
+                info[18..18 + copy_bytes].copy_from_slice(src_bytes);
+            }
+            let written = 18 + copy_bytes;
+            unsafe { std::ptr::copy_nonoverlapping(info.as_ptr(), buffer.cast::<u8>(), written) };
+            (0, written)
+        }
+    } else if class == 3 {
+        // FileFsSizeInformation: TotalAllocationUnits, AvailableAllocationUnits, SectorsPerAllocationUnit, BytesPerSector
+        if length < 24 {
+            (STATUS_INFO_LENGTH_MISMATCH, 0)
+        } else {
+            let mut info = [0u8; 24];
+            info[0..8].copy_from_slice(&100_000_000u64.to_le_bytes()); // ~400 GB
+            info[8..16].copy_from_slice(&50_000_000u64.to_le_bytes());  // ~200 GB
+            info[16..20].copy_from_slice(&8u32.to_le_bytes());          // 8 sectors
+            info[20..24].copy_from_slice(&512u32.to_le_bytes());        // 512 bytes = 4KB clusters
+            unsafe { std::ptr::copy_nonoverlapping(info.as_ptr(), buffer.cast::<u8>(), 24) };
+            (0, 24)
+        }
     } else if class == 4 {
         // FileFsDeviceInformation: DEVICE_TYPE and Characteristics.
         if length < 8 {
@@ -360,6 +396,28 @@ pub unsafe extern "win64" fn query_volume_information_file(
             info[4..].copy_from_slice(&0x20u32.to_le_bytes()); // FILE_DEVICE_IS_MOUNTED
             unsafe { std::ptr::copy_nonoverlapping(info.as_ptr(), buffer.cast::<u8>(), info.len()) };
             (0, info.len())
+        }
+    } else if class == 7 {
+        // FileFsAttributeInformation: FileSystemAttributes, MaximumComponentNameLength, FileSystemNameLength, FileSystemName
+        if length < 12 {
+            (STATUS_INFO_LENGTH_MISMATCH, 0)
+        } else {
+            let fs_name = "NTFS\0".encode_utf16().collect::<Vec<_>>();
+            let fs_bytes = (fs_name.len() - 1) * 2;
+            let mut info = vec![0u8; 12 + fs_bytes];
+            info[0..4].copy_from_slice(&0x0000_0003u32.to_le_bytes()); // FILE_CASE_SENSITIVE_SEARCH | FILE_CASE_PRESERVED_NAMES
+            info[4..8].copy_from_slice(&255u32.to_le_bytes());           // MaximumComponentNameLength
+            info[8..12].copy_from_slice(&(fs_bytes as u32).to_le_bytes());
+            let copy_bytes = (length as usize - 12).min(fs_bytes);
+            if copy_bytes > 0 {
+                let src_bytes: &[u8] = unsafe {
+                    std::slice::from_raw_parts(fs_name.as_ptr() as *const u8, copy_bytes)
+                };
+                info[12..12 + copy_bytes].copy_from_slice(src_bytes);
+            }
+            let written = 12 + copy_bytes;
+            unsafe { std::ptr::copy_nonoverlapping(info.as_ptr(), buffer.cast::<u8>(), written) };
+            (0, written)
         }
     } else {
         eprintln!("NtQueryVolumeInformationFile: unsupported class {class}");
@@ -463,6 +521,60 @@ pub unsafe extern "win64" fn query_information_file(
                 d[48..52].copy_from_slice(&attr.to_le_bytes());
                 unsafe { std::ptr::copy_nonoverlapping(d.as_ptr(), buffer as *mut u8, 56) };
                 (0, 56)
+            }
+        }
+        // FileAllInformation (18): 100 bytes minimum
+        18 => {
+            if length < 100 {
+                (0xC0000004u32, 0) // STATUS_INFO_LENGTH_MISMATCH
+            } else {
+                let attr = super::files::attributes(&meta, None);
+                let (c, a, w) = (
+                    super::files::filetime(meta.ctime(), meta.ctime_nsec()),
+                    super::files::filetime(meta.atime(), meta.atime_nsec()),
+                    super::files::filetime(meta.mtime(), meta.mtime_nsec()),
+                );
+                let pos = super::files::get(handle)
+                    .and_then(|e| (&e.file).stream_position().ok())
+                    .unwrap_or(0);
+                let mut d = vec![0u8; length as usize];
+                // BasicInformation: 40 bytes at offset 0
+                for (i, v) in [c, a, w, c].iter().enumerate() {
+                    d[i * 8..i * 8 + 8].copy_from_slice(&v.to_le_bytes());
+                }
+                d[32..36].copy_from_slice(&attr.to_le_bytes());
+                // StandardInformation: 24 bytes at offset 40
+                d[40..48].copy_from_slice(&(meta.blocks() * 512).to_le_bytes()); // AllocationSize
+                d[48..56].copy_from_slice(&(if meta.is_dir() { 0 } else { meta.len() }).to_le_bytes()); // EndOfFile
+                d[56..60].copy_from_slice(&(meta.nlink() as u32).to_le_bytes()); // NumberOfLinks
+                d[60] = 0; // DeletePending
+                d[61] = meta.is_dir() as u8; // Directory
+                // InternalInformation: 8 bytes at offset 64
+                d[64..72].copy_from_slice(&meta.ino().to_le_bytes());
+                // EaInformation: 4 bytes at offset 72 (ea_size = 0)
+                // AccessInformation: 4 bytes at offset 76 (FILE_ALL_ACCESS)
+                d[76..80].copy_from_slice(&0x001f_01ffu32.to_le_bytes());
+                // PositionInformation: 8 bytes at offset 80
+                d[80..88].copy_from_slice(&pos.to_le_bytes());
+                // ModeInformation: 4 bytes at offset 88 (0)
+                // AlignmentInformation: 4 bytes at offset 92 (0)
+                // NameInformation: offset 96
+                let win_path = super::files::handle_path(handle)
+                    .map(|p| crate::host::paths::windows(&p))
+                    .unwrap_or_default();
+                let name_u16: Vec<u16> = win_path.encode_utf16().collect();
+                let name_bytes = name_u16.len() * 2;
+                d[96..100].copy_from_slice(&(name_bytes as u32).to_le_bytes());
+                let max_name_copy = (length as usize - 100).min(name_bytes);
+                if max_name_copy > 0 {
+                    let src_bytes: &[u8] = unsafe {
+                        std::slice::from_raw_parts(name_u16.as_ptr() as *const u8, max_name_copy)
+                    };
+                    d[100..100 + max_name_copy].copy_from_slice(src_bytes);
+                }
+                let total = 100 + max_name_copy;
+                unsafe { std::ptr::copy_nonoverlapping(d.as_ptr(), buffer as *mut u8, total) };
+                (0, total as u32)
             }
         }
         _ => {

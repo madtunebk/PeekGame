@@ -547,6 +547,10 @@ pub unsafe extern "win64" fn create_key_a(root: usize, key: *const c_char, out: 
     let path = unsafe { narrow(key) }.unwrap_or_default();
     unsafe { create(root, &path, 0, std::ptr::null(), out, std::ptr::null_mut()) }
 }
+pub fn is_key(key: usize) -> bool {
+    predefined(key).is_some() || with(|t| t.handles.contains_key(&key))
+}
+
 pub extern "win64" fn close_key(key: usize) -> i32 {
     if predefined(key).is_some() {
         return 0;
@@ -888,6 +892,56 @@ pub unsafe extern "win64" fn enum_key_ex_w(
     }
     0
 }
+pub unsafe extern "win64" fn enum_key_ex_a(
+    key: usize,
+    index: u32,
+    name: *mut u8,
+    name_length: *mut u32,
+    reserved: *const u32,
+    class: *mut u8,
+    class_length: *mut u32,
+    written: *mut u64,
+) -> i32 {
+    if !reserved.is_null() || name_length.is_null() {
+        return ERROR_INVALID_PARAMETER;
+    }
+    let found = with(|t| {
+        let (k, _) = t.key(key)?;
+        t.keys[k]
+            .children
+            .iter()
+            .filter(|&&c| !t.keys[c].deleted)
+            .nth(index as usize)
+            .map(|&c| (t.keys[c].name.clone(), t.keys[c].written))
+            .ok_or(ERROR_NO_MORE_ITEMS)
+    });
+    let (child, time) = match found {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    let bytes = child.as_bytes();
+    if name.is_null() || unsafe { *name_length } as usize <= bytes.len() {
+        if name.is_null() {
+            unsafe { *name_length = bytes.len() as u32 };
+        }
+        return ERROR_MORE_DATA;
+    }
+    unsafe {
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), name, bytes.len());
+        *name.add(bytes.len()) = 0;
+        *name_length = bytes.len() as u32;
+        if !class.is_null() && !class_length.is_null() && *class_length != 0 {
+            *class = 0;
+        }
+        if !class_length.is_null() {
+            *class_length = 0;
+        }
+        if !written.is_null() {
+            *written = time;
+        }
+    }
+    0
+}
 /// RegEnumKeyW: the old form, the name buffer's size in characters.
 pub unsafe extern "win64" fn enum_key_w(
     key: usize,
@@ -1135,4 +1189,99 @@ pub unsafe extern "win64" fn get_value_w(
         close_key(opened);
     }
     result
+}
+
+pub unsafe extern "win64" fn get_value_a(
+    key: usize,
+    subkey: *const c_char,
+    value: *const c_char,
+    flags: u32,
+    kind: *mut u32,
+    data: *mut u8,
+    size: *mut u32,
+) -> i32 {
+    let subkey_w = if subkey.is_null() {
+        None
+    } else {
+        match unsafe { CStr::from_ptr(subkey) }.to_str() {
+            Ok(s) => Some(s.encode_utf16().chain([0]).collect::<Vec<u16>>()),
+            Err(_) => return ERROR_INVALID_PARAMETER,
+        }
+    };
+    let value_w = if value.is_null() {
+        None
+    } else {
+        match unsafe { CStr::from_ptr(value) }.to_str() {
+            Ok(s) => Some(s.encode_utf16().chain([0]).collect::<Vec<u16>>()),
+            Err(_) => return ERROR_INVALID_PARAMETER,
+        }
+    };
+    let subkey_ptr = subkey_w.as_ref().map(|v| v.as_ptr()).unwrap_or(std::ptr::null());
+    let value_ptr = value_w.as_ref().map(|v| v.as_ptr()).unwrap_or(std::ptr::null());
+
+    let mut val_kind = 0u32;
+    let mut wide_size = 0u32;
+    let rc = unsafe {
+        get_value_w(
+            key,
+            subkey_ptr,
+            value_ptr,
+            flags,
+            &mut val_kind,
+            std::ptr::null_mut(),
+            &mut wide_size,
+        )
+    };
+    if rc != 0 {
+        return rc;
+    }
+    if !kind.is_null() {
+        unsafe { *kind = val_kind };
+    }
+    let mut wide_data = vec![0u8; wide_size as usize];
+    let rc = unsafe {
+        get_value_w(
+            key,
+            subkey_ptr,
+            value_ptr,
+            flags,
+            &mut val_kind,
+            wide_data.as_mut_ptr(),
+            &mut wide_size,
+        )
+    };
+    if rc != 0 {
+        return rc;
+    }
+    let output_bytes: Vec<u8> = if is_string(val_kind) {
+        let units: Vec<u16> = wide_data
+            .chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        let s = String::from_utf16_lossy(&units);
+        let s = s.trim_end_matches('\0');
+        let mut b = s.as_bytes().to_vec();
+        b.push(0);
+        b
+    } else {
+        wide_data
+    };
+
+    if data.is_null() {
+        if !size.is_null() {
+            unsafe { *size = output_bytes.len() as u32 };
+        }
+        return 0;
+    }
+    if size.is_null() || unsafe { *size } < output_bytes.len() as u32 {
+        if !size.is_null() {
+            unsafe { *size = output_bytes.len() as u32 };
+        }
+        return ERROR_MORE_DATA;
+    }
+    unsafe {
+        std::ptr::copy_nonoverlapping(output_bytes.as_ptr(), data, output_bytes.len());
+        *size = output_bytes.len() as u32;
+    }
+    0
 }

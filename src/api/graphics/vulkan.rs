@@ -463,9 +463,12 @@ pub(crate) unsafe extern "win64" fn create_win32_surface(
     unsafe { real(instance, &xlib, allocator, surface) }
 }
 /// VkSwapchainCreateInfoKHR.presentMode is a u32 at offset 88 on x64. PeekGame
-/// forwards it unchanged; PEEKGAME_VULKAN_PRESENT overrides it (fifo = vsync, no
-/// tearing; mailbox = no tearing, low latency; immediate = uncapped/tearing;
-/// relaxed = fifo-relaxed). The requested/applied mode is logged with PEEKGAME_TRACE_GL.
+/// forwards it unchanged, except that Unreal shipping builds (which ask for an
+/// uncapped IMMEDIATE/MAILBOX swapchain and pin the GPU at 100%) default to FIFO
+/// vsync with a 3-image queue (`quirks::prefers_vsync`). PEEKGAME_VULKAN_PRESENT
+/// overrides either way (fifo = vsync, no tearing; mailbox = no tearing, low latency;
+/// immediate = uncapped/tearing; relaxed = fifo-relaxed), as does
+/// PEEKGAME_VULKAN_IMAGES. The requested/applied mode is logged with PEEKGAME_TRACE_GL.
 pub(crate) unsafe extern "win64" fn create_swapchain(
     device: usize,
     info: *const c_void,
@@ -491,21 +494,32 @@ pub(crate) unsafe extern "win64" fn create_swapchain(
             _ => return None,
         })
     });
-    if let Some(mode) = override_mode {
+    // With no explicit override, engines that otherwise present uncapped (Unreal asks
+    // for IMMEDIATE when vsync is off) are paced to FIFO (vsync), so the GPU runs at
+    // the refresh rate instead of flat out at 100%. Only when the game itself asked for
+    // an uncapped mode (IMMEDIATE/MAILBOX); FIFO/relaxed requests are left alone.
+    let vsync_default = override_mode.is_none()
+        && crate::quirks::prefers_vsync()
+        && matches!(requested, 0 | 1);
+    let effective = override_mode.or(vsync_default.then_some(2u32));
+    if let Some(mode) = effective {
         unsafe { slot.write_unaligned(mode) };
     }
     // PEEKGAME_VULKAN_IMAGES caps the swapchain image count (VkSwapchainCreateInfoKHR
     // .minImageCount @32). FIFO with a deep queue adds frames of latency; clamping to
     // 2-3 keeps vsync's low GPU use with a short, low-latency queue. Only lowers the
-    // count the program asked for, never below 2 (the FIFO minimum).
-    if let Ok(cap) = std::env::var("PEEKGAME_VULKAN_IMAGES") {
-        if let Ok(cap) = cap.trim().parse::<u32>() {
-            let field = unsafe { (info as *const u8).add(32) as *mut u32 };
-            let requested = unsafe { field.read_unaligned() };
-            let wanted = cap.max(2);
-            if wanted < requested {
-                unsafe { field.write_unaligned(wanted) };
-            }
+    // count the program asked for, never below 2 (the FIFO minimum). When the vsync
+    // default kicked in and the program set no explicit cap, trim the queue to 3.
+    let image_cap = std::env::var("PEEKGAME_VULKAN_IMAGES")
+        .ok()
+        .and_then(|c| c.trim().parse::<u32>().ok())
+        .or(vsync_default.then_some(3));
+    if let Some(cap) = image_cap {
+        let field = unsafe { (info as *const u8).add(32) as *mut u32 };
+        let requested = unsafe { field.read_unaligned() };
+        let wanted = cap.max(2);
+        if wanted < requested {
+            unsafe { field.write_unaligned(wanted) };
         }
     }
     if std::env::var_os("PEEKGAME_TRACE_WINDOW").is_some() {
@@ -514,7 +528,8 @@ pub(crate) unsafe extern "win64" fn create_swapchain(
         eprintln!("[window] vkCreateSwapchainKHR extent {w}x{h}");
     }
     if std::env::var_os("PEEKGAME_TRACE_GL").is_some() {
-        match override_mode {
+        match effective {
+            Some(mode) if vsync_default => eprintln!("[gl] vkCreateSwapchainKHR present mode {requested} -> {mode} (vsync default)"),
             Some(mode) => eprintln!("[gl] vkCreateSwapchainKHR present mode {requested} -> {mode}"),
             None => eprintln!("[gl] vkCreateSwapchainKHR present mode {requested}"),
         }

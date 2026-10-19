@@ -98,6 +98,15 @@ fn fail<T>(code: u32, value: T) -> T {
     error::set(code);
     value
 }
+
+pub fn is_file(handle: usize) -> bool {
+    (0x100..=0x102).contains(&handle)
+        || FILES
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map_or(false, |t| t.contains_key(&handle))
+}
 /// CloseHandle for files, pipes and directory handles. False if not one.
 pub fn close(handle: usize) -> bool {
     if super::pipes::close(handle) {

@@ -10,6 +10,8 @@ pub mod images;
 pub mod mapped;
 pub mod pe;
 pub mod registry;
+mod quirks;
+pub use quirks::game_args;
 mod relinked;
 mod runtime;
 mod seh;

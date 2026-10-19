@@ -45,6 +45,34 @@ exports! {
         virtual_memory::is_bad_read_ptr
     ),
     implemented!(
+        "IsBadStringPtrW",
+        "memory",
+        "implemented",
+        "0 if readable, 1 if invalid pointer",
+        virtual_memory::is_bad_string_ptr_w
+    ),
+    implemented!(
+        "IsBadStringPtrA",
+        "memory",
+        "implemented",
+        "0 if readable, 1 if invalid pointer",
+        virtual_memory::is_bad_string_ptr_a
+    ),
+    implemented!(
+        "IsBadWritePtr",
+        "memory",
+        "implemented",
+        "0 if writable, 1 if invalid pointer or overflow",
+        virtual_memory::is_bad_write_ptr
+    ),
+    implemented!(
+        "IsBadCodePtr",
+        "memory",
+        "implemented",
+        "0 if executable, 1 if invalid pointer",
+        virtual_memory::is_bad_code_ptr
+    ),
+    implemented!(
         "MapViewOfFile",
         "memory",
         "partial",
@@ -148,6 +176,27 @@ exports! {
         "partial",
         "current process memory query",
         virtual_memory::query_ex
+    ),
+    implemented!(
+        "VirtualAllocEx",
+        "memory",
+        "partial",
+        "current process virtual memory allocation",
+        virtual_memory::alloc_ex
+    ),
+    implemented!(
+        "VirtualProtectEx",
+        "memory",
+        "partial",
+        "current process virtual memory protection",
+        virtual_memory::protect_ex
+    ),
+    implemented!(
+        "WriteProcessMemory",
+        "memory",
+        "partial",
+        "current process writable memory ranges",
+        virtual_memory::write_process_memory
     ),
     implemented!(
         "ReadProcessMemory",

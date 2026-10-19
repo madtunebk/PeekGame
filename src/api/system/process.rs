@@ -56,6 +56,10 @@ pub fn close_child_handle(handle: usize) -> bool {
     false
 }
 
+pub fn is_child_thread(handle: usize) -> bool {
+    thread_handles().lock().unwrap().contains_key(&handle)
+}
+
 pub fn wait_child_process(handle: usize, milliseconds: u32) -> Option<u32> {
     let proc = child_processes().lock().unwrap().get(&handle).cloned()?;
     let start = std::time::Instant::now();
@@ -341,6 +345,15 @@ pub unsafe extern "win64" fn create_job_object_a(
     unsafe { crate::api::threading::events::create_a(std::ptr::null(), 1, 0, std::ptr::null()) }
 }
 
+/// Wide variant. The job name is ignored (jobs are process-local tokens), so
+/// this is identical to the ANSI variant apart from the unused name encoding.
+pub unsafe extern "win64" fn create_job_object_w(
+    _security: usize,
+    _name: *const u16,
+) -> usize {
+    unsafe { crate::api::threading::events::create_a(std::ptr::null(), 1, 0, std::ptr::null()) }
+}
+
 pub extern "win64" fn set_information_job_object(
     job: usize,
     _class: i32,
@@ -474,6 +487,22 @@ fn spawn_child_process(
         }
     };
 
+    let is_palworld_cef = host_exe
+        .file_name()
+        .is_some_and(|name| name.eq_ignore_ascii_case("EpicWebHelper.exe"))
+        && host_exe.to_string_lossy().contains("/Palworld/");
+    if is_palworld_cef && std::env::var("PEEKGAME_BLOCK_PALWORLD_CEF").as_deref() == Ok("1") {
+        eprintln!("CreateProcess: Palworld CEF helper blocked by PEEKGAME_BLOCK_PALWORLD_CEF=1");
+        super::error::set(5); // ERROR_ACCESS_DENIED
+        return 0;
+    }
+
+    // Steam may replace the compatibility-tool binary while a game is running.
+    // current_exe() then ends in " (deleted)" and cannot be spawned by pathname;
+    // procfs still refers to the running executable inode.
+    #[cfg(target_os = "linux")]
+    let self_exe = PathBuf::from("/proc/self/exe");
+    #[cfg(not(target_os = "linux"))]
     let self_exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("./dist/peekgame"));
 
     let mut command = std::process::Command::new(self_exe);
@@ -501,6 +530,19 @@ fn spawn_child_process(
         command.env("PEEKGAME_INHERITED_MAPPINGS", mappings_env);
     }
     let pipes_env = crate::api::filesystem::pipes::export_inherited();
+    if is_palworld_cef {
+        let mojo = args.iter().find_map(|arg| {
+            arg.strip_prefix("--mojo-platform-channel-handle=")?
+                .parse::<usize>().ok()
+        });
+        let present = mojo.is_some_and(|handle| {
+            pipes_env.split(',').any(|entry| entry.starts_with(&format!("{handle:x}:")))
+        });
+        eprintln!(
+            "CEF IPC: mojo={mojo:?}, exported={present}, inherited_pipes={}",
+            pipes_env.split(',').filter(|entry| !entry.is_empty()).count()
+        );
+    }
     if !pipes_env.is_empty() {
         command.env("PEEKGAME_INHERITED_PIPES", pipes_env);
     }

@@ -116,7 +116,147 @@ fn put32(out: *mut u8, offset: usize, value: u32) { unsafe { out.add(offset).cas
 fn put64(out: *mut u8, offset: usize, value: usize) { unsafe { out.add(offset).cast::<u64>().write_unaligned(value as u64) } }
 fn align8(n: usize) -> usize { (n + 7) & !7 }
 
-/// One record per host adapter with each of its addresses of the requested family
+const IP_ADAPTER_INFO_SIZE: usize = 704;
+/// Legacy IPv4 adapter list. The offsets follow mingw-w64 IP_ADAPTER_INFO on x64.
+pub unsafe extern "win64" fn get_adapters_info(out: *mut u8, size: *mut u32) -> u32 {
+    if size.is_null() { return ERROR_INVALID_PARAMETER; }
+    let entries: Vec<_> = interfaces().into_iter().filter(|entry| !entry.ipv4.is_empty()).collect();
+    if entries.is_empty() { return ERROR_NO_DATA; }
+    let needed = entries.len() * IP_ADAPTER_INFO_SIZE;
+    let supplied = unsafe { size.read_unaligned() } as usize;
+    unsafe { size.write_unaligned(needed as u32) };
+    if out.is_null() || supplied < needed { return ERROR_BUFFER_OVERFLOW; }
+    unsafe { out.write_bytes(0, needed) };
+    for (position, entry) in entries.iter().enumerate() {
+        let record = unsafe { out.add(position * IP_ADAPTER_INFO_SIZE) };
+        if position + 1 < entries.len() {
+            put64(record, 0, unsafe { record.add(IP_ADAPTER_INFO_SIZE) } as usize);
+        }
+        let name = entry.name.as_bytes();
+        let name_len = name.len().min(259);
+        unsafe {
+            ptr::copy_nonoverlapping(name.as_ptr(), record.add(12), name_len);
+            ptr::copy_nonoverlapping(name.as_ptr(), record.add(272), name_len);
+        }
+        let mac_len = entry.mac.len().min(8);
+        if mac_len > 0 {
+            unsafe { ptr::copy_nonoverlapping(entry.mac.as_ptr(), record.add(408), mac_len) };
+        }
+        put32(record, 404, mac_len as u32);
+        put32(record, 416, entry.index);
+        put32(record, 420, if entry.mac.len() == 6 { 6 } else { 71 });
+        let (ip, prefix) = entry.ipv4[0];
+        let mask = if prefix == 0 { 0 } else { u32::MAX << (32 - prefix.min(32)) };
+        let address = ip.map(|part| part.to_string()).join(".");
+        let mask = std::net::Ipv4Addr::from(mask).to_string();
+        put64(record, 432, unsafe { record.add(440) } as usize); // CurrentIpAddress
+        unsafe {
+            ptr::copy_nonoverlapping(address.as_ptr(), record.add(448), address.len());
+            ptr::copy_nonoverlapping(mask.as_ptr(), record.add(464), mask.len());
+        }
+    }
+    0
+}
+
+/// Ask the host routing table which source address would reach the destination,
+/// then return that source adapter's real interface index. UDP connect sends no data.
+pub unsafe extern "win64" fn get_best_interface(destination: u32, out: *mut u32) -> u32 {
+    if out.is_null() { return ERROR_INVALID_PARAMETER; }
+    let socket = match std::net::UdpSocket::bind("0.0.0.0:0") {
+        Ok(socket) => socket,
+        Err(_) => return 1231, // ERROR_NETWORK_UNREACHABLE
+    };
+    let destination = std::net::Ipv4Addr::from(destination.to_ne_bytes());
+    if socket.connect((destination, 9)).is_err() { return 1231; }
+    let source = match socket.local_addr() {
+        Ok(std::net::SocketAddr::V4(address)) => address.ip().octets(),
+        _ => return 1231,
+    };
+    let Some(entry) = interfaces().into_iter().find(|entry| entry.ipv4.iter().any(|(ip, _)| *ip == source)) else {
+        return 1231;
+    };
+    unsafe { out.write_unaligned(entry.index) };
+    0
+}
+
+pub unsafe extern "win64" fn get_best_route2(
+    interface_luid: *mut u64,
+    mut interface_index: u32,
+    _source_address: *const u8,
+    destination_address: *const u8,
+    _address_sort_options: u32,
+    best_route: *mut u8,
+    best_source_address: *mut u8,
+) -> u32 {
+    let entries = interfaces();
+    if entries.is_empty() {
+        return 1168; // ERROR_NOT_FOUND
+    }
+
+    let mut resolved_source: Option<[u8; 4]> = None;
+    if !destination_address.is_null() {
+        let family = unsafe { (destination_address as *const u16).read_unaligned() };
+        if family == 2 {
+            // AF_INET
+            let dest_bytes = unsafe {
+                let p = destination_address.add(4) as *const [u8; 4];
+                *p
+            };
+            let dest_ip = std::net::Ipv4Addr::from(dest_bytes);
+            if let Ok(socket) = std::net::UdpSocket::bind("0.0.0.0:0") {
+                if socket.connect((dest_ip, 9)).is_ok() {
+                    if let Ok(std::net::SocketAddr::V4(addr)) = socket.local_addr() {
+                        let src = addr.ip().octets();
+                        if let Some(entry) = entries.iter().find(|e| e.ipv4.iter().any(|(ip, _)| *ip == src)) {
+                            interface_index = entry.index;
+                            resolved_source = Some(src);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let matched_entry = entries
+        .iter()
+        .find(|e| interface_index != 0 && e.index == interface_index)
+        .or_else(|| entries.iter().find(|e| !e.name.starts_with("lo")))
+        .or_else(|| entries.first());
+
+    let Some(entry) = matched_entry else {
+        return 1168;
+    };
+    let if_index = entry.index;
+    let src_ip = resolved_source.or_else(|| entry.ipv4.first().map(|(ip, _)| *ip)).unwrap_or([127, 0, 0, 1]);
+
+    if !interface_luid.is_null() {
+        unsafe { interface_luid.write_unaligned(if_index as u64) };
+    }
+
+    if !best_route.is_null() {
+        unsafe {
+            // MIB_IPFORWARD_ROW2 size is ~112 bytes
+            best_route.write_bytes(0, 112);
+            // InterfaceLuid at offset 0 (8 bytes)
+            (best_route as *mut u64).write_unaligned(if_index as u64);
+            // InterfaceIndex at offset 8 (4 bytes)
+            (best_route.add(8) as *mut u32).write_unaligned(if_index);
+            // Metric at offset 80 (4 bytes)
+            (best_route.add(80) as *mut u32).write_unaligned(1);
+        }
+    }
+
+    if !best_source_address.is_null() {
+        unsafe {
+            best_source_address.write_bytes(0, 28);
+            (best_source_address as *mut u16).write_unaligned(2); // AF_INET
+            std::ptr::copy_nonoverlapping(src_ip.as_ptr(), best_source_address.add(4), 4);
+        }
+    }
+
+    0 // NO_ERROR
+}
+
 /// (AF_UNSPEC: IPv4 then IPv6) as unicast entries. Every address is reported usable:
 /// DadState IpDadStatePreferred, infinite lifetimes, origins "other" (Linux does not
 /// say whether an address came from DHCP or was set manually).
@@ -289,4 +429,24 @@ pub unsafe extern "win64" fn notify_route_change(
 
 pub unsafe extern "win64" fn cancel_ip_change_notify(_overlapped: usize) -> i32 {
     1
+}
+
+#[cfg(test)]
+mod legacy_tests {
+    #[test]
+    fn adapters_info_uses_host_ipv4_and_index() {
+        let entries: Vec<_> = super::interfaces().into_iter().filter(|entry| !entry.ipv4.is_empty()).collect();
+        if entries.is_empty() { return; }
+        let mut needed = 0;
+        assert_eq!(unsafe { super::get_adapters_info(std::ptr::null_mut(), &mut needed) }, 111);
+        assert_eq!(needed as usize, entries.len() * super::IP_ADAPTER_INFO_SIZE);
+        let mut buffer = vec![0u8; needed as usize];
+        assert_eq!(unsafe { super::get_adapters_info(buffer.as_mut_ptr(), &mut needed) }, 0);
+        for (position, entry) in entries.iter().enumerate() {
+            let record = &buffer[position * super::IP_ADAPTER_INFO_SIZE..][..super::IP_ADAPTER_INFO_SIZE];
+            assert_eq!(u32::from_ne_bytes(record[416..420].try_into().unwrap()), entry.index);
+            let ip = entry.ipv4[0].0.map(|part| part.to_string()).join(".");
+            assert_eq!(&record[448..448 + ip.len()], ip.as_bytes());
+        }
+    }
 }

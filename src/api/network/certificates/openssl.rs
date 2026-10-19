@@ -17,6 +17,8 @@ unsafe extern "C" {
     fn X509_STORE_CTX_init(ctx: P, store: P, leaf: P, untrusted: P) -> i32;
     fn X509_STORE_CTX_set_time(ctx: P, flags: u64, time: i64);
     fn X509_STORE_CTX_set_purpose(ctx: P, purpose: i32) -> i32;
+    fn X509_STORE_CTX_get0_param(ctx: P) -> P;
+    fn X509_VERIFY_PARAM_set_auth_level(param: P, level: i32);
     fn X509_verify_cert(ctx: P) -> i32;
     fn X509_STORE_CTX_get_error(ctx: P) -> i32;
     fn X509_STORE_CTX_get_error_depth(ctx: P) -> i32;
@@ -64,6 +66,10 @@ pub fn verify(
     intermediates: &[Vec<u8>],
     time: Option<i64>,
     purpose: i32,
+    // When set, enforce a strong-signature policy: OpenSSL auth level 2 rejects
+    // SHA-1/MD5 signatures and sub-2048-bit RSA, matching the intent of the
+    // Windows well-known "OS current" strong-sign parameters.
+    require_strong: bool,
 ) -> Result<Verified, u32> {
     unsafe {
         let leaf = parse(leaf)?;
@@ -83,6 +89,12 @@ pub fn verify(
         let ctx = Owned::new(X509_STORE_CTX_new(), X509_STORE_CTX_free)?;
         if X509_STORE_CTX_init(ctx.pointer, roots.pointer, leaf.pointer, stack.pointer) != 1 {
             return Err(8);
+        }
+        if require_strong {
+            let param = X509_STORE_CTX_get0_param(ctx.pointer);
+            if !param.is_null() {
+                X509_VERIFY_PARAM_set_auth_level(param, 2);
+            }
         }
         if let Some(seconds) = time {
             X509_STORE_CTX_set_time(ctx.pointer, 0, seconds);

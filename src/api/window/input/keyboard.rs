@@ -33,7 +33,7 @@ pub(in crate::api::window) fn release_keys() {
         *k &= 1;
     }
 }
-pub(in crate::api::window) fn key_down(vk: u8) -> bool {
+pub(crate) fn key_down(vk: u8) -> bool {
     KEYS.lock().unwrap()[vk as usize] & 0x80 != 0
 }
 pub(crate) extern "win64" fn get_key_state(vk: i32) -> i16 {

@@ -1,4 +1,18 @@
 //! C-locale character classification and bounded narrow/wide strings.
+pub unsafe extern "win64" fn mbscmp(a: *const u8, b: *const u8) -> i32 {
+    if a.is_null() || b.is_null() {
+        return 0;
+    }
+    let mut index = 0;
+    loop {
+        let left = unsafe { *a.add(index) };
+        let right = unsafe { *b.add(index) };
+        if left != right || left == 0 {
+            return left as i32 - right as i32;
+        }
+        index += 1;
+    }
+}
 use std::ffi::{c_char, CStr};
 fn err(code: i32) -> i32 {
     unsafe {
@@ -651,6 +665,20 @@ pub unsafe extern "win64" fn wcsupr(s: *mut u16) -> *mut u16 {
         let u = unsafe { *p };
         if (b'a' as u16..=b'z' as u16).contains(&u) {
             unsafe { *p = u - 32 };
+        }
+        p = unsafe { p.add(1) };
+    }
+    s
+}
+pub unsafe extern "win64" fn wcslwr(s: *mut u16) -> *mut u16 {
+    if s.is_null() {
+        return s;
+    }
+    let mut p = s;
+    while unsafe { *p } != 0 {
+        let u = unsafe { *p };
+        if (b'A' as u16..=b'Z' as u16).contains(&u) {
+            unsafe { *p = u + 32 };
         }
         p = unsafe { p.add(1) };
     }

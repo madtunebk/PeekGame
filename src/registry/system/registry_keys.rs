@@ -179,6 +179,7 @@ exports! {
         "HKCU persisted under APPDATA/registry; other roots empty and read-only",
         registry_keys::enum_key_ex_w
     ),
+    export!("advapi32.dll", "RegEnumKeyExA", "system", "partial", "enumerates registry keys with UTF-8 ANSI names", registry_keys::enum_key_ex_a),
     export!(
         "advapi32.dll",
         "RegEnumKeyW",
@@ -210,6 +211,14 @@ exports! {
         "partial",
         "HKCU persisted under APPDATA/registry; other roots empty and read-only",
         registry_keys::get_value_w
+    ),
+    export!(
+        "advapi32.dll",
+        "RegGetValueA",
+        "system",
+        "partial",
+        "HKCU persisted under APPDATA/registry; other roots empty and read-only",
+        registry_keys::get_value_a
     ),
     export!(
         "shlwapi.dll",

@@ -460,6 +460,9 @@ pub(crate) extern "win64" fn close_window(hwnd: usize) -> i32 {
     show_window(hwnd, 6);
     1
 }
+pub(crate) extern "win64" fn open_icon(hwnd: usize) -> i32 {
+    (show_window(hwnd, 9) != 0) as i32
+}
 pub(crate) unsafe extern "win64" fn adjust_window_rect_ex(
     rect: *mut Rect,
     _style: u32,

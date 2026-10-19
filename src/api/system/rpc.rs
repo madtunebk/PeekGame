@@ -1,5 +1,6 @@
 //! Small RPCRT4 UUID conversion routines.
 use std::ffi::c_char;
+use std::io::Read;
 
 const RPC_S_INVALID_STRING_UUID: u32 = 1705;
 const RPC_S_INVALID_ARG: u32 = 87;
@@ -57,5 +58,28 @@ pub unsafe extern "win64" fn uuid_from_string_a(input: *const c_char, output: *m
     if unsafe { *input.add(36) } != 0 { return RPC_S_INVALID_STRING_UUID; }
     let Some(uuid) = parse(&bytes) else { return RPC_S_INVALID_STRING_UUID; };
     unsafe { output.write(uuid) };
+    0
+}
+pub unsafe extern "win64" fn uuid_create(output: *mut Uuid) -> u32 {
+    if output.is_null() {
+        return RPC_S_INVALID_ARG;
+    }
+    let mut raw = [0u8; 16];
+    if std::fs::File::open("/dev/urandom")
+        .and_then(|mut source| source.read_exact(&mut raw))
+        .is_err()
+    {
+        return 14; // RPC_S_OUT_OF_MEMORY: no UUID returned.
+    }
+    raw[6] = (raw[6] & 0x0f) | 0x40;
+    raw[8] = (raw[8] & 0x3f) | 0x80;
+    unsafe {
+        output.write(Uuid {
+            data1: u32::from_be_bytes(raw[..4].try_into().unwrap()),
+            data2: u16::from_be_bytes(raw[4..6].try_into().unwrap()),
+            data3: u16::from_be_bytes(raw[6..8].try_into().unwrap()),
+            data4: raw[8..].try_into().unwrap(),
+        });
+    }
     0
 }

@@ -213,6 +213,14 @@ exports! {
     ),
     export!(
         "setupapi.dll",
+        "SetupDiGetDeviceInstanceIdW",
+        "system",
+        "partial",
+        "no devices in the empty device information set",
+        devices::get_device_instance_id_w
+    ),
+    export!(
+        "setupapi.dll",
         "SetupDiGetDeviceInterfaceDetailW",
         "system",
         "partial",

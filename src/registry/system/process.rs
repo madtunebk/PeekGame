@@ -243,6 +243,7 @@ exports! {
     implemented!("GetProcessMitigationPolicy", "system", "partial", "all mitigation flags clear", process::get_process_mitigation_policy),
     implemented!("SetProcessMitigationPolicy", "system", "partial", "accepted, not enforced", process::set_process_mitigation_policy),
     implemented!("CreateJobObjectA", "system", "partial", "owned job object handle", process::create_job_object_a),
+    implemented!("CreateJobObjectW", "system", "partial", "owned job object handle; name ignored", process::create_job_object_w),
     implemented!("SetInformationJobObject", "system", "partial", "accepts job limits/configuration", process::set_information_job_object),
     implemented!("AssignProcessToJobObject", "system", "partial", "accepts process assignment to job", process::assign_process_to_job_object),
     implemented!("GetEnvironmentStrings", "system", "implemented", "ANSI/UTF-8 snapshot block of the host environment", environment::strings_a),

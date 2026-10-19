@@ -436,6 +436,28 @@ pub unsafe extern "win64" fn current_processor_number_ex(proc_num: *mut u8) {
         }
     }
 }
+pub extern "win64" fn get_active_processor_count(group_number: u16) -> u32 {
+    if group_number == 0 || group_number == 0xffff {
+        affinity().count_ones() as u32
+    } else {
+        error::set(87);
+        0
+    }
+}
+pub extern "win64" fn get_active_processor_group_count() -> u16 {
+    1
+}
+pub extern "win64" fn get_maximum_processor_count(group_number: u16) -> u32 {
+    if group_number == 0 || group_number == 0xffff {
+        64
+    } else {
+        error::set(87);
+        0
+    }
+}
+pub extern "win64" fn get_maximum_processor_group_count() -> u16 {
+    1
+}
 pub unsafe extern "win64" fn query_thread_cycle_time(_thread: usize, cycles: *mut u64) -> i32 {
     if cycles.is_null() {
         error::set(87);
@@ -876,4 +898,24 @@ pub unsafe extern "win64" fn set_thread_error_mode(mode: u32, old: *mut u32) -> 
 }
 pub extern "win64" fn get_thread_error_mode() -> u32 {
     THREAD_ERROR_MODE.with(|m| m.get())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_active_and_maximum_processor_count() {
+        let active = get_active_processor_count(0xffff);
+        assert!(active >= 1, "active processors must be at least 1");
+        assert_eq!(get_active_processor_count(0), active);
+        assert_eq!(get_active_processor_count(1), 0); // Invalid group
+        assert_eq!(crate::api::system::error::get_last_error(), 87);
+
+        assert_eq!(get_active_processor_group_count(), 1);
+        assert_eq!(get_maximum_processor_group_count(), 1);
+        assert_eq!(get_maximum_processor_count(0xffff), 64);
+        assert_eq!(get_maximum_processor_count(0), 64);
+        assert_eq!(get_maximum_processor_count(1), 0);
+    }
 }

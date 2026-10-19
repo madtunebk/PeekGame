@@ -202,4 +202,25 @@ unsafe extern "C" {
         out: *mut SizeHints,
         supplied: *mut c_long,
     ) -> c_int;
+    pub fn XQueryExtension(
+        display: *mut Display,
+        name: *const c_char,
+        major_opcode: *mut c_int,
+        first_event: *mut c_int,
+        first_error: *mut c_int,
+    ) -> c_int;
+    pub fn XGetEventData(display: *mut Display, cookie: *mut GenericEventCookie) -> c_int;
+    pub fn XFreeEventData(display: *mut Display, cookie: *mut GenericEventCookie);
+}
+
+// XInput2, for unaccelerated relative mouse motion (raw-input camera look).
+#[link(name = "Xi")]
+unsafe extern "C" {
+    pub fn XIQueryVersion(display: *mut Display, major: *mut c_int, minor: *mut c_int) -> c_int;
+    pub fn XISelectEvents(
+        display: *mut Display,
+        window: c_ulong,
+        masks: *mut IEventMask,
+        num_masks: c_int,
+    ) -> c_int;
 }

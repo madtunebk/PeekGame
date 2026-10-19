@@ -1,9 +1,9 @@
-//! Known folders (ported from peek's shell32.inc). Roaming AppData is the APPDATA
-//! directory: the APPDATA environment variable when set, otherwise
-//! `$XDG_DATA_HOME/peekgame` (default `~/.local/share/peekgame`), so game data
-//! persists between runs. The user profile is the same directory; the other folders
-//! are created inside it on first use, as they always exist on Windows. Folders with
-//! no meaning here (Windows, System, Program Files, ...) are not found.
+//! Known folders (ported from peek's shell32.inc). They resolve inside PeekGame's own
+//! virtual C: drive under the data directory (`$XDG_DATA_HOME/peekgame/drive_c`, default
+//! `~/.local/share/peekgame/drive_c`), as a Windows user profile `C:\users\steamuser`,
+//! so game data persists between runs and a game reads back exactly what it wrote. Each
+//! folder is created on first use, as they always exist on Windows. Folders with no
+//! meaning here (Windows, System, Program Files, ...) are not found.
 use crate::{
     api::{com::apartment, text},
     host::paths,
@@ -29,72 +29,81 @@ const FOLDERS: &[(&str, i32, &str)] = &[
     ("374DE290-123F-4565-9164-39C4925E467B", -1, "Downloads"),
     ("62AB5D82-FDC1-4DC3-A9DD-070D1D495D97", 0x23, "ProgramData"),
 ];
-/// The Windows user profile inside the game's Steam compatibility prefix, when launched
-/// through Steam. Known folders resolve here (users/steamuser/AppData/...), which is the
-/// path Steam Cloud syncs for a Windows title, so saves are cloud-backed and shared with
-/// Proton if it is ever used. PeekGame creates the directory itself: Proton is not
-/// required. None for a standalone run (no STEAM_COMPAT_DATA_PATH).
-fn steam_profile() -> Option<PathBuf> {
-    let compat = std::env::var_os("STEAM_COMPAT_DATA_PATH")?;
-    let profile = PathBuf::from(compat).join("pfx/drive_c/users/steamuser");
-    std::fs::create_dir_all(&profile).ok()?;
-    Some(profile)
-}
-/// The Roaming AppData root on the host (created) and its Windows path. Under Steam this
-/// is the Proton profile's AppData\Roaming; standalone, PeekGame's own data directory.
-pub(crate) fn appdata() -> Option<PathBuf> {
-    if let Some(profile) = steam_profile() {
-        let roaming = profile.join("AppData/Roaming");
-        std::fs::create_dir_all(&roaming).ok()?;
-        std::fs::create_dir_all(profile.join("AppData/Local")).ok();
-        // Short C: paths (mapped back to the prefix by paths::host): the full host
-        // path is far over Windows' MAX_PATH, which some games reject for saves.
-        unsafe {
-            std::env::set_var("APPDATA", r"C:\users\steamuser\AppData\Roaming");
-            std::env::set_var("LOCALAPPDATA", r"C:\users\steamuser\AppData\Local");
-            std::env::set_var("USERPROFILE", r"C:\users\steamuser");
-        }
-        return Some(roaming);
-    }
-    let root = match std::env::var("APPDATA") {
-        Ok(windows) if !windows.is_empty() => paths::host(&windows).ok()?,
-        _ => {
-            let data = std::env::var_os("XDG_DATA_HOME")
-                .map(PathBuf::from)
-                .or_else(|| {
-                    std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share"))
-                })?;
-            let root = data.join("peekgame");
-            // Programs read APPDATA directly too.
-            unsafe { std::env::set_var("APPDATA", paths::windows(&root)) };
-            root
-        }
-    };
+/// PeekGame's own Windows user profile, `C:\users\steamuser`, resolved through
+/// `paths::host` so it is the very same virtual C: drive every other path uses
+/// (`$XDG_DATA_HOME/peekgame/drive_c/users/steamuser`). Known folders live here, so a
+/// game reads back exactly what it wrote. Saves stay in PeekGame's folder, never in a
+/// Steam/Proton prefix, and no Proton/Wine is required.
+fn profile() -> Option<PathBuf> {
+    let root = paths::peekgame_root();
     std::fs::create_dir_all(&root).ok()?;
+    let drive_c_profile = root.join("drive_c/users/steamuser");
+    std::fs::create_dir_all(&drive_c_profile).ok()?;
+
+    for name in &["Desktop", "Documents", "Downloads", "Local", "LocalLow", "ProgramData", "Saved Games"] {
+        let _ = std::fs::create_dir_all(root.join(name));
+    }
+
+    #[cfg(unix)]
+    {
+        let links: &[(&str, &str)] = &[
+            ("Desktop", "../../Desktop"),
+            ("Documents", "../../Documents"),
+            ("Downloads", "../../Downloads"),
+            ("Saved Games", "../../Saved Games"),
+            ("AppData/Local", "../../../Local"),
+            ("AppData/LocalLow", "../../../LocalLow"),
+            ("AppData/Roaming/registry", "../../../registry"),
+        ];
+        for &(link_rel, target) in links {
+            let link_path = drive_c_profile.join(link_rel);
+            if !link_path.exists() && link_path.symlink_metadata().is_err() {
+                if let Some(parent) = link_path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                let _ = std::os::unix::fs::symlink(target, &link_path);
+            }
+        }
+    }
+
+    Some(drive_c_profile)
+}
+/// The Roaming AppData root on the host (created) and the environment variables programs
+/// read directly. The returned host path and the exported C: paths map to the same place.
+pub(crate) fn appdata() -> Option<PathBuf> {
+    let _ = profile()?;
+    let root = paths::peekgame_root();
+    std::fs::create_dir_all(&root).ok()?;
+    unsafe {
+        std::env::set_var("APPDATA", r"C:\users\steamuser\AppData\Roaming");
+        std::env::set_var("LOCALAPPDATA", r"C:\users\steamuser\AppData\Local");
+        std::env::set_var("USERPROFILE", r"C:\users\steamuser");
+    }
     Some(root)
 }
-/// The folder's Windows path, created on the host when missing. Under Steam the known
-/// folders use the real Windows profile layout inside the Proton prefix; standalone,
-/// each is a subdirectory of PeekGame's AppData root as before.
+/// The folder's Windows path, created on the host when missing, as a short C: path that
+/// `paths::host` maps into drive_c. Short so deep save trees stay within MAX_PATH.
 fn folder(subdirectory: &str) -> Option<String> {
-    if let Some(profile) = steam_profile() {
-        let relative = match subdirectory {
-            "" => "AppData/Roaming",
-            "Local" => "AppData/Local",
-            "LocalLow" => "AppData/LocalLow",
-            other => other, // Documents, Saved Games, Desktop, Pictures, Music, Videos, Downloads
-        };
-        std::fs::create_dir_all(profile.join(relative)).ok()?;
-        // A short C: path (mapped to the prefix by paths::host), not the long host
-        // path, so it stays within Windows' MAX_PATH for deep save trees.
-        return Some(format!(r"C:\users\steamuser\{}", relative.replace('/', r"\")));
+    let _ = profile()?;
+    if subdirectory == "ProgramData" {
+        let p = paths::peekgame_root().join("ProgramData");
+        std::fs::create_dir_all(&p).ok()?;
+        return Some(r"C:\ProgramData".into());
     }
-    let mut path = appdata()?;
-    if !subdirectory.is_empty() {
-        path = path.join(subdirectory);
-    }
-    std::fs::create_dir_all(&path).ok()?;
-    Some(paths::windows(&path))
+    let host_folder = match subdirectory {
+        "" => paths::peekgame_root(),
+        "Local" => paths::peekgame_root().join("Local"),
+        "LocalLow" => paths::peekgame_root().join("LocalLow"),
+        other => paths::peekgame_root().join(other),
+    };
+    std::fs::create_dir_all(&host_folder).ok()?;
+    let relative = match subdirectory {
+        "" => "AppData/Roaming",
+        "Local" => "AppData/Local",
+        "LocalLow" => "AppData/LocalLow",
+        other => other,
+    };
+    Some(format!(r"C:\users\steamuser\{}", relative.replace('/', r"\")))
 }
 pub unsafe extern "win64" fn known_folder_path(
     id: *const u8,

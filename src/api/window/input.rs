@@ -28,13 +28,17 @@ pub(crate) use keyboard::{
     get_keyboard_layout, get_keyboard_layout_list, get_keyboard_layout_name_w, get_keyboard_state,
     map_virtual_key_ex_w, map_virtual_key_w, to_unicode, to_unicode_ex,
 };
-pub(super) use keyboard::{key_down, set_key, sync_toggles};
+pub(crate) use keyboard::key_down;
+pub(super) use keyboard::{set_key, sync_toggles};
 pub(crate) use raw::{
     define_raw_input_proc, get_raw_input_buffer, get_raw_input_data, get_raw_input_device_info_a,
     get_raw_input_device_info_w, get_raw_input_device_list, get_registered_raw_input_devices,
     register_raw_input_devices,
 };
-pub(super) use raw::{is_pending_mouse_motion, merge_raw_mouse, raw_keyboard, raw_mouse, raw_read};
+pub(super) use raw::{
+    is_pending_mouse_motion, merge_raw_mouse, raw_keyboard, raw_motion_core, raw_mouse,
+    raw_mouse_relative, raw_read,
+};
 
 pub(super) fn trace_input(message: impl std::fmt::Display) {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();

@@ -41,6 +41,20 @@ pub extern "win64" fn no_more_items() -> i32 {
     error::set(259);
     0
 }
+/// Empty SetupAPI sets contain no device instance IDs.
+pub unsafe extern "win64" fn get_device_instance_id_w(
+    _set: usize,
+    _device: *const u8,
+    _instance_id: *mut u16,
+    _capacity: u32,
+    required: *mut u32,
+) -> i32 {
+    if !required.is_null() {
+        unsafe { *required = 0 };
+    }
+    error::set(259);
+    0
+}
 pub extern "win64" fn destroy_list(_set: usize) -> i32 {
     1
 }

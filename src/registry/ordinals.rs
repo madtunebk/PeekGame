@@ -142,6 +142,12 @@ const UXTHEME: &[(u16, &str)] = &[
 const WINSPOOL: &[(u16, &str)] = &[
     (203, "ConnectToPrinterDlg"),
 ];
+const COMCTL32: &[(u16, &str)] = &[
+    (345, "TaskDialogIndirect"),
+    (410, "SetWindowSubclass"),
+    (412, "RemoveWindowSubclass"),
+    (413, "DefSubclassProc"),
+];
 /// The name of export `ordinal` of `dll` (canonical, without ".dll").
 pub(super) fn name(dll: &str, ordinal: u16) -> Option<&'static str> {
     let table = match dll {
@@ -163,6 +169,7 @@ pub(super) fn name(dll: &str, ordinal: u16) -> Option<&'static str> {
         "shlwapi" => SHLWAPI,
         "uxtheme" => UXTHEME,
         "winspool.drv" | "winspool" => WINSPOOL,
+        "comctl32" => COMCTL32,
         _ => return None,
     };
     table.iter().find(|(o, _)| *o == ordinal).map(|(_, n)| *n)
