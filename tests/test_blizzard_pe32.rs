@@ -8,10 +8,9 @@ fn test_blizzard_32bit_binaries() {
     ];
     for p in paths {
         if let Ok(bytes) = std::fs::read(p) {
-            let img = game_imports::pe::parse(&bytes).expect(&format!("failed to parse {}", p));
-            println!("SUCCESS: {} -> machine={:#x}, is_32={}", p, img.machine, img.is_32bit());
+            let img = game_imports::pe32::parse(&bytes).unwrap_or_else(|e| panic!("failed to parse {p}: {e}"));
+            println!("SUCCESS: {} -> machine={:#x}", p, img.machine);
             println!("  image_base={:#x}, entry={:#x}, sections={}, imports={}", img.image_base, img.entry_rva, img.sections.len(), img.imports.len());
-            assert!(img.is_32bit());
             assert_eq!(img.machine, 0x14c);
             assert!(img.imports.len() > 0);
         }

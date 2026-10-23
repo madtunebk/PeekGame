@@ -9,6 +9,7 @@ mod host;
 pub mod images;
 pub mod mapped;
 pub mod pe;
+pub mod pe32;
 pub mod registry;
 mod quirks;
 pub use quirks::game_args;
